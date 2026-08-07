@@ -1,15 +1,16 @@
 // Package api serves the JSON API behind the web UI, and the built frontend
 // alongside it.
 //
-// The API is read-mostly on purpose: the route library is a git repo, so
-// creating and deleting routes happens through commits, not through this
-// server. The one write endpoint is POST /api/push, which reconciles what the
-// library already says into the riders' accounts.
+// What the API allows depends on the route source. A filesystem library is
+// read-only — routes are added by committing them to the routes repo. A
+// database library accepts uploads, and then the write endpoints appear.
 package api
 
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -18,18 +19,23 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/wncservices/domestique/apps/api/internal/library"
+	"github.com/wncservices/domestique/apps/api/internal/config"
 	"github.com/wncservices/domestique/apps/api/internal/model"
+	"github.com/wncservices/domestique/apps/api/internal/source"
 	"github.com/wncservices/domestique/apps/api/internal/state"
 	syncer "github.com/wncservices/domestique/apps/api/internal/sync"
 	"github.com/wncservices/domestique/apps/api/internal/targets"
 )
 
+// maxUploadBytes bounds a multipart upload before it is read into memory.
+const maxUploadBytes = 20 << 20 // 20 MiB
+
 // Server holds the request-scoped dependencies.
 type Server struct {
-	LibraryPath string
-	Store       state.Store
-	Log         *slog.Logger
+	Source source.Source
+	Config *config.Config
+	Store  state.Store
+	Log    *slog.Logger
 	// WebFS is the built frontend. Nil serves an API-only server.
 	WebFS fs.FS
 
@@ -42,13 +48,30 @@ type Server struct {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.handleHealth)
+	mux.HandleFunc("GET /api/config", s.handleConfig)
 	mux.HandleFunc("GET /api/accounts", s.handleAccounts)
 	mux.HandleFunc("GET /api/routes", s.handleRoutes)
-	// Slugs contain slashes, so the wildcard has to be last — hence /api/tracks/
-	// rather than /api/routes/{slug}/track.
-	mux.HandleFunc("GET /api/tracks/{slug...}", s.handleTrack)
 	mux.HandleFunc("GET /api/plan", s.handlePlan)
 	mux.HandleFunc("POST /api/push", s.handlePush)
+
+	// Slugs contain slashes in a filesystem library, so the wildcard has to be
+	// last — hence /api/tracks/<slug> rather than /api/routes/<slug>/track.
+	mux.HandleFunc("GET /api/tracks/{slug...}", s.handleTrack)
+	mux.HandleFunc("GET /api/gpx/{slug...}", s.handleDownload)
+
+	// Write endpoints are always registered, even against a read-only source:
+	// they answer 405 with an explanation. Leaving them unregistered would let
+	// the SPA fallback answer 200 with HTML, which no client can interpret.
+	mux.HandleFunc("POST /api/routes", s.handleUpload)
+	mux.HandleFunc("PATCH /api/routes/{slug...}", s.handleUpdate)
+	mux.HandleFunc("DELETE /api/routes/{slug...}", s.handleDelete)
+
+	// Anything else under /api is a 404 in JSON, not the SPA shell.
+	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusNotFound, map[string]string{
+			"error": "no such endpoint: " + r.Method + " " + r.URL.Path,
+		})
+	})
 
 	if s.WebFS != nil {
 		mux.Handle("/", s.spaHandler())
@@ -57,6 +80,13 @@ func (s *Server) Handler() http.Handler {
 }
 
 // ---------- payloads ----------
+
+type configDTO struct {
+	Source string `json:"source"`
+	// Writable tells the UI whether to offer uploads, or to explain that
+	// routes arrive by commit.
+	Writable bool `json:"writable"`
+}
 
 type accountDTO struct {
 	ID       string `json:"id"`
@@ -68,18 +98,21 @@ type accountDTO struct {
 }
 
 type routeDTO struct {
-	Slug        string       `json:"slug"`
-	Name        string       `json:"name"`
-	Description string       `json:"description"`
-	Tags        []string     `json:"tags"`
-	DistanceM   float64      `json:"distanceM"`
-	AscentM     float64      `json:"ascentM"`
-	StartLat    float64      `json:"startLat"`
-	StartLng    float64      `json:"startLng"`
-	PointCount  int          `json:"pointCount"`
-	ContentHash string       `json:"contentHash"`
-	Targets     []string     `json:"targets"`
-	SyncState   []syncStatus `json:"syncState"`
+	Slug           string       `json:"slug"`
+	Name           string       `json:"name"`
+	Description    string       `json:"description"`
+	Tags           []string     `json:"tags"`
+	DistanceM      float64      `json:"distanceM"`
+	AscentM        float64      `json:"ascentM"`
+	StartLat       float64      `json:"startLat"`
+	StartLng       float64      `json:"startLng"`
+	PointCount     int          `json:"pointCount"`
+	ContentHash    string       `json:"contentHash"`
+	Origin         string       `json:"origin"`
+	UpdatedAt      string       `json:"updatedAt"`
+	Targets        []string     `json:"targets"`
+	UnknownTargets []string     `json:"unknownTargets"`
+	SyncState      []syncStatus `json:"syncState"`
 }
 
 type syncStatus struct {
@@ -113,21 +146,20 @@ type pushResponse struct {
 	Items    []planItemDTO `json:"items"`
 }
 
-// ---------- handlers ----------
+// ---------- read handlers ----------
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-func (s *Server) handleAccounts(w http.ResponseWriter, _ *http.Request) {
-	lib, _, err := s.load()
-	if err != nil {
-		s.fail(w, err)
-		return
-	}
+func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request) {
+	_, writable := source.AsWritable(s.Source)
+	writeJSON(w, http.StatusOK, configDTO{Source: s.Source.Describe(), Writable: writable})
+}
 
-	out := make([]accountDTO, 0, len(lib.Config.Accounts))
-	for _, a := range lib.Config.Accounts {
+func (s *Server) handleAccounts(w http.ResponseWriter, _ *http.Request) {
+	out := make([]accountDTO, 0, len(s.Config.Accounts))
+	for _, a := range s.Config.Accounts {
 		out = append(out, accountDTO{
 			ID:          a.ID,
 			Provider:    string(a.Provider),
@@ -140,91 +172,58 @@ func (s *Server) handleAccounts(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleRoutes(w http.ResponseWriter, _ *http.Request) {
-	lib, problems, err := s.load()
+	routes, problems, err := s.Source.List()
 	if err != nil {
 		s.fail(w, err)
 		return
 	}
-
-	routes := make([]routeDTO, 0, len(lib.Routes))
-	for _, r := range lib.Routes {
-		targetIDs := lib.TargetsFor(r)
-		statuses := make([]syncStatus, 0, len(targetIDs))
-		for _, id := range targetIDs {
-			entry, seen := s.Store.ForAccount(id)[r.Slug]
-			switch {
-			case !seen:
-				statuses = append(statuses, syncStatus{AccountID: id, Status: "pending"})
-			case entry.ContentHash != r.ContentHash:
-				statuses = append(statuses, syncStatus{
-					AccountID: id, Status: "stale",
-					RemoteID: entry.RemoteID, UpdatedAt: entry.UpdatedAt,
-				})
-			default:
-				statuses = append(statuses, syncStatus{
-					AccountID: id, Status: "synced",
-					RemoteID: entry.RemoteID, UpdatedAt: entry.UpdatedAt,
-				})
-			}
-		}
-
-		routes = append(routes, routeDTO{
-			Slug:        r.Slug,
-			Name:        r.Name(),
-			Description: r.Meta.Description,
-			Tags:        orEmpty(r.Meta.Tags),
-			DistanceM:   r.Stats.DistanceM,
-			AscentM:     r.Stats.AscentM,
-			StartLat:    r.Stats.StartLat,
-			StartLng:    r.Stats.StartLng,
-			PointCount:  r.Stats.PointCount,
-			ContentHash: r.ContentHash,
-			Targets:     orEmpty(targetIDs),
-			SyncState:   statuses,
-		})
-	}
-
-	writeJSON(w, http.StatusOK, libraryResponse{Routes: routes, Problems: orEmpty(problems)})
+	writeJSON(w, http.StatusOK, libraryResponse{
+		Routes:   s.toRouteDTOs(routes),
+		Problems: orEmpty(problems),
+	})
 }
 
 // handleTrack returns the raw coordinates so the UI can draw a route preview
 // without shipping a map library or calling out to a tile server.
 func (s *Server) handleTrack(w http.ResponseWriter, r *http.Request) {
-	lib, _, err := s.load()
+	slug := cleanSlug(r.PathValue("slug"))
+	points, err := s.Source.Track(slug)
 	if err != nil {
-		s.fail(w, err)
+		s.failLookup(w, err)
 		return
 	}
 
-	slug := strings.Trim(r.PathValue("slug"), "/")
-	for _, route := range lib.Routes {
-		if route.Slug != slug {
-			continue
-		}
-		points, err := library.ReadPoints(route.GPXPath)
-		if err != nil {
-			s.fail(w, err)
-			return
-		}
-		coords := make([][2]float64, 0, len(points))
-		for _, p := range points {
-			coords = append(coords, [2]float64{p.Lat, p.Lon})
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"slug": slug, "points": coords})
+	coords := make([][2]float64, 0, len(points))
+	for _, p := range points {
+		coords = append(coords, [2]float64{p.Lat, p.Lon})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"slug": slug, "points": coords})
+}
+
+func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
+	slug := cleanSlug(r.PathValue("slug"))
+	raw, err := s.Source.GPX(slug)
+	if err != nil {
+		s.failLookup(w, err)
 		return
 	}
 
-	writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such route: " + slug})
+	filename := strings.ReplaceAll(slug, "/", "-") + ".gpx"
+	w.Header().Set("Content-Type", "application/gpx+xml")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+	if _, err := w.Write(raw); err != nil {
+		s.logger().Error("write gpx", "err", err)
+	}
 }
 
 func (s *Server) handlePlan(w http.ResponseWriter, _ *http.Request) {
-	lib, problems, err := s.load()
+	routes, problems, err := s.Source.List()
 	if err != nil {
 		s.fail(w, err)
 		return
 	}
 
-	plan := syncer.BuildPlan(lib, s.Store)
+	plan := syncer.BuildPlan(routes, s.Config, s.Store)
 	changes := plan.Changes()
 	writeJSON(w, http.StatusOK, planResponse{
 		Items:    toPlanDTOs(changes),
@@ -237,14 +236,14 @@ func (s *Server) handlePush(w http.ResponseWriter, _ *http.Request) {
 	s.pushMu.Lock()
 	defer s.pushMu.Unlock()
 
-	lib, _, err := s.load()
+	routes, _, err := s.Source.List()
 	if err != nil {
 		s.fail(w, err)
 		return
 	}
 
 	byAccount := map[string]targets.Target{}
-	for _, account := range lib.Config.Accounts {
+	for _, account := range s.Config.Accounts {
 		target, err := targets.Build(account)
 		if err != nil {
 			s.fail(w, err)
@@ -253,7 +252,7 @@ func (s *Server) handlePush(w http.ResponseWriter, _ *http.Request) {
 		byAccount[account.ID] = target
 	}
 
-	plan := syncer.BuildPlan(lib, s.Store)
+	plan := syncer.BuildPlan(routes, s.Config, s.Store)
 	changes := plan.Changes()
 	failures := syncer.Apply(plan, s.Store, byAccount)
 
@@ -270,13 +269,163 @@ func (s *Server) handlePush(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
+// ---------- write handlers (writable sources only) ----------
+
+func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
+	writable, ok := source.AsWritable(s.Source)
+	if !ok {
+		s.readOnly(w)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
+	if err := r.ParseMultipartForm(maxUploadBytes); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "could not read the upload: " + err.Error(),
+		})
+		return
+	}
+
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "expected a GPX file in the `file` field",
+		})
+		return
+	}
+	defer file.Close()
+
+	raw, err := io.ReadAll(file)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+
+	req := source.CreateRequest{
+		Filename:   header.Filename,
+		Name:       r.FormValue("name"),
+		Descript:   r.FormValue("description"),
+		Tags:       splitCSV(r.FormValue("tags")),
+		UploadedBy: r.FormValue("uploadedBy"),
+		GPX:        raw,
+	}
+	if targetsField := r.FormValue("targets"); targetsField != "" {
+		list := splitCSV(targetsField)
+		req.Targets = &list
+	}
+
+	route, err := writable.Create(req)
+	if err != nil {
+		// A bad GPX is the caller's problem, not a server fault.
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	s.logger().Info("route uploaded", "slug", route.Slug, "by", req.UploadedBy)
+	writeJSON(w, http.StatusCreated, s.toRouteDTO(route))
+}
+
+func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
+	writable, ok := source.AsWritable(s.Source)
+	if !ok {
+		s.readOnly(w)
+		return
+	}
+
+	var body struct {
+		Name        *string   `json:"name"`
+		Description *string   `json:"description"`
+		Tags        *[]string `json:"tags"`
+		Targets     *[]string `json:"targets"`
+		Enabled     *bool     `json:"enabled"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	route, err := writable.Update(cleanSlug(r.PathValue("slug")), source.UpdateRequest{
+		Name:     body.Name,
+		Descript: body.Description,
+		Tags:     body.Tags,
+		Targets:  body.Targets,
+		Enabled:  body.Enabled,
+	})
+	if err != nil {
+		s.failLookup(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.toRouteDTO(route))
+}
+
+// handleDelete removes a route from the source. It deliberately leaves sync
+// state alone: the next plan will show a delete against every account that
+// still holds it, which is exactly what should happen.
+func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
+	writable, ok := source.AsWritable(s.Source)
+	if !ok {
+		s.readOnly(w)
+		return
+	}
+
+	slug := cleanSlug(r.PathValue("slug"))
+	if err := writable.Delete(slug); err != nil {
+		s.failLookup(w, err)
+		return
+	}
+
+	s.logger().Info("route deleted", "slug", slug)
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // ---------- plumbing ----------
 
-// load re-reads the library on every request. It is a directory of small files
-// and a git pull can change it under us at any moment, so caching would mostly
-// buy stale answers.
-func (s *Server) load() (*library.Library, []string, error) {
-	return library.Load(s.LibraryPath)
+func (s *Server) toRouteDTOs(routes []model.Route) []routeDTO {
+	out := make([]routeDTO, 0, len(routes))
+	for _, r := range routes {
+		out = append(out, s.toRouteDTO(r))
+	}
+	return out
+}
+
+func (s *Server) toRouteDTO(r model.Route) routeDTO {
+	targetIDs := s.Config.TargetsFor(r)
+	statuses := make([]syncStatus, 0, len(targetIDs))
+	for _, id := range targetIDs {
+		entry, seen := s.Store.ForAccount(id)[r.Slug]
+		switch {
+		case !seen:
+			statuses = append(statuses, syncStatus{AccountID: id, Status: "pending"})
+		case entry.ContentHash != r.ContentHash:
+			statuses = append(statuses, syncStatus{
+				AccountID: id, Status: "stale",
+				RemoteID: entry.RemoteID, UpdatedAt: entry.UpdatedAt,
+			})
+		default:
+			statuses = append(statuses, syncStatus{
+				AccountID: id, Status: "synced",
+				RemoteID: entry.RemoteID, UpdatedAt: entry.UpdatedAt,
+			})
+		}
+	}
+
+	return routeDTO{
+		Slug:           r.Slug,
+		Name:           r.Name,
+		Description:    r.Description,
+		Tags:           orEmpty(r.Tags),
+		DistanceM:      r.Stats.DistanceM,
+		AscentM:        r.Stats.AscentM,
+		StartLat:       r.Stats.StartLat,
+		StartLng:       r.Stats.StartLng,
+		PointCount:     r.Stats.PointCount,
+		ContentHash:    r.ContentHash,
+		Origin:         r.Origin,
+		UpdatedAt:      r.UpdatedAt,
+		Targets:        orEmpty(targetIDs),
+		UnknownTargets: orEmpty(s.Config.UnknownTargets(r)),
+		SyncState:      statuses,
+	}
 }
 
 func (s *Server) logger() *slog.Logger {
@@ -289,6 +438,20 @@ func (s *Server) logger() *slog.Logger {
 func (s *Server) fail(w http.ResponseWriter, err error) {
 	s.logger().Error("request failed", "err", err)
 	writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+}
+
+func (s *Server) failLookup(w http.ResponseWriter, err error) {
+	if errors.Is(err, source.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	}
+	s.fail(w, err)
+}
+
+func (s *Server) readOnly(w http.ResponseWriter) {
+	writeJSON(w, http.StatusMethodNotAllowed, map[string]string{
+		"error": "this library is read-only — add routes by committing them to the routes repo",
+	})
 }
 
 // spaHandler serves the built frontend, falling back to index.html so client
@@ -318,6 +481,18 @@ func toPlanDTOs(items []model.PlanItem) []planItemDTO {
 			Slug:      item.Slug,
 			Reason:    item.Reason,
 		})
+	}
+	return out
+}
+
+func cleanSlug(raw string) string { return strings.Trim(raw, "/") }
+
+func splitCSV(raw string) []string {
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			out = append(out, trimmed)
+		}
 	}
 	return out
 }

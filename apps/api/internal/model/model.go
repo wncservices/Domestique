@@ -27,7 +27,8 @@ func (a Account) EnvPrefix() string {
 	return sanitizeEnv(fmt.Sprintf("%s_%s", a.Provider, a.Rider))
 }
 
-// RouteMeta is the contents of a route's route.yaml.
+// RouteMeta is a route's editable metadata — the contents of route.yaml in a
+// filesystem library, or the metadata columns in a database one.
 type RouteMeta struct {
 	Name        string `yaml:"name"`
 	Description string `yaml:"description,omitempty"`
@@ -50,16 +51,22 @@ type RouteStats struct {
 }
 
 // Route is one route in the library: a GPX track plus its metadata and stats.
+//
+// It carries no file paths on purpose — a route may come from a directory or
+// from a database row, and only its source knows which. Fetch the track itself
+// through the source.
 type Route struct {
+	RouteMeta
+
 	Slug        string
-	Dir         string
-	GPXPath     string
-	Meta        RouteMeta
 	Stats       RouteStats
 	ContentHash string
+	// Origin is a human-readable hint about where this route came from
+	// (a path, or "database"). Display only.
+	Origin string
+	// UpdatedAt is when the route last changed in its source, if known.
+	UpdatedAt string
 }
-
-func (r Route) Name() string { return r.Meta.Name }
 
 // Op is the kind of change a plan item represents.
 type Op string

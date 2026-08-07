@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { api } from '@/api/client'
-import type { Account, PlanResponse, Route } from '@/api/types'
+import type { Account, AppConfig, PlanResponse, Route } from '@/api/types'
 import PlanPanel from '@/components/PlanPanel.vue'
 import RouteCard from '@/components/RouteCard.vue'
+import UploadPanel from '@/components/UploadPanel.vue'
 
+const config = ref<AppConfig | null>(null)
 const accounts = ref<Account[]>([])
 const routes = ref<Route[]>([])
 const problems = ref<string[]>([])
@@ -34,11 +36,13 @@ const visibleRoutes = computed(() => {
 async function refresh() {
   error.value = ''
   try {
-    const [accountList, library, currentPlan] = await Promise.all([
+    const [appConfig, accountList, library, currentPlan] = await Promise.all([
+      api.config(),
       api.accounts(),
       api.routes(),
       api.plan(),
     ])
+    config.value = appConfig
     accounts.value = accountList
     routes.value = library.routes
     problems.value = library.problems
@@ -73,6 +77,10 @@ onMounted(refresh)
       <div>
         <h1>domestique</h1>
         <p class="tagline">Shared route library, carried to every head unit.</p>
+        <p v-if="config" class="source">
+          {{ config.source }}
+          <span v-if="!config.writable"> · read-only, add routes by committing them</span>
+        </p>
       </div>
       <dl class="totals">
         <div>
@@ -105,6 +113,8 @@ onMounted(refresh)
       @refresh="refresh"
     />
 
+    <UploadPanel v-if="config?.writable" :accounts="accounts" @uploaded="refresh" />
+
     <section class="library">
       <header>
         <h2>Library</h2>
@@ -113,7 +123,10 @@ onMounted(refresh)
 
       <p v-if="loading" class="muted">Loading routes…</p>
       <p v-else-if="!routes.length" class="muted">
-        No routes yet — commit a <code>route.gpx</code> to the library and refresh.
+        <template v-if="config?.writable">No routes yet — upload a GPX above.</template>
+        <template v-else>
+          No routes yet — commit a <code>route.gpx</code> to the routes repo and refresh.
+        </template>
       </p>
       <p v-else-if="!visibleRoutes.length" class="muted">Nothing matches “{{ search }}”.</p>
 
@@ -123,6 +136,8 @@ onMounted(refresh)
           :key="route.slug"
           :route="route"
           :accounts="accounts"
+          :writable="config?.writable ?? false"
+          @deleted="refresh"
         />
       </div>
     </section>
@@ -157,6 +172,13 @@ h1 {
   margin: 0.25rem 0 0;
   color: var(--text-muted);
   font-size: 0.9rem;
+}
+
+.source {
+  margin: 0.3rem 0 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.75rem;
+  color: var(--text-muted);
 }
 
 .totals {

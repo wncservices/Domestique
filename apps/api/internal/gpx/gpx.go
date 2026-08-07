@@ -1,4 +1,4 @@
-package library
+package gpx
 
 import (
 	"crypto/sha256"
@@ -62,19 +62,27 @@ func (p gpxPoint) toPoint() Point {
 	return out
 }
 
-// ReadPoints flattens a GPX file into a single ordered point list.
-//
-// It accepts tracks or routes: planners disagree about which element a planned
-// route belongs in, and we treat both as the same thing.
+// ReadPoints flattens a GPX file on disk into a single ordered point list.
 func ReadPoints(path string) ([]Point, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
+	points, err := ParsePoints(raw)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return points, nil
+}
 
+// ParsePoints flattens GPX bytes into a single ordered point list.
+//
+// It accepts tracks or routes: planners disagree about which element a planned
+// route belongs in, and we treat both as the same thing.
+func ParsePoints(raw []byte) ([]Point, error) {
 	var doc gpxDoc
 	if err := xml.Unmarshal(raw, &doc); err != nil {
-		return nil, fmt.Errorf("%s: could not parse GPX: %w", path, err)
+		return nil, fmt.Errorf("could not parse GPX: %w", err)
 	}
 
 	var points []Point
@@ -94,7 +102,7 @@ func ReadPoints(path string) ([]Point, error) {
 	}
 
 	if len(points) < 2 {
-		return nil, fmt.Errorf("%s: needs at least 2 track points, found %d", path, len(points))
+		return nil, fmt.Errorf("needs at least 2 track points, found %d", len(points))
 	}
 	return points, nil
 }

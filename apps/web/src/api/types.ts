@@ -18,6 +18,13 @@ export interface SyncStatus {
   updatedAt?: string
 }
 
+export interface AppConfig {
+  /** Human-readable description of the route source. */
+  source: string
+  /** True when the source accepts uploads; false for a git-backed directory. */
+  writable: boolean
+}
+
 export interface Route {
   slug: string
   name: string
@@ -29,8 +36,21 @@ export interface Route {
   startLng: number
   pointCount: number
   contentHash: string
+  origin: string
+  updatedAt: string
   targets: string[]
+  /** Targets naming accounts that do not exist — usually a typo. */
+  unknownTargets: string[]
   syncState: SyncStatus[]
+}
+
+export interface UploadRequest {
+  file: File
+  name?: string
+  description?: string
+  tags?: string
+  targets?: string
+  uploadedBy?: string
 }
 
 export interface LibraryResponse {

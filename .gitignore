@@ -4,8 +4,19 @@
 *.pem
 tokens/
 
+# Local config — copy domestique.example.yaml to domestique.yaml
+domestique.yaml
+
+# Route data never lives in this repo: it is personal location data, and the
+# whole point of the source split is that it stays somewhere private.
+/routes/
+data/
+
 # State — rebuilt from the providers, not source
 .domestique-state.json
+*.db
+*.db-wal
+*.db-shm
 *.sqlite
 *.sqlite3
 
