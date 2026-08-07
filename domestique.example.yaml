@@ -1,0 +1,32 @@
+# domestique app config. Copy to domestique.yaml and edit.
+#
+# Nothing here is a secret — account ids and labels only. Provider credentials
+# come from the environment (in a cluster: Vault -> ExternalSecret -> envFrom).
+
+# Where routes come from.
+source:
+  # fs: a directory of GPX routes, typically a checkout of a separate, private
+  #     routes repo. Read-only — routes are added by committing them.
+  kind: fs
+  path: ../routes
+
+  # db: GPX blobs in a SQLite database, uploaded through the web UI.
+  # kind: db
+  # dsn: ./data/domestique.db
+
+# The riders' accounts. IDs are "<provider>:<rider>".
+accounts:
+  - id: garmin:wilant
+    provider: garmin
+    rider: wilant
+    label: Wilant's Garmin Edge
+
+  - id: wahoo:friend
+    provider: wahoo
+    rider: friend
+    label: Friend's Wahoo ELEMNT
+
+# Where a route goes when it does not name targets itself.
+default_targets:
+  - garmin:wilant
+  - wahoo:friend

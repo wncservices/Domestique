@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="domestique-example" xmlns="http://www.topografix.com/GPX/1/1">
+  <trk>
+    <name>Kemmelberg Loop</name>
+    <trkseg>
+      <trkpt lat="50.7920" lon="2.8180"><ele>42.0</ele></trkpt>
+      <trkpt lat="50.7935" lon="2.8225"><ele>48.0</ele></trkpt>
+      <trkpt lat="50.7951" lon="2.8271"><ele>63.0</ele></trkpt>
+      <trkpt lat="50.7968" lon="2.8310"><ele>96.0</ele></trkpt>
+      <trkpt lat="50.7982" lon="2.8344"><ele>128.0</ele></trkpt>
+      <trkpt lat="50.7996" lon="2.8388"><ele>151.0</ele></trkpt>
+      <trkpt lat="50.8007" lon="2.8437"><ele>139.0</ele></trkpt>
+      <trkpt lat="50.7994" lon="2.8481"><ele>104.0</ele></trkpt>
+      <trkpt lat="50.7971" lon="2.8509"><ele>71.0</ele></trkpt>
+      <trkpt lat="50.7948" lon="2.8522"><ele>55.0</ele></trkpt>
+      <trkpt lat="50.7925" lon="2.8496"><ele>47.0</ele></trkpt>
+      <trkpt lat="50.7911" lon="2.8443"><ele>44.0</ele></trkpt>
+      <trkpt lat="50.7906" lon="2.8371"><ele>43.0</ele></trkpt>
+      <trkpt lat="50.7910" lon="2.8291"><ele>42.0</ele></trkpt>
+      <trkpt lat="50.7920" lon="2.8180"><ele>42.0</ele></trkpt>
+    </trkseg>
+  </trk>
+</gpx>

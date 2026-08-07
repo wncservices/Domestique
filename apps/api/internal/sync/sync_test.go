@@ -4,21 +4,39 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/wncservices/domestique/apps/api/internal/library"
+	"github.com/wncservices/domestique/apps/api/internal/config"
 	"github.com/wncservices/domestique/apps/api/internal/model"
+	"github.com/wncservices/domestique/apps/api/internal/source"
 	"github.com/wncservices/domestique/apps/api/internal/state"
 )
 
-func testLibrary(t *testing.T) *library.Library {
+func testConfig() *config.Config {
+	return &config.Config{
+		Accounts: []model.Account{
+			{ID: "garmin:wilant", Provider: model.ProviderGarmin, Rider: "wilant"},
+			{ID: "wahoo:friend", Provider: model.ProviderWahoo, Rider: "friend"},
+		},
+		DefaultTargets: []string{"garmin:wilant", "wahoo:friend"},
+	}
+}
+
+func testRoutes(t *testing.T) []model.Route {
 	t.Helper()
-	lib, problems, err := library.Load(filepath.Join("testdata", "routes"))
+	src, err := source.NewFS(filepath.Join("testdata", "routes"))
 	if err != nil {
-		t.Fatalf("load library: %v", err)
+		t.Fatalf("open source: %v", err)
+	}
+	routes, problems, err := src.List()
+	if err != nil {
+		t.Fatalf("list routes: %v", err)
 	}
 	if len(problems) > 0 {
 		t.Fatalf("example library has problems: %v", problems)
 	}
-	return lib
+	if len(routes) == 0 {
+		t.Fatal("no routes in testdata")
+	}
+	return routes
 }
 
 func newStore(t *testing.T) state.Store {
@@ -31,12 +49,12 @@ func newStore(t *testing.T) state.Store {
 }
 
 func TestBuildPlanCreatesUnsyncedRoutes(t *testing.T) {
-	lib := testLibrary(t)
-	plan := BuildPlan(lib, newStore(t))
+	routes, cfg := testRoutes(t), testConfig()
+	plan := BuildPlan(routes, cfg, newStore(t))
 
 	changes := plan.Changes()
-	if len(changes) != len(lib.Routes)*len(lib.Config.Accounts) {
-		t.Fatalf("got %d changes, want one per route/account pair", len(changes))
+	if want := len(routes) * len(cfg.Accounts); len(changes) != want {
+		t.Fatalf("got %d changes, want %d (one per route/account pair)", len(changes), want)
 	}
 	for _, item := range changes {
 		if item.Op != model.OpCreate {
@@ -46,10 +64,9 @@ func TestBuildPlanCreatesUnsyncedRoutes(t *testing.T) {
 }
 
 func TestBuildPlanIsIdempotent(t *testing.T) {
-	lib := testLibrary(t)
-	store := newStore(t)
+	routes, cfg, store := testRoutes(t), testConfig(), newStore(t)
 
-	for _, item := range BuildPlan(lib, store).Changes() {
+	for _, item := range BuildPlan(routes, cfg, store).Changes() {
 		if err := store.Record(state.Entry{
 			AccountID:   item.AccountID,
 			Slug:        item.Slug,
@@ -60,18 +77,17 @@ func TestBuildPlanIsIdempotent(t *testing.T) {
 		}
 	}
 
-	if changes := BuildPlan(lib, store).Changes(); len(changes) != 0 {
+	if changes := BuildPlan(routes, cfg, store).Changes(); len(changes) != 0 {
 		t.Fatalf("re-plan after a full push produced %d changes, want 0", len(changes))
 	}
 }
 
 func TestBuildPlanDeletesRoutesDroppedFromLibrary(t *testing.T) {
-	lib := testLibrary(t)
-	store := newStore(t)
+	routes, cfg, store := testRoutes(t), testConfig(), newStore(t)
 
 	if err := store.Record(state.Entry{
-		AccountID:   lib.Config.Accounts[0].ID,
-		Slug:        "example/gone-from-repo",
+		AccountID:   cfg.Accounts[0].ID,
+		Slug:        "gone-from-repo",
 		RemoteID:    "remote-123",
 		ContentHash: "stale",
 	}); err != nil {
@@ -79,7 +95,7 @@ func TestBuildPlanDeletesRoutesDroppedFromLibrary(t *testing.T) {
 	}
 
 	var deletes int
-	for _, item := range BuildPlan(lib, store).Changes() {
+	for _, item := range BuildPlan(routes, cfg, store).Changes() {
 		if item.Op == model.OpDelete {
 			deletes++
 			if item.RemoteID != "remote-123" {
@@ -93,11 +109,10 @@ func TestBuildPlanDeletesRoutesDroppedFromLibrary(t *testing.T) {
 }
 
 func TestBuildPlanUpdatesChangedRoutes(t *testing.T) {
-	lib := testLibrary(t)
-	store := newStore(t)
+	routes, cfg, store := testRoutes(t), testConfig(), newStore(t)
 
-	route := lib.Routes[0]
-	account := lib.Config.Accounts[0].ID
+	route := routes[0]
+	account := cfg.Accounts[0].ID
 	if err := store.Record(state.Entry{
 		AccountID:   account,
 		Slug:        route.Slug,
@@ -108,7 +123,7 @@ func TestBuildPlanUpdatesChangedRoutes(t *testing.T) {
 	}
 
 	var found bool
-	for _, item := range BuildPlan(lib, store).Changes() {
+	for _, item := range BuildPlan(routes, cfg, store).Changes() {
 		if item.Slug == route.Slug && item.AccountID == account {
 			found = true
 			if item.Op != model.OpUpdate {
@@ -121,5 +136,20 @@ func TestBuildPlanUpdatesChangedRoutes(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("changed route produced no plan item")
+	}
+}
+
+// A route that names its own targets must not be pushed anywhere else — this
+// is what keeps one rider's private routes off the other's head unit.
+func TestBuildPlanHonoursPerRouteTargets(t *testing.T) {
+	routes, cfg, store := testRoutes(t), testConfig(), newStore(t)
+
+	only := []string{"garmin:wilant"}
+	routes[0].Targets = &only
+
+	for _, item := range BuildPlan(routes, cfg, store).Changes() {
+		if item.Slug == routes[0].Slug && item.AccountID != "garmin:wilant" {
+			t.Errorf("targeted route planned for %s as well", item.AccountID)
+		}
 	}
 }

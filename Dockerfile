@@ -25,8 +25,12 @@ COPY --from=web /src/apps/web/dist /app/web
 USER domestique
 EXPOSE 8080
 
-# The route library is mounted or cloned in at /app/routes; state lives on a
-# volume so a restart does not re-upload every route.
+# No route data is baked in. Mount one of:
+#   fs  a checkout of your private routes repo at /app/routes
+#   db  a volume at /app/data, and set source.kind=db in the config
+# State lives on a volume too, so a restart does not re-push every route.
+VOLUME ["/app/data"]
+
 ENTRYPOINT ["domestique"]
-CMD ["serve", "--addr", ":8080", "--library", "/app/routes", \
-     "--state", "/app/state/domestique-state.json", "--web-dir", "/app/web"]
+CMD ["serve", "--addr", ":8080", "--config", "/app/domestique.yaml", \
+     "--state", "/app/data/domestique-state.json", "--web-dir", "/app/web"]

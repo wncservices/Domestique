@@ -1,16 +1,40 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
+import { api } from '@/api/client'
 import type { Account, Route } from '@/api/types'
 import SyncBadge from './SyncBadge.vue'
 import TrackPreview from './TrackPreview.vue'
 
-const props = defineProps<{ route: Route; accounts: Account[] }>()
+const props = defineProps<{ route: Route; accounts: Account[]; writable: boolean }>()
+const emit = defineEmits<{ deleted: [] }>()
 
 const distance = computed(() => `${(props.route.distanceM / 1000).toFixed(1)} km`)
 const ascent = computed(() => `${Math.round(props.route.ascentM)} m`)
+const gpxUrl = computed(() => api.gpxUrl(props.route.slug))
+
+const deleting = ref(false)
+const deleteError = ref('')
 
 function accountFor(id: string): Account | undefined {
   return props.accounts.find((a) => a.id === id)
+}
+
+async function remove() {
+  // Deleting here also queues a delete on every device that holds it, so make
+  // sure that is what the rider meant.
+  if (!confirm(`Delete “${props.route.name}”? It will be removed from the devices too.`)) {
+    return
+  }
+  deleting.value = true
+  deleteError.value = ''
+  try {
+    await api.remove(props.route.slug)
+    emit('deleted')
+  } catch (err) {
+    deleteError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    deleting.value = false
+  }
 }
 </script>
 
@@ -44,6 +68,11 @@ function accountFor(id: string): Account | undefined {
       <li v-for="tag in route.tags" :key="tag">{{ tag }}</li>
     </ul>
 
+    <p v-if="route.unknownTargets.length" class="unknown">
+      unknown target{{ route.unknownTargets.length === 1 ? '' : 's' }}:
+      {{ route.unknownTargets.join(', ') }}
+    </p>
+
     <footer>
       <SyncBadge
         v-for="status in route.syncState"
@@ -52,7 +81,21 @@ function accountFor(id: string): Account | undefined {
         :account="accountFor(status.accountId)"
       />
       <span v-if="!route.syncState.length" class="untargeted">no targets</span>
+
+      <span class="spacer" />
+      <a class="action" :href="gpxUrl" download>GPX</a>
+      <button
+        v-if="writable"
+        type="button"
+        class="action danger"
+        :disabled="deleting"
+        @click="remove"
+      >
+        {{ deleting ? 'Deleting…' : 'Delete' }}
+      </button>
     </footer>
+
+    <p v-if="deleteError" class="error">{{ deleteError }}</p>
   </article>
 </template>
 
@@ -137,5 +180,47 @@ footer {
 .untargeted {
   font-size: 0.78rem;
   color: var(--text-muted);
+}
+
+.spacer {
+  flex: 1;
+}
+
+.action {
+  font: inherit;
+  font-size: 0.75rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface-sunken);
+  color: var(--text-muted);
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.action:hover {
+  color: var(--text);
+}
+
+.action.danger:hover {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+}
+
+.action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.unknown {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--warn);
+}
+
+.error {
+  margin: 0.4rem 0 0;
+  font-size: 0.78rem;
+  color: var(--danger);
 }
 </style>

@@ -1,33 +1,33 @@
-// Package sync is the diff engine: library + state -> plan, and plan -> execution.
+// Package sync is the diff engine: routes + state -> plan, and plan -> execution.
 package sync
 
 import (
 	"fmt"
 	"sort"
 
-	"github.com/wncservices/domestique/apps/api/internal/library"
+	"github.com/wncservices/domestique/apps/api/internal/config"
 	"github.com/wncservices/domestique/apps/api/internal/model"
 	"github.com/wncservices/domestique/apps/api/internal/state"
 	"github.com/wncservices/domestique/apps/api/internal/targets"
 )
 
-// BuildPlan compares the library against recorded remote state, per account.
-func BuildPlan(lib *library.Library, store state.Store) model.Plan {
+// BuildPlan compares the routes on offer against recorded remote state, per account.
+func BuildPlan(routes []model.Route, cfg *config.Config, store state.Store) model.Plan {
 	var plan model.Plan
 
-	for _, account := range lib.Config.Accounts {
+	for _, account := range cfg.Accounts {
 		recorded := store.ForAccount(account.ID)
 
 		desired := map[string]model.Route{}
-		for _, route := range lib.Routes {
-			for _, target := range lib.TargetsFor(route) {
+		for _, route := range routes {
+			for _, target := range cfg.TargetsFor(route) {
 				if target == account.ID {
 					desired[route.Slug] = route
 				}
 			}
 		}
 
-		for _, slug := range sortedKeys(desired) {
+		for _, slug := range sortedRouteKeys(desired) {
 			route := desired[slug]
 			known, seen := recorded[slug]
 			switch {
@@ -58,7 +58,7 @@ func BuildPlan(lib *library.Library, store state.Store) model.Plan {
 			plan.Items = append(plan.Items, model.PlanItem{
 				Op: model.OpDelete, AccountID: account.ID, Slug: slug,
 				RemoteID: recorded[slug].RemoteID,
-				Reason:   "removed from library or no longer targeted",
+				Reason:   "removed from the library or no longer targeted",
 			})
 		}
 	}
@@ -96,7 +96,7 @@ func applyOne(item model.PlanItem, store state.Store, target targets.Target) err
 		}
 		return store.Record(state.Entry{
 			AccountID: item.AccountID, Slug: item.Slug, RemoteID: remoteID,
-			ContentHash: item.Route.ContentHash, Name: item.Route.Name(),
+			ContentHash: item.Route.ContentHash, Name: item.Route.Name,
 		})
 
 	case model.OpUpdate:
@@ -106,7 +106,7 @@ func applyOne(item model.PlanItem, store state.Store, target targets.Target) err
 		}
 		return store.Record(state.Entry{
 			AccountID: item.AccountID, Slug: item.Slug, RemoteID: remoteID,
-			ContentHash: item.Route.ContentHash, Name: item.Route.Name(),
+			ContentHash: item.Route.ContentHash, Name: item.Route.Name,
 		})
 
 	case model.OpDelete:
@@ -121,7 +121,7 @@ func applyOne(item model.PlanItem, store state.Store, target targets.Target) err
 
 func routePtr(r model.Route) *model.Route { return &r }
 
-func sortedKeys(m map[string]model.Route) []string {
+func sortedRouteKeys(m map[string]model.Route) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
 		out = append(out, k)
