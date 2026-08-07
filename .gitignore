@@ -1,0 +1,23 @@
+# Secrets — never commit. Tokens live in Vault.
+.env
+.env.*
+*.pem
+tokens/
+
+# State — rebuilt from the providers, not source
+.domestique-state.json
+*.sqlite
+*.sqlite3
+
+# Build output
+bin/
+dist/
+node_modules/
+*.tsbuildinfo
+
+# Generated artifacts
+out/
+*.fit
+
+# OS
+.DS_Store
