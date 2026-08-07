@@ -65,10 +65,13 @@ func Load(path string) (*Config, error) {
 	if cfg.Source.Kind == SourceFS && cfg.Source.Path == "" {
 		cfg.Source.Path = "routes"
 	}
-	return cfg, cfg.validate()
+	return cfg, cfg.Validate()
 }
 
-func (c *Config) validate() error {
+// Validate checks a config for self-consistency. It is exported because CLI
+// flags can rewrite the source after Load, and an unchecked override would
+// otherwise silently fall back to a filesystem source.
+func (c *Config) Validate() error {
 	seen := map[string]bool{}
 	for _, a := range c.Accounts {
 		if a.ID == "" || a.Rider == "" {

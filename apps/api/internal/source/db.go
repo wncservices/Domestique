@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -50,6 +51,14 @@ type DB struct {
 // OpenDB opens (and migrates) a SQLite database. The DSN is a file path;
 // ":memory:" works for tests.
 func OpenDB(dsn string) (*DB, error) {
+	// Create the parent directory: the obvious DSN is ./data/domestique.db,
+	// and SQLite will not make the directory itself.
+	if dir := filepath.Dir(dsn); dir != "" && dir != "." && !strings.Contains(dsn, ":memory:") {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, fmt.Errorf("create %s: %w", dir, err)
+		}
+	}
+
 	// WAL keeps a reader (the UI) from blocking a writer (an upload).
 	db, err := sql.Open("sqlite", dsn+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
 	if err != nil {

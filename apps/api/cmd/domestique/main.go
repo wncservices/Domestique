@@ -103,6 +103,9 @@ func run(args []string) error {
 		return err
 	}
 	applyOverrides(cfg, *sourceKind, *libPath, *dsn)
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
 
 	src, err := openSource(cfg)
 	if err != nil {
@@ -148,8 +151,11 @@ func openSource(cfg *config.Config) (source.Source, error) {
 			return nil, errors.New("source kind db needs a --db path (or source.dsn in the config)")
 		}
 		return source.OpenDB(cfg.Source.DSN)
-	default:
+	case config.SourceFS:
 		return source.NewFS(cfg.Source.Path)
+	default:
+		// Unreachable via Validate, but never silently pick a source.
+		return nil, fmt.Errorf("unknown source kind %q", cfg.Source.Kind)
 	}
 }
 
