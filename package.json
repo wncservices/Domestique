@@ -2,6 +2,7 @@
   "name": "domestique",
   "private": true,
   "description": "Shared cycling route library that syncs to Garmin and Wahoo.",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "workspaces": [
     "apps/web"
   ],

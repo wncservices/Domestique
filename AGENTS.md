@@ -8,7 +8,8 @@ Single source of truth for agent behaviour in this repository. Tool-agnostic —
 service reconciles it into each rider's Garmin Connect and Wahoo account, so a route added once
 shows up on both a Garmin Edge and a Wahoo ELEMNT.
 
-It is a monorepo, PolyForm Noncommercial 1.0.0, and **it contains no route data**:
+It is a monorepo, source-available under PolyForm Noncommercial 1.0.0, and **it contains no
+route data**:
 
 | Path | What |
 |---|---|
@@ -22,7 +23,7 @@ npm workspace: `@domestique/web`, wired through the root `package.json`.
 
 ## The source split — the thing to not undo
 
-The app is open source; routes are personal location data. They are kept apart by
+The app is public; routes are personal location data. They are kept apart by
 `internal/source`, and that separation is load-bearing:
 
 - **`source.FS`** reads a directory of GPX files — typically a checkout of a *separate, private*

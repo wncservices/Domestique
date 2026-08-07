@@ -6,7 +6,11 @@ Two riders, two different head units, one shared set of routes. domestique keeps
 in sync with each rider's Garmin Connect and Wahoo account, so a route added once shows up on a
 Garmin Edge *and* a Wahoo ELEMNT.
 
-PolyForm Noncommercial 1.0.0. **This repository holds no route data** — see [Where routes live](#where-routes-live).
+Source-available under [PolyForm Noncommercial 1.0.0](LICENSE): use it, change it and share it
+freely for anything non-commercial — personal riding, hobby projects, research, clubs. Commercial
+use is not permitted. This is deliberately **not** an open source license.
+
+**This repository holds no route data** — see [Where routes live](#where-routes-live).
 
 ## Status
 
