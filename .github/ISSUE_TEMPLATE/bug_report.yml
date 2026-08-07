@@ -1,0 +1,46 @@
+name: Bug report
+description: Something does not work as described
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Do not paste a GPX file or a screenshot of a map.** Routes are personal
+        location data — describe the shape of the problem instead, and if a
+        specific file is involved, say what is unusual about it.
+
+        Never paste credentials or tokens.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you got instead.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: source
+    attributes:
+      label: Route source
+      options:
+        - fs (directory of GPX files)
+        - db (SQLite, uploads)
+        - not relevant
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Release tag, image tag, or commit SHA.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output
+      description: CLI output or server logs. Redact anything identifying.
+      render: shell

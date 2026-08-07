@@ -215,6 +215,10 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	filename := strings.ReplaceAll(slug, "/", "-") + ".gpx"
 	w.Header().Set("Content-Type", "application/gpx+xml")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+	// The body is a GPX file served as a download, never rendered as a page.
+	// nosniff stops a browser deciding otherwise.
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	// #nosec G705 -- served as an attachment with a fixed content type, not HTML.
 	if _, err := w.Write(raw); err != nil {
 		s.logger().Error("write gpx", "err", err)
 	}
@@ -288,6 +292,7 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
+	// #nosec G120 -- the body is bounded by MaxBytesReader on the line above.
 	if err := r.ParseMultipartForm(maxUploadBytes); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error": "could not read the upload: " + err.Error(),
@@ -302,7 +307,7 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	raw, err := io.ReadAll(file)
 	if err != nil {
