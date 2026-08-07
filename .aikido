@@ -1,0 +1,27 @@
+# Aikido scanning configuration. Read automatically on every scan.
+#
+# Path matching is plain string inclusion — no wildcards, no regex. A value
+# here is excluded if it appears anywhere in a file's path, so keep entries
+# specific enough not to swallow real source.
+
+exclude:
+  paths:
+    # Build output and vendored dependencies. Not authored here, and already
+    # gitignored — this only matters for local/CLI scans of a dirty tree.
+    - node_modules
+    - apps/web/dist
+    - package-lock.json
+
+    # Test fixtures. These are synthetic GPX tracks and throwaway config, not
+    # deployable code. Note this does NOT exclude the test code itself: the
+    # acceptance tests are worth scanning like anything else.
+    - testdata/
+
+# No CVEs are being ignored. If one ever needs to be, it goes here with a
+# reason a reviewer would accept — not silenced in the dashboard, where the
+# justification is invisible to anyone reading the repo:
+#
+# ignore:
+#   cves:
+#     CVE-0000-00000:
+#       reason: Why this does not reach us, and what we do instead.
