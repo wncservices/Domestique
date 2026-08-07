@@ -52,6 +52,36 @@ jobs:
       - run: govulncheck ./...
         working-directory: apps/api
 
+  aikido:
+    name: Aikido
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      # The Aikido GitHub App scans this repo on its own; this job exists to
+      # *gate* a PR on the result. Without the key it skips rather than fails,
+      # so forked PRs (which never receive secrets) are not blocked.
+      AIKIDO_SECRET_KEY: ${{ secrets.AIKIDO_SECRET_KEY }}
+    steps:
+      - name: Skip when no key is configured
+        if: env.AIKIDO_SECRET_KEY == ''
+        run: |
+          echo "::notice::AIKIDO_SECRET_KEY is not set — PR gating skipped." \
+               "Add it from https://app.aikido.dev/settings/integrations/continuous-integration"
+
+      - uses: AikidoSec/github-actions-workflow@v1.0.13
+        if: env.AIKIDO_SECRET_KEY != ''
+        with:
+          secret-key: ${{ secrets.AIKIDO_SECRET_KEY }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          # Block only on what would actually reach a user. SAST and IaC
+          # gating are paid-plan features; leave them reporting, not blocking.
+          minimum-severity: HIGH
+          fail-on-dependency-scan: true
+          fail-on-timeout: false
+          post-scan-status-comment: only_if_new_findings
+
   npm-audit:
     name: npm audit
     runs-on: ubuntu-latest
