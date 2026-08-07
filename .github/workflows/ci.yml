@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  pull_request:
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Keep in sync with .tool-versions and the .golangci.yml format version.
+  GOLANGCI_LINT_VERSION: v2.12.2
+
+jobs:
+  api:
+    name: API — build & tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: apps/api/go.mod
+          cache-dependency-path: apps/api/go.sum
+      - run: go mod download
+        working-directory: apps/api
+      - run: go build -v ./...
+        working-directory: apps/api
+      - name: Tests
+        run: go test ./apps/api/... -count=1 -race -cover
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l apps/api)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt needed on:"; echo "$unformatted"; exit 1
+          fi
+
+  lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: apps/api/go.mod
+          cache-dependency-path: apps/api/go.sum
+      - name: Install golangci-lint
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
+            | sh -s -- -b "$(go env GOPATH)/bin" "${GOLANGCI_LINT_VERSION}"
+      - run: "$(go env GOPATH)/bin/golangci-lint run ./apps/api/..."
+
+  web:
+    name: Web — typecheck & build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      - name: Fail if the build produced nothing
+        run: test -f apps/web/dist/index.html
+
+  docker:
+    name: Docker image builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: domestique:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      # The image is useless if the binary cannot start, and a missing web
+      # bundle only shows up at runtime.
+      - name: Smoke test the image
+        run: |
+          docker run --rm domestique:ci --help | grep -q "fetch-and-carry"
+          docker run --rm --entrypoint sh domestique:ci -c 'test -f /app/web/index.html'

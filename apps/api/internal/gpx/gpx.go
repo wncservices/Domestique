@@ -64,6 +64,8 @@ func (p gpxPoint) toPoint() Point {
 
 // ReadPoints flattens a GPX file on disk into a single ordered point list.
 func ReadPoints(path string) ([]Point, error) {
+	// #nosec G304 -- callers resolve and validate the path; the FS source
+	// refuses anything that escapes the library root.
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err

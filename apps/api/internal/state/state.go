@@ -42,6 +42,7 @@ type fileStore struct {
 func Open(path string) (Store, error) {
 	s := &fileStore{path: path, entries: map[string]Entry{}}
 
+	// #nosec G304 -- the state path is operator configuration, not user input.
 	raw, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return s, nil
@@ -98,7 +99,7 @@ func (s *fileStore) Forget(accountID, slug string) error {
 // flush writes via a temp file and rename so a crash mid-write cannot leave a
 // truncated state file behind — losing state means re-uploading every route.
 func (s *fileStore) flush() error {
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o750); err != nil {
 		return err
 	}
 
@@ -111,10 +112,10 @@ func (s *fileStore) flush() error {
 	if err != nil {
 		return err
 	}
-	defer os.Remove(tmp.Name())
+	defer func() { _ = os.Remove(tmp.Name()) }()
 
 	if _, err := tmp.Write(append(raw, '\n')); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Close(); err != nil {

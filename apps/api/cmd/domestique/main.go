@@ -37,6 +37,7 @@ commands:
   state      list what each account is recorded as holding
   import     copy a directory of GPX routes into a database source
   serve      run the HTTP API and the web UI
+  version    print the version
 
 common flags:
   --config PATH    app config (default domestique.yaml)
@@ -54,6 +55,9 @@ serve flags:
 import flags:
   --from PATH      directory of GPX routes to import into the database
 `
+
+// version is set at build time: -ldflags="-X main.version=v1.2.3".
+var version = "dev"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -88,6 +92,9 @@ func run(args []string) error {
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		return nil
+	case "-v", "--version", "version":
+		fmt.Println("domestique", version)
+		return nil
 	default:
 		return fmt.Errorf("unknown command %q (try: domestique help)", cmd)
 	}
@@ -112,7 +119,7 @@ func run(args []string) error {
 		return err
 	}
 	if closer, ok := src.(interface{ Close() error }); ok {
-		defer closer.Close()
+		defer func() { _ = closer.Close() }()
 	}
 
 	switch cmd {
@@ -326,6 +333,7 @@ func runServe(src source.Source, cfg *config.Config, statePath, addr, webDir str
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	srv := &api.Server{Source: src, Config: cfg, Store: store, Log: log}
 
+	// #nosec G703 -- webDir is an operator-supplied flag, not user input.
 	if info, err := os.Stat(webDir); err == nil && info.IsDir() {
 		srv.WebFS = os.DirFS(webDir)
 		log.Info("serving web UI", "dir", webDir)

@@ -93,6 +93,7 @@ func (f *FS) GPX(slug string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	// #nosec G304 -- pathFor refuses anything outside the library root.
 	return os.ReadFile(path)
 }
 
@@ -149,6 +150,7 @@ func (f *FS) loadRoute(dir string) (model.Route, error) {
 
 func (f *FS) loadMeta(dir string) (model.RouteMeta, error) {
 	path := filepath.Join(dir, routeFile)
+	// #nosec G304 -- path is built from a directory walk rooted at the library.
 	raw, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		// A bare GPX drop is valid — name it after the directory.

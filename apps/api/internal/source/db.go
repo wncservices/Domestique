@@ -54,7 +54,7 @@ func OpenDB(dsn string) (*DB, error) {
 	// Create the parent directory: the obvious DSN is ./data/domestique.db,
 	// and SQLite will not make the directory itself.
 	if dir := filepath.Dir(dsn); dir != "" && dir != "." && !strings.Contains(dsn, ":memory:") {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
 			return nil, fmt.Errorf("create %s: %w", dir, err)
 		}
 	}
@@ -85,7 +85,7 @@ func (d *DB) List() ([]model.Route, []string, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var routes []model.Route
 	for rows.Next() {

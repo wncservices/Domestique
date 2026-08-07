@@ -48,6 +48,7 @@ type Config struct {
 func Load(path string) (*Config, error) {
 	cfg := &Config{Source: SourceConfig{Kind: SourceFS, Path: "routes"}}
 
+	// #nosec G304 -- the config path is operator configuration, not user input.
 	raw, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return cfg, nil

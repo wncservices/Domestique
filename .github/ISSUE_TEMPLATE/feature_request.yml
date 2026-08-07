@@ -1,0 +1,24 @@
+name: Feature request
+description: Suggest something domestique should do
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing: the Garmin and Wahoo adapters are known to be unfinished
+        (Phases 3 and 4 in the README), and so is GPX → FIT conversion. Those do
+        not need new issues.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do that domestique makes hard today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: What you have in mind
+      description: Optional. A rough shape is fine.
