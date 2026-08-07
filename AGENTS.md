@@ -108,6 +108,29 @@ Four rules the code already follows, worth keeping:
 4. **Slugs come from URLs.** The FS source rejects anything that escapes the library root. There
    is a test; keep it passing.
 
+## Tests
+
+Every backend package has tests, and `go test ./apps/api/...` is the gate.
+
+- **Acceptance** — `internal/api/acceptance_test.go` (package `api_test`) drives every endpoint
+  over real HTTP against a real `httptest` server, in **both** source modes: status codes,
+  headers, JSON shapes, and full lifecycles (upload → plan → push → rename → delete → plan empty).
+  `cmd/domestique/main_test.go` does the same for every CLI command against real files.
+- **Unit** — alongside the code they cover.
+
+Two things make the suite worth trusting, and both are easy to lose:
+
+1. **`Server.TargetFactory`** exists so acceptance tests can substitute fake adapters. The real
+   ones are stubs that always error, so without it no successful push is reachable and the entire
+   create/update/delete path would be untested. Do not inline `targets.Build` back into `handlePush`.
+2. **Traversal tests must plant a real file outside the library root.** The FS source appends
+   `route.gpx` to a slug, so `../../etc/passwd` never names an existing file and 404s *even with
+   the guard removed* — a test written that way passes for the wrong reason. `TestFSRefusesPathTraversal`
+   creates a readable `secret/route.gpx` beside the library precisely so the guard is what fails it.
+
+When you add behaviour, check the test fails without it. Several tests here were written after
+confirming that deleting the code they cover turns them red.
+
 ## Provider adapters — read before touching
 
 Both adapters are deliberate stubs. `targets.Implemented` returns false for both, which is what

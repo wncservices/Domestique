@@ -38,6 +38,10 @@ type Server struct {
 	Log    *slog.Logger
 	// WebFS is the built frontend. Nil serves an API-only server.
 	WebFS fs.FS
+	// TargetFactory builds the provider adapter for an account. Nil uses the
+	// real ones; tests substitute fakes, since the real adapters are stubs and
+	// a successful push would otherwise be unreachable.
+	TargetFactory func(model.Account) (targets.Target, error)
 
 	// pushMu serialises pushes: two concurrent reconciles against the same
 	// account would race on remote ids and on the state file.
@@ -242,9 +246,14 @@ func (s *Server) handlePush(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 
+	build := s.TargetFactory
+	if build == nil {
+		build = targets.Build
+	}
+
 	byAccount := map[string]targets.Target{}
 	for _, account := range s.Config.Accounts {
-		target, err := targets.Build(account)
+		target, err := build(account)
 		if err != nil {
 			s.fail(w, err)
 			return
