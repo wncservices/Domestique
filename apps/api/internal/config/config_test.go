@@ -18,14 +18,31 @@ func writeConfig(t *testing.T, body string) string {
 	return path
 }
 
-// A missing config is normal: it is enough to browse a library.
+// A missing config is normal: the defaults are enough to start uploading.
+// The default is the database, so a fresh install has somewhere to put routes
+// without anyone creating a directory first.
 func TestLoadMissingFileUsesDefaults(t *testing.T) {
 	cfg, err := Load(filepath.Join(t.TempDir(), "nope.yaml"))
 	if err != nil {
 		t.Fatalf("missing config should not be an error: %v", err)
 	}
-	if cfg.Source.Kind != SourceFS {
-		t.Errorf("kind = %q, want fs", cfg.Source.Kind)
+	if cfg.Source.Kind != SourceDB {
+		t.Errorf("kind = %q, want db", cfg.Source.Kind)
+	}
+	if cfg.Source.DSN != DefaultDSN {
+		t.Errorf("dsn = %q, want %q", cfg.Source.DSN, DefaultDSN)
+	}
+	// Authentication is off by default: a fresh checkout runs on a laptop.
+	if cfg.Auth.Mode != "" {
+		t.Errorf("auth mode = %q, want unset (none)", cfg.Auth.Mode)
+	}
+}
+
+// An fs source still defaults its path, for anyone who sets only the kind.
+func TestFSSourceDefaultsItsPath(t *testing.T) {
+	cfg, err := Load(writeConfig(t, "source:\n  kind: fs\n"))
+	if err != nil {
+		t.Fatal(err)
 	}
 	if cfg.Source.Path != "routes" {
 		t.Errorf("path = %q, want routes", cfg.Source.Path)

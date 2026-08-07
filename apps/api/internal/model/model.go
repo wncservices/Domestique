@@ -64,6 +64,11 @@ type Route struct {
 	// Origin is a human-readable hint about where this route came from
 	// (a path, or "database"). Display only.
 	Origin string
+	// Owner is the user who uploaded the route, when known. Role checks use
+	// it to decide who may edit or delete: riders own what they upload,
+	// admins may touch anything. Empty for routes from a git library, where
+	// ownership is git history's job.
+	Owner string
 	// UpdatedAt is when the route last changed in its source, if known.
 	UpdatedAt string
 }

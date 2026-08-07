@@ -1,11 +1,16 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { api } from '@/api/client'
-import type { Account, Route } from '@/api/types'
+import type { Account, Me, Route } from '@/api/types'
 import SyncBadge from './SyncBadge.vue'
 import TrackPreview from './TrackPreview.vue'
 
-const props = defineProps<{ route: Route; accounts: Account[]; writable: boolean }>()
+const props = defineProps<{
+  route: Route
+  accounts: Account[]
+  writable: boolean
+  me?: Me | null
+}>()
 const emit = defineEmits<{ deleted: [] }>()
 
 const distance = computed(() => `${(props.route.distanceM / 1000).toFixed(1)} km`)
@@ -14,6 +19,17 @@ const gpxUrl = computed(() => api.gpxUrl(props.route.slug))
 
 const deleting = ref(false)
 const deleteError = ref('')
+
+/** Riders may only remove what they uploaded; admins anything. Mirrors the
+ *  server's rule so the button is absent rather than rejected. */
+const canDelete = computed(() => {
+  if (!props.writable) return false
+  const me = props.me
+  if (!me) return false
+  if (me.permissions.includes('routes:edit-any')) return true
+  if (!me.permissions.includes('routes:edit-own')) return false
+  return !props.route.owner || props.route.owner.toLowerCase() === (me.user ?? '').toLowerCase()
+})
 
 function accountFor(id: string): Account | undefined {
   return props.accounts.find((a) => a.id === id)
@@ -81,11 +97,12 @@ async function remove() {
         :account="accountFor(status.accountId)"
       />
       <span v-if="!route.syncState.length" class="untargeted">no targets</span>
+      <span v-if="route.owner" class="owner">{{ route.owner }}</span>
 
       <span class="spacer" />
       <a class="action" :href="gpxUrl" download>GPX</a>
       <button
-        v-if="writable"
+        v-if="canDelete"
         type="button"
         class="action danger"
         :disabled="deleting"
@@ -179,6 +196,11 @@ footer {
 
 .untargeted {
   font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.owner {
+  font-size: 0.72rem;
   color: var(--text-muted);
 }
 

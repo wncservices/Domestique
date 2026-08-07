@@ -7,6 +7,7 @@ const props = defineProps<{
   accounts: Account[]
   pushing: boolean
   failures: string[]
+  canPush?: boolean
 }>()
 
 const emit = defineEmits<{ push: []; refresh: [] }>()
@@ -17,13 +18,19 @@ const changes = computed(() => props.plan?.items ?? [])
  * Every provider adapter is still a stub, so a push would fail on every item.
  * Say that up front instead of letting the button produce a wall of errors.
  */
-const blocked = computed(() => props.accounts.length > 0 && props.accounts.every((a) => !a.implemented))
-
-const blockedReason = computed(() =>
-  blocked.value
-    ? 'No provider adapter is wired up yet — pushes will fail until Phase 3 (Garmin) or Phase 4 (Wahoo) lands.'
-    : '',
+const noAdapters = computed(
+  () => props.accounts.length > 0 && props.accounts.every((a) => !a.implemented),
 )
+const notAllowed = computed(() => props.canPush === false)
+const blocked = computed(() => noAdapters.value || notAllowed.value)
+
+const blockedReason = computed(() => {
+  if (notAllowed.value) return 'Your role does not allow pushing to the head units.'
+  if (noAdapters.value) {
+    return 'No provider adapter is wired up yet — pushes will fail until Phase 3 (Garmin) or Phase 4 (Wahoo) lands.'
+  }
+  return ''
+})
 </script>
 
 <template>

@@ -18,7 +18,9 @@ import (
 	"time"
 
 	"github.com/wncservices/domestique/apps/api/internal/api"
+	"github.com/wncservices/domestique/apps/api/internal/auth"
 	"github.com/wncservices/domestique/apps/api/internal/config"
+	"github.com/wncservices/domestique/apps/api/internal/komoot"
 	"github.com/wncservices/domestique/apps/api/internal/model"
 	"github.com/wncservices/domestique/apps/api/internal/source"
 	"github.com/wncservices/domestique/apps/api/internal/state"
@@ -36,6 +38,7 @@ commands:
   push       apply the plan (use --dry-run to preview)
   state      list what each account is recorded as holding
   import     copy a directory of GPX routes into a database source
+  komoot     list or import routes from a Komoot account
   serve      run the HTTP API and the web UI
   version    print the version
 
@@ -54,6 +57,12 @@ serve flags:
 
 import flags:
   --from PATH      directory of GPX routes to import into the database
+
+komoot:
+  domestique komoot list             show the account's planned routes
+  domestique komoot import [ids...]  import them (all planned routes if no ids)
+
+  Credentials come from KOMOOT_EMAIL and KOMOOT_PASSWORD in the environment.
 `
 
 // version is set at build time: -ldflags="-X main.version=v1.2.3".
@@ -85,7 +94,7 @@ func run(args []string) error {
 	from := fs.String("from", "", "directory of GPX routes to import")
 
 	switch cmd {
-	case "validate", "plan", "push", "state", "serve", "import":
+	case "validate", "plan", "push", "state", "serve", "import", "komoot":
 		if err := fs.Parse(rest); err != nil {
 			return err
 		}
@@ -133,8 +142,100 @@ func run(args []string) error {
 		return runImport(src, *from)
 	case "serve":
 		return runServe(src, cfg, *statePath, *addr, *webDir)
+	case "komoot":
+		return runKomoot(src, cfg, fs.Args())
 	}
 	return nil
+}
+
+// komootClient logs in using the environment. Credentials never come from the
+// config file — that file is meant to be readable, and this is a password.
+func komootClient() (*komoot.Client, error) {
+	email, password := os.Getenv("KOMOOT_EMAIL"), os.Getenv("KOMOOT_PASSWORD")
+	if email == "" || password == "" {
+		return nil, errors.New("set KOMOOT_EMAIL and KOMOOT_PASSWORD to use Komoot")
+	}
+
+	client := komoot.New()
+	if err := client.Login(email, password); err != nil {
+		return nil, err
+	}
+	return client, nil
+}
+
+func runKomoot(dst source.Source, cfg *config.Config, args []string) error {
+	sub := "list"
+	if len(args) > 0 {
+		sub = args[0]
+		args = args[1:]
+	}
+
+	client, err := komootClient()
+	if err != nil {
+		return err
+	}
+
+	tours, err := client.Tours(cfg.Komoot.IncludeRecorded)
+	if err != nil {
+		return err
+	}
+
+	switch sub {
+	case "list":
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "ID\tNAME\tSPORT\tDISTANCE\tASCENT")
+		for _, t := range tours {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%.1f km\t%.0f m\n",
+				t.ID, t.Name, t.Sport, t.DistanceM/1000, t.AscentM)
+		}
+		w.Flush()
+		fmt.Printf("\n%d tour(s) in %s's Komoot account\n", len(tours), client.DisplayName())
+		return nil
+
+	case "import":
+		writable, ok := source.AsWritable(dst)
+		if !ok {
+			return fmt.Errorf("%s is read-only; Komoot import needs a database source",
+				dst.Describe())
+		}
+
+		wanted := map[string]bool{}
+		for _, id := range args {
+			wanted[id] = true
+		}
+
+		var imported int
+		var problems []string
+		for _, tour := range tours {
+			if len(wanted) > 0 && !wanted[tour.ID] {
+				continue
+			}
+
+			raw, err := client.GPX(tour.ID)
+			if err != nil {
+				problems = append(problems, fmt.Sprintf("%s (%s): %v", tour.Name, tour.ID, err))
+				continue
+			}
+			if _, err := writable.Create(source.CreateRequest{
+				Filename: tour.Name + ".gpx",
+				Name:     tour.Name,
+				Descript: fmt.Sprintf("Imported from Komoot (tour %s)", tour.ID),
+				Tags:     []string{"komoot", "komoot:" + tour.ID},
+				GPX:      raw,
+			}); err != nil {
+				problems = append(problems, fmt.Sprintf("%s (%s): %v", tour.Name, tour.ID, err))
+				continue
+			}
+			imported++
+			fmt.Printf("imported %s (%s)\n", tour.Name, tour.ID)
+		}
+
+		fmt.Printf("\n%d tour(s) imported into %s\n", imported, dst.Describe())
+		return reportProblems(problems)
+
+	default:
+		return fmt.Errorf("unknown komoot subcommand %q (want list or import)", sub)
+	}
 }
 
 func applyOverrides(cfg *config.Config, kind, libPath, dsn string) {
@@ -331,7 +432,30 @@ func runServe(src source.Source, cfg *config.Config, statePath, addr, webDir str
 	}
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	srv := &api.Server{Source: src, Config: cfg, Store: store, Log: log}
+
+	authenticator, err := auth.New(cfg.Auth)
+	if err != nil {
+		return err
+	}
+
+	srv := &api.Server{Source: src, Config: cfg, Store: store, Auth: authenticator, Log: log}
+
+	if cfg.Komoot.Enabled {
+		client, err := komootClient()
+		if err != nil {
+			// Komoot is optional. Losing it must not stop the app serving
+			// routes that are already here.
+			log.Warn("komoot import disabled", "err", err)
+		} else {
+			srv.Komoot = client
+			log.Info("komoot import enabled", "account", client.DisplayName())
+		}
+	}
+
+	if !authenticator.Enabled() {
+		log.Warn("running without authentication — every visitor is an admin",
+			"hint", "set auth.mode: proxy behind Authelia before exposing this")
+	}
 
 	// #nosec G703 -- webDir is an operator-supplied flag, not user input.
 	if info, err := os.Stat(webDir); err == nil && info.IsDir() {
@@ -350,7 +474,7 @@ func runServe(src source.Source, cfg *config.Config, statePath, addr, webDir str
 	}
 
 	log.Info("listening", "addr", addr, "source", src.Describe(),
-		"uploads", writable, "state", statePath)
+		"uploads", writable, "auth", authenticator.Mode(), "state", statePath)
 	if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}

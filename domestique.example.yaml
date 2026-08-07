@@ -1,18 +1,69 @@
 # domestique app config. Copy to domestique.yaml and edit.
 #
-# Nothing here is a secret — account ids and labels only. Provider credentials
-# come from the environment (in a cluster: Vault -> ExternalSecret -> envFrom).
+# Nothing here is a secret — account ids, labels and group names only. Every
+# credential comes from the environment (in a cluster: Vault -> ExternalSecret
+# -> envFrom).
 
 # Where routes come from.
 source:
+  # db: GPX blobs in SQLite, uploaded through the web UI. The default, and the
+  #     right choice unless you specifically want routes under git.
+  kind: db
+  dsn: data/domestique.db
+
   # fs: a directory of GPX routes, typically a checkout of a separate, private
   #     routes repo. Read-only — routes are added by committing them.
-  kind: fs
-  path: ../routes
+  # kind: fs
+  # path: ../routes
 
-  # db: GPX blobs in a SQLite database, uploaded through the web UI.
-  # kind: db
-  # dsn: ./data/domestique.db
+# Who may use the app, and what they may do.
+#
+# domestique authenticates nobody itself. It sits behind Traefik with an
+# Authelia forwardAuth middleware, and reads the identity Authelia passes down
+# (Remote-User / Remote-Groups / Remote-Name / Remote-Email).
+#
+# THE APP MUST NOT BE REACHABLE EXCEPT THROUGH THAT PROXY. Anyone who can
+# reach it directly can set those headers themselves and be whoever they like.
+# trusted_proxies narrows that further; leave it empty only when the service is
+# ClusterIP-only.
+auth:
+  # none: no login, and every visitor is an admin. Right for a laptop.
+  # proxy: trust Authelia's headers.
+  mode: none
+
+  # mode: proxy
+  # trusted_proxies:
+  #   - 10.42.0.0/16          # the cluster's pod CIDR
+  #
+  # Roles, mapped from Authelia groups. Most privileged match wins.
+  #   viewer  read routes, download GPX, see what would be pushed
+  #   rider   + upload, import from Komoot, push, edit and delete their own
+  #   admin   + edit and delete anyone's routes
+  # roles:
+  #   admin:
+  #     - domestique-admins
+  #   rider:
+  #     - cyclists
+  #   viewer:
+  #     - guests
+  #
+  # Applied to an authenticated user whose groups match nothing above.
+  # Defaults to viewer: read-only is the safe answer for someone Authelia let
+  # in but this app has no opinion about.
+  # default_role: viewer
+  #
+  # Refuse anyone outside this Authelia group entirely.
+  # required_group: cyclists
+
+# Import routes from a Komoot account.
+#
+# Komoot has no public API; this uses the same undocumented endpoints their
+# apps do, so expect it to break occasionally. Credentials come from
+# KOMOOT_EMAIL and KOMOOT_PASSWORD in the environment — never put them here.
+komoot:
+  enabled: false
+  # Also import rides you have recorded, not just routes you have plotted.
+  # include_recorded: false
 
 # The riders' accounts. IDs are "<provider>:<rider>".
 accounts:

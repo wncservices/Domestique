@@ -67,6 +67,55 @@ just plan                        # what would change on each account
 just push -- --dry-run           # same, in push's own words
 ```
 
+## Logging in
+
+domestique has no login of its own. Put it behind Traefik with an Authelia
+forwardAuth middleware and it reads the identity Authelia passes down.
+
+```yaml
+auth:
+  mode: proxy
+  trusted_proxies: [10.42.0.0/16]
+  roles:
+    admin: [domestique-admins]
+    rider: [cyclists]
+    viewer: [guests]
+```
+
+| Role | Can |
+|---|---|
+| `viewer` | read routes, download GPX, see what would be pushed |
+| `rider` | + upload, import from Komoot, push to devices, edit and delete **their own** routes |
+| `admin` | + edit and delete **anyone's** routes |
+
+> **The app must not be reachable except through the proxy.** With `mode: proxy`
+> it believes the `Remote-User` header — and so would anyone who can talk to it
+> directly. `trusted_proxies` narrows that; leave it empty only for a
+> ClusterIP-only service.
+
+With `mode: none` (the default) there is no login at all and every visitor is
+an admin. That is right for a laptop and wrong for anything else; the UI says
+so in the header.
+
+## Importing from Komoot
+
+```yaml
+komoot:
+  enabled: true
+```
+
+with `KOMOOT_EMAIL` and `KOMOOT_PASSWORD` in the environment. Then pick tours
+in the web UI, or:
+
+```bash
+just komoot list
+just komoot import          # everything not already here
+```
+
+Komoot has **no public API**. This uses the same undocumented endpoints their
+apps do, so it will break from time to time — treat it as a convenience, not a
+dependency. Already-imported tours are skipped, so running it twice is safe.
+
 ## Configuration
 
 Copy `domestique.example.yaml` to `domestique.yaml`. It holds the route source and the riders'

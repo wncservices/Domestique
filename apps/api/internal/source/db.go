@@ -80,7 +80,7 @@ func (d *DB) List() ([]model.Route, []string, error) {
 	rows, err := d.db.Query(`
         SELECT slug, name, description, tags, targets, enabled,
                distance_m, ascent_m, start_lat, start_lng, point_count,
-               content_hash, updated_at
+               content_hash, updated_at, uploaded_by
         FROM routes WHERE enabled = 1 ORDER BY slug`)
 	if err != nil {
 		return nil, nil, err
@@ -99,7 +99,7 @@ func (d *DB) List() ([]model.Route, []string, error) {
 			&route.Slug, &route.Name, &route.Description, &tags, &targets, &enabled,
 			&route.Stats.DistanceM, &route.Stats.AscentM,
 			&route.Stats.StartLat, &route.Stats.StartLng, &route.Stats.PointCount,
-			&route.ContentHash, &route.UpdatedAt,
+			&route.ContentHash, &route.UpdatedAt, &route.Owner,
 		); err != nil {
 			return nil, nil, err
 		}
@@ -255,12 +255,12 @@ func (d *DB) get(slug string) (model.Route, error) {
 	err := d.db.QueryRow(`
         SELECT slug, name, description, tags, targets, enabled,
                distance_m, ascent_m, start_lat, start_lng, point_count,
-               content_hash, updated_at
+               content_hash, updated_at, uploaded_by
         FROM routes WHERE slug = ?`, slug).Scan(
 		&route.Slug, &route.Name, &route.Description, &tags, &targets, &enabled,
 		&route.Stats.DistanceM, &route.Stats.AscentM,
 		&route.Stats.StartLat, &route.Stats.StartLng, &route.Stats.PointCount,
-		&route.ContentHash, &route.UpdatedAt)
+		&route.ContentHash, &route.UpdatedAt, &route.Owner)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.Route{}, ErrNotFound
 	}

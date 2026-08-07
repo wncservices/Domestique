@@ -18,6 +18,44 @@ export interface SyncStatus {
   updatedAt?: string
 }
 
+export type Role = 'none' | 'viewer' | 'rider' | 'admin'
+
+export type Permission =
+  | 'routes:read'
+  | 'routes:upload'
+  | 'routes:edit-own'
+  | 'routes:edit-any'
+  | 'sync:push'
+  | 'komoot:import'
+
+export interface Me {
+  /** False when the app runs without authentication (everyone is admin). */
+  authenticated: boolean
+  authMode: 'none' | 'proxy'
+  user?: string
+  name?: string
+  email?: string
+  groups: string[]
+  role: Role
+  permissions: Permission[]
+}
+
+export interface KomootTour {
+  id: string
+  name: string
+  sport: string
+  distanceM: number
+  ascentM: number
+  changedAt?: string
+  /** Already in the library — importing again would duplicate it. */
+  imported: boolean
+}
+
+export interface KomootImportResult {
+  imported: string[]
+  skipped: Record<string, string>
+}
+
 export interface AppConfig {
   /** Human-readable description of the route source. */
   source: string
@@ -27,6 +65,8 @@ export interface AppConfig {
 
 export interface Route {
   slug: string
+  /** Who uploaded it. Riders may only edit their own. */
+  owner?: string
   name: string
   description: string
   tags: string[]

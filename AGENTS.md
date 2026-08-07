@@ -21,6 +21,52 @@ route data**:
 Go module: `github.com/wncservices/domestique/apps/api`, wired through the root `go.work`.
 npm workspace: `@domestique/web`, wired through the root `package.json`.
 
+## Authentication and roles
+
+The app authenticates nobody. It sits behind Traefik with an Authelia
+forwardAuth middleware and reads `Remote-User` / `Remote-Groups` /
+`Remote-Name` / `Remote-Email`. `internal/auth` owns all of it.
+
+**The entire scheme rests on the app being unreachable except through the
+proxy.** A browser can set `Remote-User` as easily as Traefik can. Two things
+protect that, and both must stay:
+
+1. Header trust is opt-in — `auth.mode` must be `proxy`. The default is `none`,
+   which ignores the headers completely and treats everyone as a local admin.
+2. `auth.trusted_proxies` discards headers from any other peer. Leave it empty
+   only when the service is genuinely unreachable (ClusterIP-only).
+
+Roles come from Authelia groups, most-privileged match wins:
+
+| Role | Can |
+|---|---|
+| `viewer` | read routes, download GPX, see the plan |
+| `rider` | + upload, Komoot import, push, edit/delete **their own** routes |
+| `admin` | + edit/delete **anyone's** routes |
+
+Two rules that are easy to break:
+
+- **Ownership comes from the session, never the form.** `handleUpload` ignores
+  the `uploadedBy` field when someone is authenticated. Trusting it would let a
+  rider upload as somebody else and put the route beyond their own reach.
+- **An unknown permission denies.** `Role.Can` returns false for anything not
+  in `minimumRole`, so a typo in a handler cannot open a hole.
+
+The frontend mirrors these rules to decide what to *show*. That is a courtesy,
+not a control — the server enforces, the UI only avoids offering buttons that
+would 403.
+
+## Komoot
+
+`internal/komoot` speaks Komoot's undocumented v006/v007 API: there is no
+public one. Expect it to break; Komoot changed hands in 2025. Failures are
+contained — the API returns 502 and the rest of the app carries on.
+
+Credentials come from `KOMOOT_EMAIL` / `KOMOOT_PASSWORD` in the environment,
+never the config file. Imported routes carry a `komoot:<id>` tag, which is how
+re-imports are detected; without it a second import silently duplicates every
+route and the rider cannot tell which copy their device follows.
+
 ## The source split — the thing to not undo
 
 The app is public; routes are personal location data. They are kept apart by
@@ -69,6 +115,7 @@ just demo-db      # serve a local SQLite library, uploads enabled
 just api          # run the API on :8080, serving apps/web/dist if built
 just web          # Vite dev server on :5173, proxying /api to :8080
 just import DIR   # copy a directory library into the database
+just komoot ARGS  # list or import Komoot routes (needs KOMOOT_* env vars)
 ```
 
 For UI work run `just api` and `just web` side by side and use :5173.
@@ -88,6 +135,8 @@ state file ──────Open────> state.Store ───┘
   distance/ascent/start point, computes the content hash.
 - `internal/config` — `domestique.yaml`: accounts, default targets, which source to use. Separate
   from the routes on purpose, since a DB source has no config file of its own.
+- `internal/auth` — identity, roles and permissions. See above.
+- `internal/komoot` — the undocumented Komoot client.
 - `internal/source` — where routes come from. See the split above.
 - `internal/state` — a JSON file behind a `Store` interface, the seam for SQLite or Postgres.
 - `internal/sync` — the diff engine. Pure: give it routes, config and a store, get a plan.

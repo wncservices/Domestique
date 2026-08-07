@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { api } from '@/api/client'
-import type { Account, AppConfig, PlanResponse, Route } from '@/api/types'
+import type { Account, AppConfig, Me, Permission, PlanResponse, Route } from '@/api/types'
+import KomootPanel from '@/components/KomootPanel.vue'
 import PlanPanel from '@/components/PlanPanel.vue'
 import RouteCard from '@/components/RouteCard.vue'
 import UploadPanel from '@/components/UploadPanel.vue'
 
 const config = ref<AppConfig | null>(null)
+const me = ref<Me | null>(null)
 const accounts = ref<Account[]>([])
 const routes = ref<Route[]>([])
 const problems = ref<string[]>([])
@@ -17,6 +19,22 @@ const loading = ref(true)
 const pushing = ref(false)
 const error = ref('')
 const search = ref('')
+
+/** Drives what the UI offers. Showing a control the API will refuse is worse
+ *  than hiding it: the rider learns the rules by being told no. */
+function can(permission: Permission): boolean {
+  return me.value?.permissions.includes(permission) ?? false
+}
+
+const canUpload = computed(() => can('routes:upload') && (config.value?.writable ?? false))
+const canImportKomoot = computed(() => can('komoot:import') && (config.value?.writable ?? false))
+const canPush = computed(() => can('sync:push'))
+
+const roleLabel = computed(() => {
+  if (!me.value) return ''
+  if (!me.value.authenticated) return 'no login required'
+  return `${me.value.name || me.value.user} · ${me.value.role}`
+})
 
 const totalDistance = computed(
   () => routes.value.reduce((sum, r) => sum + r.distanceM, 0) / 1000,
@@ -36,13 +54,15 @@ const visibleRoutes = computed(() => {
 async function refresh() {
   error.value = ''
   try {
-    const [appConfig, accountList, library, currentPlan] = await Promise.all([
+    const [appConfig, identity, accountList, library, currentPlan] = await Promise.all([
       api.config(),
+      api.me(),
       api.accounts(),
       api.routes(),
       api.plan(),
     ])
     config.value = appConfig
+    me.value = identity
     accounts.value = accountList
     routes.value = library.routes
     problems.value = library.problems
@@ -82,6 +102,15 @@ onMounted(refresh)
           <span v-if="!config.writable"> · read-only, add routes by committing them</span>
         </p>
       </div>
+      <div class="identity" v-if="me">
+        <span class="who">{{ roleLabel }}</span>
+        <span
+          v-if="!me.authenticated"
+          class="warn"
+          title="Anyone who can reach this page has full access. Put it behind Authelia before exposing it."
+        >unauthenticated</span>
+      </div>
+
       <dl class="totals">
         <div>
           <dt>Routes</dt>
@@ -109,11 +138,14 @@ onMounted(refresh)
       :accounts="accounts"
       :pushing="pushing"
       :failures="failures"
+      :can-push="canPush"
       @push="push"
       @refresh="refresh"
     />
 
-    <UploadPanel v-if="config?.writable" :accounts="accounts" @uploaded="refresh" />
+    <UploadPanel v-if="canUpload" :accounts="accounts" :me="me" @uploaded="refresh" />
+
+    <KomootPanel v-if="canImportKomoot" @imported="refresh" />
 
     <section class="library">
       <header>
@@ -136,7 +168,8 @@ onMounted(refresh)
           :key="route.slug"
           :route="route"
           :accounts="accounts"
-          :writable="config?.writable ?? false"
+          :writable="canUpload"
+          :me="me"
           @deleted="refresh"
         />
       </div>
@@ -172,6 +205,21 @@ h1 {
   margin: 0.25rem 0 0;
   color: var(--text-muted);
   font-size: 0.9rem;
+}
+
+.identity {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.identity .warn {
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent);
+  color: var(--warn);
 }
 
 .source {

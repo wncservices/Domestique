@@ -18,7 +18,9 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/wncservices/domestique/apps/api/internal/auth"
 	"github.com/wncservices/domestique/apps/api/internal/config"
 	"github.com/wncservices/domestique/apps/api/internal/model"
 	"github.com/wncservices/domestique/apps/api/internal/source"
@@ -35,7 +37,10 @@ type Server struct {
 	Source source.Source
 	Config *config.Config
 	Store  state.Store
+	Auth   *auth.Authenticator
 	Log    *slog.Logger
+	// Komoot imports routes from a Komoot account. Nil disables the feature.
+	Komoot KomootImporter
 	// WebFS is the built frontend. Nil serves an API-only server.
 	WebFS fs.FS
 	// TargetFactory builds the provider adapter for an account. Nil uses the
@@ -53,6 +58,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /api/config", s.handleConfig)
+	mux.HandleFunc("GET /api/me", s.handleMe)
 	mux.HandleFunc("GET /api/accounts", s.handleAccounts)
 	mux.HandleFunc("GET /api/routes", s.handleRoutes)
 	mux.HandleFunc("GET /api/plan", s.handlePlan)
@@ -70,6 +76,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/routes/{slug...}", s.handleUpdate)
 	mux.HandleFunc("DELETE /api/routes/{slug...}", s.handleDelete)
 
+	mux.HandleFunc("GET /api/komoot/tours", s.handleKomootTours)
+	mux.HandleFunc("POST /api/komoot/import", s.handleKomootImport)
+
 	// Anything else under /api is a 404 in JSON, not the SPA shell.
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{
@@ -80,7 +89,70 @@ func (s *Server) Handler() http.Handler {
 	if s.WebFS != nil {
 		mux.Handle("/", s.spaHandler())
 	}
-	return logRequests(s.logger(), mux)
+	return logRequests(s.logger(), s.authenticate(mux))
+}
+
+// authenticate resolves the identity once per request and puts it on the
+// context. Endpoints then check permissions; this only decides *who* you are,
+// not what you may do.
+//
+// /api/health stays open so a liveness probe does not need credentials.
+func (s *Server) authenticate(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/health" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		id := s.authenticator().Identify(r)
+		if err := s.authenticator().Authorize(id); err != nil {
+			// Only gate the API. The SPA itself must still load, or the
+			// browser gets a JSON blob instead of a page explaining itself.
+			if strings.HasPrefix(r.URL.Path, "/api/") {
+				status := http.StatusUnauthorized
+				if errors.Is(err, auth.ErrForbidden) {
+					status = http.StatusForbidden
+				}
+				writeJSON(w, status, map[string]string{"error": err.Error()})
+				return
+			}
+		}
+
+		next.ServeHTTP(w, r.WithContext(auth.WithIdentity(r.Context(), id)))
+	})
+}
+
+func (s *Server) authenticator() *auth.Authenticator {
+	if s.Auth != nil {
+		return s.Auth
+	}
+	// A server built without an authenticator runs unauthenticated rather
+	// than panicking; every caller in this repo sets one.
+	a, _ := auth.New(auth.Config{Mode: auth.ModeNone})
+	return a
+}
+
+// require checks a permission and writes the error itself, returning false
+// when the caller should stop.
+func (s *Server) require(w http.ResponseWriter, r *http.Request, p auth.Permission) bool {
+	id := auth.FromContext(r.Context())
+	if id.Role.Can(p) {
+		return true
+	}
+
+	s.logger().Info("permission denied",
+		"user", id.User, "role", id.Role, "permission", p, "path", r.URL.Path)
+	writeJSON(w, http.StatusForbidden, map[string]string{
+		"error": fmt.Sprintf("your role (%s) does not allow %s", roleLabel(id.Role), p),
+	})
+	return false
+}
+
+func roleLabel(r auth.Role) string {
+	if r == auth.RoleNone {
+		return "none"
+	}
+	return string(r)
 }
 
 // ---------- payloads ----------
@@ -113,6 +185,7 @@ type routeDTO struct {
 	PointCount     int          `json:"pointCount"`
 	ContentHash    string       `json:"contentHash"`
 	Origin         string       `json:"origin"`
+	Owner          string       `json:"owner,omitempty"`
 	UpdatedAt      string       `json:"updatedAt"`
 	Targets        []string     `json:"targets"`
 	UnknownTargets []string     `json:"unknownTargets"`
@@ -161,6 +234,33 @@ func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, configDTO{Source: s.Source.Describe(), Writable: writable})
 }
 
+type meDTO struct {
+	Authenticated bool              `json:"authenticated"`
+	AuthMode      string            `json:"authMode"`
+	User          string            `json:"user,omitempty"`
+	Name          string            `json:"name,omitempty"`
+	Email         string            `json:"email,omitempty"`
+	Groups        []string          `json:"groups"`
+	Role          string            `json:"role"`
+	Permissions   []auth.Permission `json:"permissions"`
+}
+
+// handleMe tells the UI who it is talking to and what to show. Without it the
+// frontend would have to guess, and would offer buttons that 403.
+func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
+	id := auth.FromContext(r.Context())
+	writeJSON(w, http.StatusOK, meDTO{
+		Authenticated: s.authenticator().Enabled(),
+		AuthMode:      string(s.authenticator().Mode()),
+		User:          id.User,
+		Name:          id.Name,
+		Email:         id.Email,
+		Groups:        orEmpty(id.Groups),
+		Role:          roleLabel(id.Role),
+		Permissions:   orEmpty(id.Role.Permissions()),
+	})
+}
+
 func (s *Server) handleAccounts(w http.ResponseWriter, _ *http.Request) {
 	out := make([]accountDTO, 0, len(s.Config.Accounts))
 	for _, a := range s.Config.Accounts {
@@ -175,7 +275,11 @@ func (s *Server) handleAccounts(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-func (s *Server) handleRoutes(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleRoutes(w http.ResponseWriter, r *http.Request) {
+	if !s.require(w, r, auth.PermReadRoutes) {
+		return
+	}
+
 	routes, problems, err := s.Source.List()
 	if err != nil {
 		s.fail(w, err)
@@ -190,6 +294,10 @@ func (s *Server) handleRoutes(w http.ResponseWriter, _ *http.Request) {
 // handleTrack returns the raw coordinates so the UI can draw a route preview
 // without shipping a map library or calling out to a tile server.
 func (s *Server) handleTrack(w http.ResponseWriter, r *http.Request) {
+	if !s.require(w, r, auth.PermReadRoutes) {
+		return
+	}
+
 	slug := cleanSlug(r.PathValue("slug"))
 	points, err := s.Source.Track(slug)
 	if err != nil {
@@ -205,6 +313,10 @@ func (s *Server) handleTrack(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
+	if !s.require(w, r, auth.PermReadRoutes) {
+		return
+	}
+
 	slug := cleanSlug(r.PathValue("slug"))
 	raw, err := s.Source.GPX(slug)
 	if err != nil {
@@ -224,7 +336,11 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) handlePlan(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handlePlan(w http.ResponseWriter, r *http.Request) {
+	if !s.require(w, r, auth.PermReadRoutes) {
+		return
+	}
+
 	routes, problems, err := s.Source.List()
 	if err != nil {
 		s.fail(w, err)
@@ -240,7 +356,11 @@ func (s *Server) handlePlan(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-func (s *Server) handlePush(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
+	if !s.require(w, r, auth.PermPush) {
+		return
+	}
+
 	s.pushMu.Lock()
 	defer s.pushMu.Unlock()
 
@@ -285,6 +405,10 @@ func (s *Server) handlePush(w http.ResponseWriter, _ *http.Request) {
 // ---------- write handlers (writable sources only) ----------
 
 func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
+	if !s.require(w, r, auth.PermUploadRoute) {
+		return
+	}
+
 	writable, ok := source.AsWritable(s.Source)
 	if !ok {
 		s.readOnly(w)
@@ -315,12 +439,20 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Ownership comes from the authenticated identity, never from the form:
+	// a rider could otherwise upload a route as somebody else and put it
+	// beyond their own ability to delete.
+	uploader := auth.FromContext(r.Context()).User
+	if uploader == "" {
+		uploader = r.FormValue("uploadedBy")
+	}
+
 	req := source.CreateRequest{
 		Filename:   header.Filename,
 		Name:       r.FormValue("name"),
 		Descript:   r.FormValue("description"),
 		Tags:       splitCSV(r.FormValue("tags")),
-		UploadedBy: r.FormValue("uploadedBy"),
+		UploadedBy: uploader,
 		GPX:        raw,
 	}
 	if targetsField := r.FormValue("targets"); targetsField != "" {
@@ -340,9 +472,18 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
+	if !s.require(w, r, auth.PermEditOwn) {
+		return
+	}
+
 	writable, ok := source.AsWritable(s.Source)
 	if !ok {
 		s.readOnly(w)
+		return
+	}
+
+	slug := cleanSlug(r.PathValue("slug"))
+	if !s.mayEdit(w, r, slug) {
 		return
 	}
 
@@ -358,7 +499,7 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	route, err := writable.Update(cleanSlug(r.PathValue("slug")), source.UpdateRequest{
+	route, err := writable.Update(slug, source.UpdateRequest{
 		Name:     body.Name,
 		Descript: body.Description,
 		Tags:     body.Tags,
@@ -376,6 +517,10 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 // state alone: the next plan will show a delete against every account that
 // still holds it, which is exactly what should happen.
 func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
+	if !s.require(w, r, auth.PermEditOwn) {
+		return
+	}
+
 	writable, ok := source.AsWritable(s.Source)
 	if !ok {
 		s.readOnly(w)
@@ -383,6 +528,9 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slug := cleanSlug(r.PathValue("slug"))
+	if !s.mayEdit(w, r, slug) {
+		return
+	}
 	if err := writable.Delete(slug); err != nil {
 		s.failLookup(w, err)
 		return
@@ -435,6 +583,7 @@ func (s *Server) toRouteDTO(r model.Route) routeDTO {
 		PointCount:     r.Stats.PointCount,
 		ContentHash:    r.ContentHash,
 		Origin:         r.Origin,
+		Owner:          r.Owner,
 		UpdatedAt:      r.UpdatedAt,
 		Targets:        orEmpty(targetIDs),
 		UnknownTargets: orEmpty(s.Config.UnknownTargets(r)),
@@ -484,6 +633,47 @@ func (s *Server) spaHandler() http.Handler {
 		}
 		files.ServeHTTP(w, r)
 	})
+}
+
+// mayEdit enforces ownership: a rider may change what they uploaded, an admin
+// anything. It writes the error itself and reports whether to continue.
+func (s *Server) mayEdit(w http.ResponseWriter, r *http.Request, slug string) bool {
+	id := auth.FromContext(r.Context())
+	if id.Role.Can(auth.PermEditAny) {
+		return true
+	}
+
+	routes, _, err := s.Source.List()
+	if err != nil {
+		s.fail(w, err)
+		return false
+	}
+
+	for _, route := range routes {
+		if route.Slug != slug {
+			continue
+		}
+		if id.CanEditRoute(route.Owner) {
+			return true
+		}
+		s.logger().Info("edit denied on another rider's route",
+			"user", id.User, "slug", slug, "owner", route.Owner)
+		writeJSON(w, http.StatusForbidden, map[string]string{
+			"error": "that route belongs to " + route.Owner + "; only they or an admin can change it",
+		})
+		return false
+	}
+
+	// Unknown slug: let the source produce the 404 rather than leaking
+	// whether it exists through the permission check.
+	return true
+}
+
+func formatTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
 }
 
 func toPlanDTOs(items []model.PlanItem) []planItemDTO {

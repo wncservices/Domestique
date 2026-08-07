@@ -13,6 +13,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/wncservices/domestique/apps/api/internal/auth"
 	"github.com/wncservices/domestique/apps/api/internal/model"
 )
 
@@ -36,17 +37,34 @@ type SourceConfig struct {
 	DSN string `yaml:"dsn,omitempty"`
 }
 
+// KomootConfig enables importing routes from a Komoot account.
+//
+// The credentials are NOT here: they come from KOMOOT_EMAIL and
+// KOMOOT_PASSWORD in the environment, sourced from Vault in a cluster. This
+// file is committed-adjacent and must never hold a password.
+type KomootConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// IncludeRecorded also imports rides you have ridden, not just routes
+	// you have plotted. Usually not what you want on a head unit.
+	IncludeRecorded bool `yaml:"include_recorded,omitempty"`
+}
+
 // Config is domestique.yaml.
 type Config struct {
 	Accounts       []model.Account `yaml:"accounts"`
 	DefaultTargets []string        `yaml:"default_targets"`
 	Source         SourceConfig    `yaml:"source"`
+	Auth           auth.Config     `yaml:"auth"`
+	Komoot         KomootConfig    `yaml:"komoot"`
 }
 
-// Load reads a config file. A missing file is not an error: the defaults (an
-// fs source at ./routes, no accounts) are enough to browse a library.
+// DefaultDSN is where a database library lives unless configured otherwise.
+const DefaultDSN = "data/domestique.db"
+
+// Load reads a config file. A missing file is not an error: the defaults (a
+// database library, no accounts) are enough to start uploading routes.
 func Load(path string) (*Config, error) {
-	cfg := &Config{Source: SourceConfig{Kind: SourceFS, Path: "routes"}}
+	cfg := &Config{Source: SourceConfig{Kind: SourceDB, DSN: DefaultDSN}}
 
 	// #nosec G304 -- the config path is operator configuration, not user input.
 	raw, err := os.ReadFile(path)
@@ -61,10 +79,13 @@ func Load(path string) (*Config, error) {
 	}
 
 	if cfg.Source.Kind == "" {
-		cfg.Source.Kind = SourceFS
+		cfg.Source.Kind = SourceDB
 	}
 	if cfg.Source.Kind == SourceFS && cfg.Source.Path == "" {
 		cfg.Source.Path = "routes"
+	}
+	if cfg.Source.Kind == SourceDB && cfg.Source.DSN == "" {
+		cfg.Source.DSN = DefaultDSN
 	}
 	return cfg, cfg.Validate()
 }
@@ -92,6 +113,11 @@ func (c *Config) Validate() error {
 	case SourceFS, SourceDB:
 	default:
 		return fmt.Errorf("unknown source kind %q (want fs or db)", c.Source.Kind)
+	}
+
+	// Surfaces a bad auth config at startup rather than on the first request.
+	if _, err := auth.New(c.Auth); err != nil {
+		return err
 	}
 	return nil
 }

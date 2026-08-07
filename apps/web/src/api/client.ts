@@ -1,6 +1,9 @@
 import type {
   Account,
   AppConfig,
+  KomootImportResult,
+  KomootTour,
+  Me,
   LibraryResponse,
   PlanResponse,
   PushResponse,
@@ -39,6 +42,16 @@ function encodeSlug(slug: string): string {
 
 export const api = {
   config: () => request<AppConfig>('/api/config'),
+  me: () => request<Me>('/api/me'),
+
+  komootTours: () => request<KomootTour[]>('/api/komoot/tours'),
+  komootImport: (tourIds: string[]) =>
+    request<KomootImportResult>('/api/komoot/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tourIds }),
+    }),
+
   accounts: () => request<Account[]>('/api/accounts'),
   routes: () => request<LibraryResponse>('/api/routes'),
   plan: () => request<PlanResponse>('/api/plan'),
