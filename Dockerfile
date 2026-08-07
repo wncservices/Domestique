@@ -1,6 +1,6 @@
 # Frontend first: it changes more often than the Go deps, but the Go layer is
 # the slower one to rebuild, so keep them in separate stages.
-FROM node:22-alpine AS web
+FROM node:25-alpine AS web
 WORKDIR /src
 COPY package.json package-lock.json ./
 COPY apps/web/package.json apps/web/
