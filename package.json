@@ -1,0 +1,14 @@
+{
+  "name": "domestique",
+  "private": true,
+  "description": "Shared cycling route library that syncs to Garmin and Wahoo.",
+  "workspaces": [
+    "apps/web"
+  ],
+  "scripts": {
+    "dev": "npm --workspace @domestique/web run dev",
+    "build": "npm --workspace @domestique/web run build",
+    "lint": "npm --workspace @domestique/web run lint",
+    "typecheck": "npm --workspace @domestique/web run typecheck"
+  }
+}

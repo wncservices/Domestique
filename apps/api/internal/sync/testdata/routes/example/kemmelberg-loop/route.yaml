@@ -1,0 +1,10 @@
+name: Kemmelberg Loop
+description: Example route — replace with real GPX exports.
+tags:
+  - example
+# Omit `targets` to use the library default, or list account ids explicitly:
+# targets:
+#   - garmin:wilant
+#   - wahoo:friend
+#
+# Set `enabled: false` to keep a route in the repo without syncing it.

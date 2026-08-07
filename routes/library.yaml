@@ -1,0 +1,18 @@
+# Accounts that routes can be pushed to. IDs are "<provider>:<rider>".
+# Credentials never live here — they come from the environment, sourced from
+# Vault at kv2_tooling/domestique/env (see AGENTS.md).
+accounts:
+  - id: garmin:wilant
+    provider: garmin
+    rider: wilant
+    label: Wilant's Garmin Edge
+
+  # Uncomment once the second rider's accounts are wired up.
+  # - id: wahoo:friend
+  #   provider: wahoo
+  #   rider: friend
+  #   label: Friend's Wahoo ELEMNT
+
+# Where a route goes when its route.yaml does not say otherwise.
+default_targets:
+  - garmin:wilant
