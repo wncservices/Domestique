@@ -28,13 +28,33 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language: [go, javascript-typescript]
+        include:
+          # Go is built manually. CodeQL's autobuild ships its own older Go
+          # (1.24 at the time of writing) and go.work requires a newer one, so
+          # autobuild fails before extraction: "go.work requires go >= 1.26.5".
+          - language: go
+            build-mode: manual
+          - language: javascript-typescript
+            build-mode: none
     steps:
       - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        if: matrix.language == 'go'
+        with:
+          go-version-file: apps/api/go.mod
+          cache-dependency-path: apps/api/go.sum
+
       - uses: github/codeql-action/init@v4
         with:
           languages: ${{ matrix.language }}
-      - uses: github/codeql-action/autobuild@v4
+          build-mode: ${{ matrix.build-mode }}
+
+      - name: Build (Go)
+        if: matrix.language == 'go'
+        run: go build ./...
+        working-directory: apps/api
+
       - uses: github/codeql-action/analyze@v4
         with:
           category: "/language:${{ matrix.language }}"
