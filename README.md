@@ -85,10 +85,10 @@ forwardAuth middleware and it reads the identity Authelia passes down.
 ```yaml
 auth:
   mode: proxy
-  trusted_proxies: [10.42.0.0/16]
+  trusted_proxies: [10.0.0.0/8]
   roles:
-    admin: [domestique-admins]
-    rider: [cyclists]
+    admin: [route-admins]
+    rider: [riders]
     viewer: [guests]
 ```
 
@@ -142,6 +142,24 @@ Turn cues are **inferred from the shape of the track**, not from a road map.
 They are off by default and worth checking before you rely on them at a
 junction — a route planner that knows the roads does this better.
 
+## Deploying it
+
+There is a Helm chart in `charts/domestique`, published on every change:
+
+```bash
+helm install domestique oci://ghcr.io/wncservices/charts/domestique \
+  --namespace domestique --create-namespace
+```
+
+Out of the box that is one pod, a SQLite library on a volume, no ingress and
+**no authentication** — every visitor an admin. Set `config.auth.mode: proxy`
+and put it behind Authelia before exposing it. For PostgreSQL, supply
+`DOMESTIQUE_SOURCE_DSN` from a Secret rather than writing a password into
+values.
+
+[`charts/domestique/README.md`](charts/domestique/README.md) has the detail,
+and `charts/domestique/ci/full-values.yaml` is a complete worked example.
+
 ## Configuration
 
 Copy `domestique.example.yaml` to `domestique.yaml`. It holds the route source and the riders'
@@ -158,6 +176,7 @@ none. That is what keeps one rider's private routes off the other's head unit.
 | `apps/api/` | Go service: CLI and HTTP API |
 | `apps/web/` | Vue 3 + Vite frontend |
 | `examples/routes/` | A sample route, so the demo has something to show |
+| `charts/domestique/` | The Helm chart |
 | `docs/plan.md` | Why the providers work the way they do — read before touching an adapter |
 
 ## Roadmap
@@ -168,7 +187,7 @@ none. That is what keeps one rider's private routes off the other's head unit.
 | 2 | GPX → FIT course conversion, with inferred turn cues | ✅ |
 | 3 | Garmin push (unofficial Connect session) | ⬜ stub |
 | 4 | Wahoo push (Cloud API) | ⬜ stub, needs approved API access |
-| 5 | Deploy: container, scheduled reconcile, Vault-backed tokens | ⬜ |
+| 5 | Deploy: Helm chart ✅, scheduled reconcile, Vault-backed tokens | 🟡 |
 | 6 | Metrics + staleness alerting | ⬜ |
 
 Phases 2–4 are where this succeeds or fails. Neither provider offers a self-serve route API:

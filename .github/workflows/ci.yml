@@ -108,6 +108,41 @@ jobs:
       - name: Fail if the build produced nothing
         run: test -f apps/web/dist/index.html
 
+  chart:
+    name: Helm chart
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+      - run: helm lint charts/domestique
+
+      # Rendering is the part that catches real mistakes: a template that only
+      # breaks with ingress on, or values the app cannot parse.
+      - name: Render every example
+        run: |
+          helm template dom charts/domestique > /dev/null
+          for values in charts/domestique/ci/*-values.yaml; do
+            echo "rendering $values"
+            helm template dom charts/domestique -f "$values" > /dev/null
+          done
+
+      # The chart writes the app's config file, so a values change can produce
+      # something the app rejects. Check with the real binary.
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: apps/api/go.mod
+          cache-dependency-path: apps/api/go.sum
+      - name: The rendered config must be valid
+        run: |
+          go build -o /tmp/domestique ./apps/api/cmd/domestique
+          for values in charts/domestique/ci/*-values.yaml; do
+            helm template dom charts/domestique -f "$values" \
+              --show-only templates/configmap.yaml \
+              | python3 -c "import sys,yaml; print(yaml.safe_load(sys.stdin)['data']['domestique.yaml'])" \
+              > /tmp/rendered.yaml
+            DOMESTIQUE_SOURCE_DSN=/tmp/check.db /tmp/domestique validate --config /tmp/rendered.yaml
+          done
+
   docker:
     name: Docker image builds
     runs-on: ubuntu-latest

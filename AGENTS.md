@@ -15,6 +15,7 @@ route data**:
 |---|---|
 | `apps/api/` | Go service — CLI (`validate`/`plan`/`push`/`state`/`import`) and HTTP API (`serve`) |
 | `apps/web/` | Vue 3 + Vite + TypeScript frontend |
+| `charts/domestique/` | The Helm chart, published to GHCR and GitHub Pages on every change |
 | `examples/routes/` | One sample route so the demo has something to show. Not a library |
 | `docs/` | Design notes, including the research behind the provider choices |
 
@@ -97,6 +98,23 @@ Tests check the output two ways: a round trip through the library, and the
 header and CRC checked against the FIT spec with an independent implementation,
 so a bug in the library cannot pass unnoticed. **Neither proves a real device
 accepts the file** — `domestique fit <slug>` writes one out for exactly that.
+
+## The Helm chart
+
+`charts/domestique` is published by `.github/workflows/chart-release.yml` on any
+push to `main` that touches it — to GHCR as an OCI artifact and to the Helm
+repository on GitHub Pages. **Bump `version` in `Chart.yaml` for any chart
+change**, or the release is skipped and the published chart silently lags the
+repository.
+
+Two defaults are deliberately unsafe-but-obvious rather than safe-but-silent:
+authentication is `none` and the NOTES warn loudly about it, because a chart
+that quietly required config nobody set would be worse. Same for persistence.
+
+The chart renders the app's config file, so a values change can produce
+something the app rejects. CI catches that by rendering every example under
+`ci/` and running the real binary's `validate` against the result — keep that
+step working when adding a value.
 
 ## The source split — the thing to not undo
 

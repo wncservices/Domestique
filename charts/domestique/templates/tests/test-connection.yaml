@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "domestique.fullname" . }}-test
+  labels:
+    {{- include "domestique.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: hook-succeeded
+spec:
+  restartPolicy: Never
+  securityContext:
+    {{- toYaml .Values.podSecurityContext | nindent 4 }}
+  containers:
+    # Reuses the app image rather than pulling curl: one less thing to keep
+    # current, and it proves the image itself runs.
+    - name: health
+      image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+      imagePullPolicy: {{ .Values.image.pullPolicy }}
+      securityContext:
+        {{- toYaml .Values.securityContext | nindent 8 }}
+      command: ["wget"]
+      args:
+        - --spider
+        - --tries=3
+        - --timeout=5
+        - http://{{ include "domestique.fullname" . }}:{{ .Values.service.port }}/api/health

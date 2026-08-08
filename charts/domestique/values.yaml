@@ -1,0 +1,186 @@
+# Default values for domestique.
+
+image:
+  repository: ghcr.io/wncservices/domestique
+  # Defaults to the chart's appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# The app's own configuration, rendered into a ConfigMap and mounted at
+# /app/domestique.yaml. Nothing secret belongs here — it is a ConfigMap, and
+# readable by anyone with access to the namespace.
+#
+# Credentials come from `envFrom` and `env` below instead.
+config:
+  source:
+    # db is the default. For PostgreSQL, leave the DSN out of this file and set
+    # DOMESTIQUE_SOURCE_DSN from a Secret — see `envFrom` below.
+    kind: db
+    dsn: /app/data/domestique.db
+
+  # domestique authenticates nobody itself. Behind Traefik with an Authelia
+  # forwardAuth middleware it reads the identity Authelia passes down.
+  #
+  # THIS DEFAULTS TO OFF, WHICH MEANS EVERY VISITOR IS AN ADMIN. Set mode to
+  # proxy before exposing this to anything.
+  auth:
+    mode: none
+    # mode: proxy
+    # trusted_proxies:
+    #   - 10.0.0.0/8
+    # roles:
+    #   admin: [route-admins]
+    #   rider: [riders]
+    #   viewer: [guests]
+    # default_role: viewer
+
+  komoot:
+    enabled: false
+
+  accounts: []
+  # - id: garmin:rider-one
+  #   provider: garmin
+  #   rider: rider-one
+  #   label: First rider's Garmin
+
+  default_targets: []
+
+# Secrets reach the pod as environment variables. Create the Secret separately
+# — with an ExternalSecret from Vault, for instance — and name it here.
+#
+# Keys domestique reads:
+#   DOMESTIQUE_SOURCE_DSN   PostgreSQL connection string (overrides config.source.dsn)
+#   KOMOOT_EMAIL            Komoot account, when komoot.enabled
+#   KOMOOT_PASSWORD
+envFrom: []
+# - secretRef:
+#     name: domestique
+
+# Individual environment variables, for anything not in a Secret.
+env: []
+
+# State — what each account is recorded as holding — is a JSON file, so the pod
+# needs somewhere durable to keep it. Losing it means re-pushing every route to
+# every device.
+#
+# A SQLite route library lives here too. With PostgreSQL, this holds only the
+# state file, and can be small.
+persistence:
+  enabled: true
+  size: 1Gi
+  # Leave empty to use the cluster default.
+  storageClass: ""
+  accessMode: ReadWriteOnce
+  # Mount an existing claim instead of creating one.
+  existingClaim: ""
+
+service:
+  type: ClusterIP
+  port: 80
+
+# A Traefik IngressRoute, which is how this is exposed in the cluster it was
+# written for. For a plain Ingress, see `ingress` below.
+ingressRoute:
+  enabled: false
+  entryPoints:
+    - websecure
+  # e.g. Host(`domestique.example.com`)
+  match: ""
+  middlewares: []
+  # - name: internal
+  #   namespace: traefik
+  # - name: authelia
+  #   namespace: authelia
+  tls:
+    certResolver: ""
+    secretName: ""
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts: []
+  # - host: domestique.example.com
+  #   paths:
+  #     - path: /
+  #       pathType: Prefix
+  tls: []
+
+# The ServiceAccount name matters beyond RBAC: Vault's Kubernetes auth binds a
+# role to a named ServiceAccount in a namespace, so this is the identity the
+# app authenticates to Vault with.
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# One replica, deliberately. Two would race on the sync state and on the remote
+# ids it records, and a route library is not a workload that needs scaling.
+replicaCount: 1
+
+strategy:
+  type: Recreate
+
+revisionHistoryLimit: 3
+
+# maxUnavailable, not minAvailable: with one replica, `minAvailable: 1` blocks
+# node drains forever because the node can never evict the only pod.
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+  # minAvailable: 1
+
+# The app authenticates to Vault with this ServiceAccount's token, so it needs
+# to be mounted. Turn off only if nothing in-cluster authenticates as the app.
+automountServiceAccountToken: true
+
+terminationGracePeriodSeconds: 30
+priorityClassName: ""
+topologySpreadConstraints: []
+
+resources:
+  requests:
+    cpu: 10m
+    memory: 64Mi
+  limits:
+    memory: 256Mi
+
+# The image runs as uid 10001 and writes only to the mounted volume.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+livenessProbe:
+  httpGet:
+    path: /api/health
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 20
+
+readinessProbe:
+  httpGet:
+    path: /api/health
+    port: http
+  initialDelaySeconds: 2
+  periodSeconds: 10
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

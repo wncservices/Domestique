@@ -1,0 +1,42 @@
+domestique {{ .Chart.AppVersion }} is installed as {{ include "domestique.fullname" . }}.
+
+{{- if .Values.ingressRoute.enabled }}
+
+  Reachable at: {{ .Values.ingressRoute.match }}
+{{- else if .Values.ingress.enabled }}
+
+  Reachable at:
+  {{- range .Values.ingress.hosts }}
+    https://{{ .host }}
+  {{- end }}
+{{- else }}
+
+  No ingress is configured. To look at it:
+
+    kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "domestique.fullname" . }} 8080:{{ .Values.service.port }}
+
+  then open http://localhost:8080
+{{- end }}
+
+{{ if eq (default "none" .Values.config.auth.mode) "none" -}}
+WARNING: authentication is off (config.auth.mode is "none"). Every visitor is
+an admin, and can upload, delete and push routes. Before exposing this to
+anything, put it behind Authelia and set:
+
+    config:
+      auth:
+        mode: proxy
+        trusted_proxies: [<your pod CIDR>]
+{{- end }}
+
+{{ if not .Values.persistence.enabled -}}
+WARNING: persistence is off. Sync state lives in the pod's filesystem and is
+lost on every restart, after which every route is pushed to every device
+again. Set persistence.enabled=true for anything long-lived.
+{{- end }}
+
+{{ if and (eq (default "" .Values.config.source.kind) "db") (not .Values.envFrom) (not (hasPrefix "postgres" (default "" .Values.config.source.dsn))) -}}
+Using a SQLite route library at {{ .Values.config.source.dsn }}.
+For PostgreSQL, set DOMESTIQUE_SOURCE_DSN from a Secret via envFrom rather
+than writing the password into values.
+{{- end }}
