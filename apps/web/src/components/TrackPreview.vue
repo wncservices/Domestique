@@ -6,12 +6,14 @@ const props = defineProps<{ slug: string }>()
 
 const points = ref<[number, number][]>([])
 const failed = ref(false)
+const loading = ref(true)
 
 const WIDTH = 320
 const HEIGHT = 160
 const PADDING = 10
 
 async function load() {
+  loading.value = true
   failed.value = false
   points.value = []
   try {
@@ -19,6 +21,8 @@ async function load() {
     points.value = track.points
   } catch {
     failed.value = true
+  } finally {
+    loading.value = false
   }
 }
 
@@ -29,6 +33,9 @@ watch(() => props.slug, load)
  * Projects lat/lon onto the viewbox. Longitude is scaled by cos(latitude) so a
  * route does not look stretched east-west — at Belgian latitudes a degree of
  * longitude is only ~63% of a degree of latitude.
+ *
+ * Drawn as inline SVG on purpose: no map library, and nothing calls out to a
+ * tile server with somebody's home address in the request.
  */
 const path = computed(() => {
   if (points.value.length < 2) return ''
@@ -67,51 +74,31 @@ const start = computed(() => {
 </script>
 
 <template>
-  <div class="preview">
+  <div
+    class="aspect-[2/1] grid place-items-center overflow-hidden rounded-lg bg-elevated/50"
+  >
+    <USkeleton v-if="loading" class="size-full" />
+
     <svg
-      v-if="path"
+      v-else-if="path"
       :viewBox="`0 0 ${WIDTH} ${HEIGHT}`"
+      class="size-full"
       role="img"
       :aria-label="`Route shape for ${slug}`"
     >
-      <path :d="path" class="track" />
-      <circle v-if="start" :cx="start.x" :cy="start.y" r="4" class="start" />
+      <path
+        :d="path"
+        class="track-line"
+        fill="none"
+        stroke-width="2.5"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+      <circle v-if="start" :cx="start.x" :cy="start.y" r="4" class="fill-primary" />
     </svg>
-    <p v-else-if="failed" class="empty">track unavailable</p>
-    <p v-else class="empty">loading…</p>
+
+    <p v-else class="text-sm text-muted">
+      {{ failed ? 'track unavailable' : 'no track' }}
+    </p>
   </div>
 </template>
-
-<style scoped>
-.preview {
-  aspect-ratio: 2 / 1;
-  display: grid;
-  place-items: center;
-  background: var(--surface-sunken);
-  border-radius: 8px;
-  overflow: hidden;
-}
-
-svg {
-  width: 100%;
-  height: 100%;
-}
-
-.track {
-  fill: none;
-  stroke: var(--accent);
-  stroke-width: 2.5;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
-.start {
-  fill: var(--accent-strong);
-}
-
-.empty {
-  color: var(--text-muted);
-  font-size: 0.85rem;
-  margin: 0;
-}
-</style>

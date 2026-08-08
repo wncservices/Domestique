@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import type { Account, PlanResponse } from '@/api/types'
+import { computed, h, resolveComponent } from 'vue'
+import type { TableColumn } from '@nuxt/ui'
+import type { Account, PlanItem, PlanResponse } from '@/api/types'
 
 const props = defineProps<{
   plan: PlanResponse | null
@@ -11,6 +12,8 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{ push: []; refresh: [] }>()
+
+const UBadge = resolveComponent('UBadge')
 
 const changes = computed(() => props.plan?.items ?? [])
 
@@ -27,192 +30,103 @@ const blocked = computed(() => noAdapters.value || notAllowed.value)
 const blockedReason = computed(() => {
   if (notAllowed.value) return 'Your role does not allow pushing to the head units.'
   if (noAdapters.value) {
-    return 'No provider adapter is wired up yet — pushes will fail until Phase 3 (Garmin) or Phase 4 (Wahoo) lands.'
+    return 'No provider adapter is wired up yet — pushes will fail until the Garmin and Wahoo adapters land.'
   }
   return ''
 })
+
+const opColor = { create: 'success', update: 'warning', delete: 'error' } as const
+
+const columns: TableColumn<PlanItem>[] = [
+  {
+    accessorKey: 'op',
+    header: 'Op',
+    cell: ({ row }) =>
+      h(
+        UBadge,
+        {
+          color: opColor[row.original.op] ?? 'neutral',
+          variant: 'subtle',
+          size: 'sm',
+        },
+        () => row.original.op,
+      ),
+  },
+  { accessorKey: 'accountId', header: 'Account' },
+  { accessorKey: 'slug', header: 'Route' },
+  { accessorKey: 'reason', header: 'Reason' },
+]
 </script>
 
 <template>
-  <section class="panel">
-    <header>
-      <div>
-        <h2>Pending changes</h2>
-        <p v-if="plan" class="summary">
-          {{ changes.length }} change{{ changes.length === 1 ? '' : 's' }},
-          {{ plan.inSync }} already in sync
-        </p>
+  <UCard variant="outline">
+    <template #header>
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 class="font-medium text-highlighted">Pending changes</h2>
+          <p v-if="plan" class="text-sm text-muted">
+            {{ changes.length }} change{{ changes.length === 1 ? '' : 's' }},
+            {{ plan.inSync }} already in sync
+          </p>
+        </div>
+        <div class="flex gap-2">
+          <UButton
+            icon="i-lucide-refresh-cw"
+            color="neutral"
+            variant="ghost"
+            @click="emit('refresh')"
+          >
+            Refresh
+          </UButton>
+          <UTooltip :text="blockedReason" :disabled="!blocked">
+            <UButton
+              icon="i-lucide-upload-cloud"
+              :loading="pushing"
+              :disabled="pushing || !changes.length || blocked"
+              @click="emit('push')"
+            >
+              Push to devices
+            </UButton>
+          </UTooltip>
+        </div>
       </div>
-      <div class="actions">
-        <button type="button" class="ghost" @click="emit('refresh')">Refresh</button>
-        <button
-          type="button"
-          class="primary"
-          :disabled="pushing || !changes.length || blocked"
-          :title="blockedReason"
-          @click="emit('push')"
-        >
-          {{ pushing ? 'Pushing…' : 'Push to devices' }}
-        </button>
-      </div>
-    </header>
+    </template>
 
-    <p v-if="blocked" class="notice">{{ blockedReason }}</p>
+    <UAlert
+      v-if="blocked"
+      color="warning"
+      variant="subtle"
+      icon="i-lucide-info"
+      :description="blockedReason"
+      class="mb-4"
+    />
 
-    <table v-if="changes.length">
-      <thead>
-        <tr>
-          <th>Op</th>
-          <th>Account</th>
-          <th>Route</th>
-          <th>Reason</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr v-for="item in changes" :key="`${item.accountId}:${item.slug}`">
-          <td><span class="op" :class="item.op">{{ item.op }}</span></td>
-          <td class="mono">{{ item.accountId }}</td>
-          <td class="mono">{{ item.slug }}</td>
-          <td class="reason">{{ item.reason }}</td>
-        </tr>
-      </tbody>
-    </table>
-    <p v-else-if="plan" class="empty">Everything is where it should be.</p>
+    <UTable
+      v-if="changes.length"
+      :data="changes"
+      :columns="columns"
+      :ui="{ td: 'text-sm', th: 'text-xs uppercase tracking-wide' }"
+    />
+    <p v-else-if="plan" class="text-sm text-muted">Everything is where it should be.</p>
 
-    <ul v-if="failures.length" class="failures">
-      <li v-for="failure in failures" :key="failure">{{ failure }}</li>
-    </ul>
+    <UAlert
+      v-for="failure in failures"
+      :key="failure"
+      color="error"
+      variant="subtle"
+      icon="i-lucide-triangle-alert"
+      :description="failure"
+      class="mt-3"
+    />
 
-    <ul v-if="plan?.problems.length" class="failures">
-      <li v-for="problem in plan.problems" :key="problem">{{ problem }}</li>
-    </ul>
-  </section>
+    <UAlert
+      v-for="problem in plan?.problems ?? []"
+      :key="problem"
+      color="warning"
+      variant="subtle"
+      icon="i-lucide-file-warning"
+      :description="problem"
+      class="mt-3"
+    />
+  </UCard>
 </template>
-
-<style scoped>
-.panel {
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--surface);
-  padding: 1rem 1.15rem 1.15rem;
-}
-
-header {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem;
-  align-items: center;
-  justify-content: space-between;
-}
-
-h2 {
-  margin: 0;
-  font-size: 1rem;
-}
-
-.summary {
-  margin: 0.2rem 0 0;
-  font-size: 0.85rem;
-  color: var(--text-muted);
-}
-
-.actions {
-  display: flex;
-  gap: 0.5rem;
-}
-
-button {
-  font: inherit;
-  font-size: 0.85rem;
-  padding: 0.4rem 0.85rem;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  cursor: pointer;
-  background: var(--surface-sunken);
-  color: var(--text);
-}
-
-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-button.primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--on-accent);
-}
-
-.notice {
-  margin: 0.85rem 0 0;
-  padding: 0.6rem 0.75rem;
-  border-radius: 8px;
-  font-size: 0.85rem;
-  background: color-mix(in srgb, var(--warn) 12%, transparent);
-  color: var(--warn);
-}
-
-table {
-  width: 100%;
-  margin-top: 0.9rem;
-  border-collapse: collapse;
-  font-size: 0.85rem;
-}
-
-th {
-  text-align: left;
-  font-size: 0.7rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--text-muted);
-  padding-bottom: 0.35rem;
-}
-
-td {
-  padding: 0.4rem 0.6rem 0.4rem 0;
-  border-top: 1px solid var(--border);
-}
-
-.mono {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.8rem;
-}
-
-.reason {
-  color: var(--text-muted);
-}
-
-.op {
-  text-transform: uppercase;
-  font-size: 0.7rem;
-  letter-spacing: 0.05em;
-  padding: 0.1rem 0.4rem;
-  border-radius: 4px;
-  background: var(--surface-sunken);
-}
-
-.op.create {
-  color: var(--ok);
-}
-
-.op.update {
-  color: var(--warn);
-}
-
-.op.delete {
-  color: var(--danger);
-}
-
-.empty {
-  margin: 0.9rem 0 0;
-  font-size: 0.88rem;
-  color: var(--text-muted);
-}
-
-.failures {
-  margin: 0.9rem 0 0;
-  padding-left: 1.1rem;
-  font-size: 0.83rem;
-  color: var(--danger);
-}
-</style>

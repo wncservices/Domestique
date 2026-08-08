@@ -30,15 +30,18 @@ const canUpload = computed(() => can('routes:upload') && (config.value?.writable
 const canImportKomoot = computed(() => can('komoot:import') && (config.value?.writable ?? false))
 const canPush = computed(() => can('sync:push'))
 
-const roleLabel = computed(() => {
-  if (!me.value) return ''
-  if (!me.value.authenticated) return 'no login required'
-  return `${me.value.name || me.value.user} · ${me.value.role}`
+const roleColor = computed(() => {
+  switch (me.value?.role) {
+    case 'admin':
+      return 'primary' as const
+    case 'rider':
+      return 'success' as const
+    default:
+      return 'neutral' as const
+  }
 })
 
-const totalDistance = computed(
-  () => routes.value.reduce((sum, r) => sum + r.distanceM, 0) / 1000,
-)
+const totalDistance = computed(() => routes.value.reduce((sum, r) => sum + r.distanceM, 0) / 1000)
 
 const visibleRoutes = computed(() => {
   const needle = search.value.trim().toLowerCase()
@@ -92,218 +95,129 @@ onMounted(refresh)
 </script>
 
 <template>
-  <div class="app">
-    <header class="masthead">
-      <div>
-        <h1>domestique</h1>
-        <p class="tagline">Shared route library, carried to every head unit.</p>
-        <p v-if="config" class="source">
-          {{ config.source }}
-          <span v-if="!config.writable"> · read-only, add routes by committing them</span>
-        </p>
-      </div>
-      <div class="identity" v-if="me">
-        <span class="who">{{ roleLabel }}</span>
-        <span
-          v-if="!me.authenticated"
-          class="warn"
-          title="Anyone who can reach this page has full access. Put it behind Authelia before exposing it."
-        >unauthenticated</span>
-      </div>
-
-      <dl class="totals">
+  <UApp>
+    <UContainer class="flex max-w-5xl flex-col gap-6 py-8">
+      <header class="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <dt>Routes</dt>
-          <dd>{{ routes.length }}</dd>
+          <h1 class="text-2xl font-semibold tracking-tight text-highlighted">domestique</h1>
+          <p class="text-sm text-muted">Shared route library, carried to every head unit.</p>
+          <p v-if="config" class="mt-1 font-mono text-xs text-dimmed">
+            {{ config.source }}
+            <span v-if="!config.writable"> · read-only, add routes by committing them</span>
+          </p>
         </div>
-        <div>
-          <dt>Distance</dt>
-          <dd>{{ totalDistance.toFixed(0) }} km</dd>
+
+        <div class="flex flex-col items-end gap-2">
+          <div v-if="me" class="flex items-center gap-2">
+            <UBadge v-if="me.authenticated" :color="roleColor" variant="subtle" icon="i-lucide-user">
+              {{ me.name || me.user }} · {{ me.role }}
+            </UBadge>
+            <UTooltip
+              v-else
+              text="Anyone who can reach this page has full access. Put it behind Authelia before exposing it."
+            >
+              <UBadge color="warning" variant="subtle" icon="i-lucide-shield-off">
+                no login required
+              </UBadge>
+            </UTooltip>
+          </div>
+
+          <dl class="flex gap-6">
+            <div>
+              <dt class="text-[0.7rem] uppercase tracking-wide text-dimmed">Routes</dt>
+              <dd class="text-xl tabular-nums text-highlighted">{{ routes.length }}</dd>
+            </div>
+            <div>
+              <dt class="text-[0.7rem] uppercase tracking-wide text-dimmed">Distance</dt>
+              <dd class="text-xl tabular-nums text-highlighted">
+                {{ totalDistance.toFixed(0) }} km
+              </dd>
+            </div>
+            <div>
+              <dt class="text-[0.7rem] uppercase tracking-wide text-dimmed">Accounts</dt>
+              <dd class="text-xl tabular-nums text-highlighted">{{ accounts.length }}</dd>
+            </div>
+          </dl>
         </div>
-        <div>
-          <dt>Accounts</dt>
-          <dd>{{ accounts.length }}</dd>
-        </div>
-      </dl>
-    </header>
-
-    <p v-if="error" class="error">Could not reach the API: {{ error }}</p>
-
-    <ul v-if="problems.length" class="problems">
-      <li v-for="problem in problems" :key="problem">{{ problem }}</li>
-    </ul>
-
-    <PlanPanel
-      :plan="plan"
-      :accounts="accounts"
-      :pushing="pushing"
-      :failures="failures"
-      :can-push="canPush"
-      @push="push"
-      @refresh="refresh"
-    />
-
-    <UploadPanel v-if="canUpload" :accounts="accounts" :me="me" @uploaded="refresh" />
-
-    <KomootPanel v-if="canImportKomoot" @imported="refresh" />
-
-    <section class="library">
-      <header>
-        <h2>Library</h2>
-        <input v-model="search" type="search" placeholder="Filter by name, slug or tag" />
       </header>
 
-      <p v-if="loading" class="muted">Loading routes…</p>
-      <p v-else-if="!routes.length" class="muted">
-        <template v-if="config?.writable">No routes yet — upload a GPX above.</template>
-        <template v-else>
-          No routes yet — commit a <code>route.gpx</code> to the routes repo and refresh.
-        </template>
-      </p>
-      <p v-else-if="!visibleRoutes.length" class="muted">Nothing matches “{{ search }}”.</p>
+      <UAlert
+        v-if="error"
+        color="error"
+        variant="subtle"
+        icon="i-lucide-plug-zap"
+        title="Could not reach the API"
+        :description="error"
+      />
 
-      <div v-else class="grid">
-        <RouteCard
-          v-for="route in visibleRoutes"
-          :key="route.slug"
-          :route="route"
-          :accounts="accounts"
-          :writable="canUpload"
-          :me="me"
-          @deleted="refresh"
+      <UAlert
+        v-for="problem in problems"
+        :key="problem"
+        color="warning"
+        variant="subtle"
+        icon="i-lucide-file-warning"
+        :description="problem"
+      />
+
+      <PlanPanel
+        :plan="plan"
+        :accounts="accounts"
+        :pushing="pushing"
+        :failures="failures"
+        :can-push="canPush"
+        @push="push"
+        @refresh="refresh"
+      />
+
+      <UploadPanel v-if="canUpload" :accounts="accounts" :me="me" @uploaded="refresh" />
+
+      <KomootPanel v-if="canImportKomoot" @imported="refresh" />
+
+      <section>
+        <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <h2 class="font-medium text-highlighted">Library</h2>
+          <UInput
+            v-model="search"
+            icon="i-lucide-search"
+            placeholder="Filter by name, slug or tag"
+            class="w-full sm:w-72"
+          />
+        </div>
+
+        <div v-if="loading" class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <USkeleton v-for="n in 3" :key="n" class="h-72" />
+        </div>
+
+        <UEmpty
+          v-else-if="!routes.length"
+          icon="i-lucide-route"
+          title="No routes yet"
+          :description="
+            config?.writable
+              ? 'Upload a GPX above, or import from Komoot.'
+              : 'Commit a route.gpx to the routes repo and refresh.'
+          "
         />
-      </div>
-    </section>
-  </div>
+
+        <UEmpty
+          v-else-if="!visibleRoutes.length"
+          icon="i-lucide-search-x"
+          title="Nothing matches"
+          :description="`No route matches “${search}”.`"
+        />
+
+        <div v-else class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <RouteCard
+            v-for="route in visibleRoutes"
+            :key="route.slug"
+            :route="route"
+            :accounts="accounts"
+            :writable="canUpload"
+            :me="me"
+            @deleted="refresh"
+          />
+        </div>
+      </section>
+    </UContainer>
+  </UApp>
 </template>
-
-<style scoped>
-.app {
-  max-width: 1100px;
-  margin: 0 auto;
-  padding: 2rem 1.25rem 4rem;
-  display: flex;
-  flex-direction: column;
-  gap: 1.5rem;
-}
-
-.masthead {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 1rem;
-  align-items: flex-end;
-  justify-content: space-between;
-}
-
-h1 {
-  margin: 0;
-  font-size: 1.6rem;
-  letter-spacing: -0.02em;
-}
-
-.tagline {
-  margin: 0.25rem 0 0;
-  color: var(--text-muted);
-  font-size: 0.9rem;
-}
-
-.identity {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 0.8rem;
-  color: var(--text-muted);
-}
-
-.identity .warn {
-  padding: 0.1rem 0.45rem;
-  border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent);
-  color: var(--warn);
-}
-
-.source {
-  margin: 0.3rem 0 0;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.75rem;
-  color: var(--text-muted);
-}
-
-.totals {
-  display: flex;
-  gap: 1.5rem;
-  margin: 0;
-}
-
-.totals div {
-  display: flex;
-  flex-direction: column;
-}
-
-.totals dt {
-  font-size: 0.7rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--text-muted);
-}
-
-.totals dd {
-  margin: 0;
-  font-size: 1.3rem;
-  font-variant-numeric: tabular-nums;
-}
-
-.library header {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 0.9rem;
-}
-
-.library h2 {
-  margin: 0;
-  font-size: 1rem;
-}
-
-input[type='search'] {
-  font: inherit;
-  font-size: 0.85rem;
-  padding: 0.4rem 0.7rem;
-  min-width: 260px;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--text);
-}
-
-.grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 1rem;
-}
-
-.muted {
-  color: var(--text-muted);
-  font-size: 0.9rem;
-}
-
-.error {
-  margin: 0;
-  padding: 0.7rem 0.9rem;
-  border-radius: 8px;
-  font-size: 0.88rem;
-  background: color-mix(in srgb, var(--danger) 12%, transparent);
-  color: var(--danger);
-}
-
-.problems {
-  margin: 0;
-  padding: 0.7rem 0.9rem 0.7rem 2rem;
-  border-radius: 8px;
-  font-size: 0.85rem;
-  background: color-mix(in srgb, var(--warn) 12%, transparent);
-  color: var(--warn);
-}
-</style>

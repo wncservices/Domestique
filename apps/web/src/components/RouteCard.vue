@@ -13,15 +13,20 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{ deleted: [] }>()
 
+const toast = useToast()
+
 const distance = computed(() => `${(props.route.distanceM / 1000).toFixed(1)} km`)
 const ascent = computed(() => `${Math.round(props.route.ascentM)} m`)
 const gpxUrl = computed(() => api.gpxUrl(props.route.slug))
 
+const confirming = ref(false)
 const deleting = ref(false)
-const deleteError = ref('')
 
-/** Riders may only remove what they uploaded; admins anything. Mirrors the
- *  server's rule so the button is absent rather than rejected. */
+/**
+ * Mirrors the server's rule: riders may only remove what they uploaded,
+ * admins anything. The server enforces it — this just avoids offering a
+ * button that would come back 403.
+ */
 const canDelete = computed(() => {
   if (!props.writable) return false
   const me = props.me
@@ -36,18 +41,24 @@ function accountFor(id: string): Account | undefined {
 }
 
 async function remove() {
-  // Deleting here also queues a delete on every device that holds it, so make
-  // sure that is what the rider meant.
-  if (!confirm(`Delete “${props.route.name}”? It will be removed from the devices too.`)) {
-    return
-  }
   deleting.value = true
-  deleteError.value = ''
   try {
     await api.remove(props.route.slug)
+    confirming.value = false
+    toast.add({
+      title: 'Route deleted',
+      description: `“${props.route.name}” will be removed from the devices on the next push.`,
+      icon: 'i-lucide-trash-2',
+      color: 'success',
+    })
     emit('deleted')
   } catch (err) {
-    deleteError.value = err instanceof Error ? err.message : String(err)
+    toast.add({
+      title: 'Could not delete the route',
+      description: err instanceof Error ? err.message : String(err),
+      icon: 'i-lucide-triangle-alert',
+      color: 'error',
+    })
   } finally {
     deleting.value = false
   }
@@ -55,194 +66,101 @@ async function remove() {
 </script>
 
 <template>
-  <article class="card">
+  <UCard variant="outline" class="flex flex-col" :ui="{ body: 'flex-1 flex flex-col gap-3' }">
     <TrackPreview :slug="route.slug" />
 
-    <header>
-      <h3>{{ route.name }}</h3>
-      <p class="slug">{{ route.slug }}</p>
-    </header>
+    <div>
+      <h3 class="font-medium text-highlighted">{{ route.name }}</h3>
+      <p class="font-mono text-xs text-muted">{{ route.slug }}</p>
+    </div>
 
-    <p v-if="route.description" class="description">{{ route.description }}</p>
+    <p v-if="route.description" class="text-sm text-toned">{{ route.description }}</p>
 
-    <dl class="stats">
+    <dl class="flex gap-5">
       <div>
-        <dt>Distance</dt>
-        <dd>{{ distance }}</dd>
+        <dt class="text-[0.7rem] uppercase tracking-wide text-dimmed">Distance</dt>
+        <dd class="tabular-nums">{{ distance }}</dd>
       </div>
       <div>
-        <dt>Ascent</dt>
-        <dd>{{ ascent }}</dd>
+        <dt class="text-[0.7rem] uppercase tracking-wide text-dimmed">Ascent</dt>
+        <dd class="tabular-nums">{{ ascent }}</dd>
       </div>
       <div>
-        <dt>Points</dt>
-        <dd>{{ route.pointCount.toLocaleString() }}</dd>
+        <dt class="text-[0.7rem] uppercase tracking-wide text-dimmed">Points</dt>
+        <dd class="tabular-nums">{{ route.pointCount.toLocaleString() }}</dd>
       </div>
     </dl>
 
-    <ul v-if="route.tags.length" class="tags">
-      <li v-for="tag in route.tags" :key="tag">{{ tag }}</li>
-    </ul>
+    <div v-if="route.tags.length" class="flex flex-wrap gap-1.5">
+      <UBadge v-for="tag in route.tags" :key="tag" color="neutral" variant="soft" size="sm">
+        {{ tag }}
+      </UBadge>
+    </div>
 
-    <p v-if="route.unknownTargets.length" class="unknown">
-      unknown target{{ route.unknownTargets.length === 1 ? '' : 's' }}:
-      {{ route.unknownTargets.join(', ') }}
-    </p>
+    <UAlert
+      v-if="route.unknownTargets.length"
+      color="warning"
+      variant="subtle"
+      icon="i-lucide-triangle-alert"
+      :title="`Unknown target${route.unknownTargets.length === 1 ? '' : 's'}`"
+      :description="`${route.unknownTargets.join(', ')} — this route will never sync there.`"
+      :ui="{ title: 'text-sm', description: 'text-xs' }"
+    />
 
-    <footer>
+    <div class="mt-auto flex flex-wrap items-center gap-1.5 pt-1">
       <SyncBadge
         v-for="status in route.syncState"
         :key="status.accountId"
         :status="status"
         :account="accountFor(status.accountId)"
       />
-      <span v-if="!route.syncState.length" class="untargeted">no targets</span>
-      <span v-if="route.owner" class="owner">{{ route.owner }}</span>
+      <UBadge v-if="!route.syncState.length" color="neutral" variant="outline" size="sm">
+        no targets
+      </UBadge>
 
-      <span class="spacer" />
-      <a class="action" :href="gpxUrl" download>GPX</a>
-      <button
+      <span class="flex-1" />
+
+      <UTooltip v-if="route.owner" :text="`Uploaded by ${route.owner}`">
+        <UBadge color="neutral" variant="ghost" size="sm" icon="i-lucide-user">
+          {{ route.owner }}
+        </UBadge>
+      </UTooltip>
+
+      <UButton
+        :href="gpxUrl"
+        download
+        icon="i-lucide-download"
+        color="neutral"
+        variant="ghost"
+        size="xs"
+        aria-label="Download GPX"
+      />
+      <UButton
         v-if="canDelete"
-        type="button"
-        class="action danger"
-        :disabled="deleting"
-        @click="remove"
-      >
-        {{ deleting ? 'Deleting…' : 'Delete' }}
-      </button>
-    </footer>
+        icon="i-lucide-trash-2"
+        color="error"
+        variant="ghost"
+        size="xs"
+        aria-label="Delete route"
+        @click="confirming = true"
+      />
+    </div>
 
-    <p v-if="deleteError" class="error">{{ deleteError }}</p>
-  </article>
+    <UModal v-model:open="confirming" title="Delete this route?">
+      <template #body>
+        <p class="text-sm text-toned">
+          “{{ route.name }}” will be removed from the library, and queued for removal from
+          every device that currently holds it.
+        </p>
+      </template>
+      <template #footer>
+        <div class="flex justify-end gap-2">
+          <UButton color="neutral" variant="ghost" :disabled="deleting" @click="confirming = false">
+            Cancel
+          </UButton>
+          <UButton color="error" :loading="deleting" @click="remove">Delete</UButton>
+        </div>
+      </template>
+    </UModal>
+  </UCard>
 </template>
-
-<style scoped>
-.card {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-  padding: 1rem;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--surface);
-}
-
-header h3 {
-  margin: 0;
-  font-size: 1.05rem;
-}
-
-.slug {
-  margin: 0.15rem 0 0;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.75rem;
-  color: var(--text-muted);
-}
-
-.description {
-  margin: 0;
-  font-size: 0.9rem;
-  color: var(--text-muted);
-}
-
-.stats {
-  display: flex;
-  gap: 1.25rem;
-  margin: 0;
-}
-
-.stats div {
-  display: flex;
-  flex-direction: column;
-}
-
-.stats dt {
-  font-size: 0.7rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--text-muted);
-}
-
-.stats dd {
-  margin: 0;
-  font-size: 1rem;
-  font-variant-numeric: tabular-nums;
-}
-
-.tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.35rem;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.tags li {
-  font-size: 0.72rem;
-  padding: 0.1rem 0.45rem;
-  border-radius: 4px;
-  background: var(--surface-sunken);
-  color: var(--text-muted);
-}
-
-footer {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.4rem;
-  margin-top: auto;
-  padding-top: 0.25rem;
-}
-
-.untargeted {
-  font-size: 0.78rem;
-  color: var(--text-muted);
-}
-
-.owner {
-  font-size: 0.72rem;
-  color: var(--text-muted);
-}
-
-.spacer {
-  flex: 1;
-}
-
-.action {
-  font: inherit;
-  font-size: 0.75rem;
-  padding: 0.15rem 0.5rem;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-  background: var(--surface-sunken);
-  color: var(--text-muted);
-  cursor: pointer;
-  text-decoration: none;
-}
-
-.action:hover {
-  color: var(--text);
-}
-
-.action.danger:hover {
-  color: var(--danger);
-  border-color: color-mix(in srgb, var(--danger) 40%, transparent);
-}
-
-.action:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.unknown {
-  margin: 0;
-  font-size: 0.78rem;
-  color: var(--warn);
-}
-
-.error {
-  margin: 0.4rem 0 0;
-  font-size: 0.78rem;
-  color: var(--danger);
-}
-</style>
