@@ -1,9 +1,13 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { api } from '@/api/client'
-import type { Account } from '@/api/types'
+import type { Account, Me } from '@/api/types'
 
-const props = defineProps<{ accounts: Account[] }>()
+const props = defineProps<{ accounts: Account[]; me?: Me | null }>()
+
+/** When signed in, ownership comes from the session — the server ignores this
+ *  field anyway, so asking for it would be a lie. */
+const knowsWhoYouAre = computed(() => Boolean(props.me?.authenticated && props.me?.user))
 const emit = defineEmits<{ uploaded: [] }>()
 
 const file = ref<File | null>(null)
@@ -103,7 +107,7 @@ async function submit() {
         <span>Name</span>
         <input v-model="name" type="text" placeholder="Kemmelberg Loop" />
       </label>
-      <label>
+      <label v-if="!knowsWhoYouAre">
         <span>Uploaded by</span>
         <input v-model="uploadedBy" type="text" placeholder="wilant" />
       </label>

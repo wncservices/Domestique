@@ -36,6 +36,10 @@ plan *ARGS:
 push *ARGS:
     go run ./apps/api/cmd/domestique push {{ARGS}}
 
+# List or import routes from Komoot. Needs KOMOOT_EMAIL and KOMOOT_PASSWORD.
+komoot *ARGS:
+    go run ./apps/api/cmd/domestique komoot {{ARGS}}
+
 # Copy a directory of GPX routes into a database library.
 import FROM:
     go run ./apps/api/cmd/domestique import --source db --db ./data/domestique.db --from {{FROM}}

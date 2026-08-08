@@ -150,8 +150,27 @@ func TestCLIValidateReportsBrokenRoutes(t *testing.T) {
 
 func TestCLIValidateWithMissingLibrary(t *testing.T) {
 	t.Chdir(t.TempDir())
-	if _, err := capture(t, "validate"); err == nil {
-		t.Fatal("expected an error when the library does not exist")
+	if _, err := capture(t, "validate", "--source", "fs", "--library", "./nope"); err == nil {
+		t.Fatal("expected an error when the library directory does not exist")
+	}
+}
+
+// With no config at all the default is a database, which is created on
+// demand — so a fresh install works rather than erroring about a missing
+// routes directory.
+func TestCLIValidateWithNoConfigCreatesDatabase(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+
+	out, err := capture(t, "validate")
+	if err != nil {
+		t.Fatalf("validate on a fresh directory failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "database") {
+		t.Errorf("expected a database source, got:\n%s", out)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "data", "domestique.db")); statErr != nil {
+		t.Errorf("database not created: %v", statErr)
 	}
 }
 

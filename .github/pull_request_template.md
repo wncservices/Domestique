@@ -1,16 +1,20 @@
-## What and why
+## What's in this PR
 
-<!-- What changes, and what problem it solves. Link an issue if there is one. -->
+<!-- Describe what the change does, in terms someone who has not read the code
+     would understand. One short block per thing. Implementation detail belongs
+     in the commits, not here. -->
 
-## How it was verified
+## What to watch
 
-<!-- `just check` is the baseline. If you touched a provider adapter, a source,
-     or the API surface, say what you ran beyond that. -->
+<!-- Anything that could bite: a security assumption the deployment has to hold
+     up, a dependency that will break, a default that is unsafe outside a
+     laptop. Delete if there is genuinely nothing. -->
+
+## Verified
+
+<!-- `just check` is the baseline. Say what was exercised beyond it — real
+     requests, a real device, a deliberately introduced bug to prove a test
+     catches it. -->
 
 - [ ] `just check` passes
 - [ ] New behaviour has a test that fails without the change
-
-## Anything to watch
-
-<!-- Migrations, config changes, or anything a reviewer should look at twice.
-     Delete if there is nothing. -->
