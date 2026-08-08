@@ -406,7 +406,12 @@ func (s *Server) handlePlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	plan := syncer.BuildPlan(routes, s.Config, s.Store)
+	plan, err := syncer.BuildPlan(routes, s.Config, s.Store)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+
 	changes := plan.Changes()
 	writeJSON(w, http.StatusOK, planResponse{
 		Items:    toPlanDTOs(changes),
@@ -444,7 +449,12 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 		byAccount[account.ID] = target
 	}
 
-	plan := syncer.BuildPlan(routes, s.Config, s.Store)
+	plan, err := syncer.BuildPlan(routes, s.Config, s.Store)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+
 	changes := plan.Changes()
 	failures := syncer.Apply(plan, s.Store, byAccount)
 
@@ -609,11 +619,23 @@ func (s *Server) toRouteDTOs(routes []model.Route) []routeDTO {
 	return out
 }
 
+// stateFor reads an account's recorded state, logging and returning nothing on
+// failure. Callers use this only to decorate the UI; the plan and the push read
+// state properly and refuse to run when it cannot be read.
+func (s *Server) stateFor(accountID string) map[string]state.Entry {
+	entries, err := s.Store.ForAccount(accountID)
+	if err != nil {
+		s.logger().Error("could not read sync state", "account", accountID, "err", err)
+		return nil
+	}
+	return entries
+}
+
 func (s *Server) toRouteDTO(r model.Route) routeDTO {
 	targetIDs := s.Config.TargetsFor(r)
 	statuses := make([]syncStatus, 0, len(targetIDs))
 	for _, id := range targetIDs {
-		entry, seen := s.Store.ForAccount(id)[r.Slug]
+		entry, seen := s.stateFor(id)[r.Slug]
 		switch {
 		case !seen:
 			statuses = append(statuses, syncStatus{AccountID: id, Status: "pending"})

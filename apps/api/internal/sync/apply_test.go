@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/wncservices/domestique/apps/api/internal/config"
+
 	"github.com/wncservices/domestique/apps/api/internal/model"
 	"github.com/wncservices/domestique/apps/api/internal/state"
 	"github.com/wncservices/domestique/apps/api/internal/targets"
@@ -40,6 +42,26 @@ func (f *fakeTarget) Delete(remoteID string) error {
 	return nil
 }
 
+// forAccount keeps the assertions readable now that the read can fail.
+func forAccount(t *testing.T, store state.Store, accountID string) map[string]state.Entry {
+	t.Helper()
+	entries, err := store.ForAccount(accountID)
+	if err != nil {
+		t.Fatalf("ForAccount(%s): %v", accountID, err)
+	}
+	return entries
+}
+
+// mustPlan is the same idea for BuildPlan.
+func mustPlan(t *testing.T, routes []model.Route, cfg *config.Config, store state.Store) model.Plan {
+	t.Helper()
+	plan, err := BuildPlan(routes, cfg, store)
+	if err != nil {
+		t.Fatalf("BuildPlan: %v", err)
+	}
+	return plan
+}
+
 func route(slug, hash string) model.Route {
 	return model.Route{
 		RouteMeta:   model.RouteMeta{Name: slug},
@@ -63,7 +85,7 @@ func TestApplyCreatesAndRecordsState(t *testing.T) {
 		t.Errorf("adapter saw %v, want one create", target.creates)
 	}
 
-	entry, ok := store.ForAccount("garmin:wilant")["loop"]
+	entry, ok := forAccount(t, store, "garmin:wilant")["loop"]
 	if !ok {
 		t.Fatal("nothing recorded; the next run would create it again")
 	}
@@ -84,7 +106,7 @@ func TestApplyUpdateKeepsRemoteID(t *testing.T) {
 		t.Fatalf("failures: %v", failures)
 	}
 
-	entry := store.ForAccount("garmin:wilant")["loop"]
+	entry := forAccount(t, store, "garmin:wilant")["loop"]
 	if entry.RemoteID != "remote-abc" {
 		t.Errorf("remote id = %q, want it preserved across an update", entry.RemoteID)
 	}
@@ -111,7 +133,7 @@ func TestApplyDeleteForgetsState(t *testing.T) {
 	if len(target.deletes) != 1 {
 		t.Errorf("adapter saw %v, want one delete", target.deletes)
 	}
-	if len(store.ForAccount("garmin:wilant")) != 0 {
+	if len(forAccount(t, store, "garmin:wilant")) != 0 {
 		t.Error("state kept after a delete; the route would be deleted again forever")
 	}
 }
@@ -141,7 +163,7 @@ func TestApplyIsolatesFailures(t *testing.T) {
 	if len(healthy.creates) != 1 {
 		t.Error("the healthy account was skipped because the other failed")
 	}
-	if len(store.ForAccount("wahoo:friend")) != 0 {
+	if len(forAccount(t, store, "wahoo:friend")) != 0 {
 		t.Error("failed push was recorded as success; it would never be retried")
 	}
 }

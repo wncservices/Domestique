@@ -128,12 +128,6 @@ func run(args []string) error {
 		return fmt.Errorf("unknown command %q (try: domestique help)", cmd)
 	}
 
-	// `state` reads nothing but the state file, so it works even when the
-	// source is unreachable — which is when you most want to inspect it.
-	if cmd == "state" {
-		return runState(*statePath)
-	}
-
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		return err
@@ -151,17 +145,27 @@ func run(args []string) error {
 		defer func() { _ = closer.Close() }()
 	}
 
+	store, err := openState(src, *statePath)
+	if err != nil {
+		return err
+	}
+	if closer, ok := store.(interface{ Close() error }); ok {
+		defer func() { _ = closer.Close() }()
+	}
+
 	switch cmd {
 	case "validate":
 		return runValidate(src, cfg)
 	case "plan":
-		return runPlan(src, cfg, *statePath)
+		return runPlan(src, cfg, store)
 	case "push":
-		return runPush(src, cfg, *statePath, *dryRun)
+		return runPush(src, cfg, store, *dryRun)
 	case "import":
 		return runImport(src, *from)
+	case "state":
+		return runState(store)
 	case "serve":
-		return runServe(src, cfg, *statePath, *addr, *webDir)
+		return runServe(src, cfg, store, *addr, *webDir)
 	case "komoot":
 		return runKomoot(src, cfg, positional)
 	case "fit":
@@ -367,6 +371,18 @@ func openSource(cfg *config.Config) (source.Source, error) {
 	}
 }
 
+// openState decides where sync state lives.
+//
+// With a database source it goes in that same database, which is the whole
+// point: a deployment then needs one database and no volume. A directory
+// source has no database to borrow, so it falls back to the JSON file.
+func openState(src source.Source, path string) (state.Store, error) {
+	if db, ok := src.(*source.DB); ok {
+		return state.UseDB(db.Conn(), db.DSN())
+	}
+	return state.Open(path)
+}
+
 func runValidate(src source.Source, cfg *config.Config) error {
 	routes, problems, err := src.List()
 	if err != nil {
@@ -390,31 +406,31 @@ func runValidate(src source.Source, cfg *config.Config) error {
 	return reportProblems(problems)
 }
 
-func runPlan(src source.Source, cfg *config.Config, statePath string) error {
+func runPlan(src source.Source, cfg *config.Config, store state.Store) error {
 	routes, problems, err := src.List()
 	if err != nil {
 		return err
 	}
-	store, err := state.Open(statePath)
+
+	plan, err := sync.BuildPlan(routes, cfg, store)
 	if err != nil {
 		return err
 	}
 
-	printPlan(sync.BuildPlan(routes, cfg, store))
+	printPlan(plan)
 	return reportProblems(problems)
 }
 
-func runPush(src source.Source, cfg *config.Config, statePath string, dryRun bool) error {
+func runPush(src source.Source, cfg *config.Config, store state.Store, dryRun bool) error {
 	routes, problems, err := src.List()
 	if err != nil {
 		return err
 	}
-	store, err := state.Open(statePath)
+
+	plan, err := sync.BuildPlan(routes, cfg, store)
 	if err != nil {
 		return err
 	}
-
-	plan := sync.BuildPlan(routes, cfg, store)
 	printPlan(plan)
 
 	if dryRun {
@@ -497,13 +513,19 @@ func runImport(dst source.Source, from string) error {
 	return reportProblems(problems)
 }
 
-func runState(statePath string) error {
-	store, err := state.Open(statePath)
+// runState prints what each account is recorded as holding.
+//
+// It reads through the same store the rest of the app uses, so it shows the
+// truth whether that is a database table or a file. It used to open the file
+// directly, which quietly reported "nothing pushed yet" once state moved into
+// the database.
+func runState(store state.Store) error {
+	fmt.Println(describeStore(store))
+
+	entries, err := store.All()
 	if err != nil {
 		return err
 	}
-
-	entries := store.All()
 	if len(entries) == 0 {
 		fmt.Println("no routes recorded — nothing has been pushed yet")
 		return nil
@@ -517,18 +539,13 @@ func runState(statePath string) error {
 	return w.Flush()
 }
 
-func runServe(src source.Source, cfg *config.Config, statePath, addr, webDir string) error {
+func runServe(src source.Source, cfg *config.Config, store state.Store, addr, webDir string) error {
 	if _, problems, err := src.List(); err != nil {
 		return err
 	} else if len(problems) > 0 {
 		for _, p := range problems {
 			fmt.Fprintln(os.Stderr, "problem:", p)
 		}
-	}
-
-	store, err := state.Open(statePath)
-	if err != nil {
-		return err
 	}
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -574,11 +591,19 @@ func runServe(src source.Source, cfg *config.Config, statePath, addr, webDir str
 	}
 
 	log.Info("listening", "addr", addr, "source", src.Describe(),
-		"uploads", writable, "auth", authenticator.Mode(), "state", statePath)
+		"uploads", writable, "auth", authenticator.Mode(), "state", describeStore(store))
 	if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil
+}
+
+// describeStore names where state lives, for the startup log.
+func describeStore(store state.Store) string {
+	if d, ok := store.(interface{ Describe() string }); ok {
+		return d.Describe()
+	}
+	return "file"
 }
 
 func printPlan(plan model.Plan) {

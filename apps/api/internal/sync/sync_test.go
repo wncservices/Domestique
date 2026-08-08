@@ -50,7 +50,7 @@ func newStore(t *testing.T) state.Store {
 
 func TestBuildPlanCreatesUnsyncedRoutes(t *testing.T) {
 	routes, cfg := testRoutes(t), testConfig()
-	plan := BuildPlan(routes, cfg, newStore(t))
+	plan := mustPlan(t, routes, cfg, newStore(t))
 
 	changes := plan.Changes()
 	if want := len(routes) * len(cfg.Accounts); len(changes) != want {
@@ -66,7 +66,7 @@ func TestBuildPlanCreatesUnsyncedRoutes(t *testing.T) {
 func TestBuildPlanIsIdempotent(t *testing.T) {
 	routes, cfg, store := testRoutes(t), testConfig(), newStore(t)
 
-	for _, item := range BuildPlan(routes, cfg, store).Changes() {
+	for _, item := range mustPlan(t, routes, cfg, store).Changes() {
 		if err := store.Record(state.Entry{
 			AccountID:   item.AccountID,
 			Slug:        item.Slug,
@@ -77,7 +77,7 @@ func TestBuildPlanIsIdempotent(t *testing.T) {
 		}
 	}
 
-	if changes := BuildPlan(routes, cfg, store).Changes(); len(changes) != 0 {
+	if changes := mustPlan(t, routes, cfg, store).Changes(); len(changes) != 0 {
 		t.Fatalf("re-plan after a full push produced %d changes, want 0", len(changes))
 	}
 }
@@ -95,7 +95,7 @@ func TestBuildPlanDeletesRoutesDroppedFromLibrary(t *testing.T) {
 	}
 
 	var deletes int
-	for _, item := range BuildPlan(routes, cfg, store).Changes() {
+	for _, item := range mustPlan(t, routes, cfg, store).Changes() {
 		if item.Op == model.OpDelete {
 			deletes++
 			if item.RemoteID != "remote-123" {
@@ -123,7 +123,7 @@ func TestBuildPlanUpdatesChangedRoutes(t *testing.T) {
 	}
 
 	var found bool
-	for _, item := range BuildPlan(routes, cfg, store).Changes() {
+	for _, item := range mustPlan(t, routes, cfg, store).Changes() {
 		if item.Slug == route.Slug && item.AccountID == account {
 			found = true
 			if item.Op != model.OpUpdate {
@@ -147,7 +147,7 @@ func TestBuildPlanHonoursPerRouteTargets(t *testing.T) {
 	only := []string{"garmin:wilant"}
 	routes[0].Targets = &only
 
-	for _, item := range BuildPlan(routes, cfg, store).Changes() {
+	for _, item := range mustPlan(t, routes, cfg, store).Changes() {
 		if item.Slug == routes[0].Slug && item.AccountID != "garmin:wilant" {
 			t.Errorf("targeted route planned for %s as well", item.AccountID)
 		}

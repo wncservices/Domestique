@@ -12,11 +12,18 @@ import (
 )
 
 // BuildPlan compares the routes on offer against recorded remote state, per account.
-func BuildPlan(routes []model.Route, cfg *config.Config, store state.Store) model.Plan {
+//
+// It returns an error rather than treating unreadable state as empty: an empty
+// plan reads as "nothing to do", but empty *state* means "push everything
+// again", and the two must never be confused.
+func BuildPlan(routes []model.Route, cfg *config.Config, store state.Store) (model.Plan, error) {
 	var plan model.Plan
 
 	for _, account := range cfg.Accounts {
-		recorded := store.ForAccount(account.ID)
+		recorded, err := store.ForAccount(account.ID)
+		if err != nil {
+			return model.Plan{}, fmt.Errorf("read state for %s: %w", account.ID, err)
+		}
 
 		desired := map[string]model.Route{}
 		for _, route := range routes {
@@ -63,7 +70,7 @@ func BuildPlan(routes []model.Route, cfg *config.Config, store state.Store) mode
 		}
 	}
 
-	return plan
+	return plan, nil
 }
 
 // Apply executes a plan. It returns per-item failures; one bad route never

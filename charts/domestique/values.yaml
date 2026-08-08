@@ -63,12 +63,11 @@ envFrom: []
 # Individual environment variables, for anything not in a Secret.
 env: []
 
-# State — what each account is recorded as holding — is a JSON file, so the pod
-# needs somewhere durable to keep it. Losing it means re-pushing every route to
-# every device.
+# Only needed for a SQLite route library.
 #
-# A SQLite route library lives here too. With PostgreSQL, this holds only the
-# state file, and can be small.
+# Sync state — what each account is recorded as holding — lives in the database
+# alongside the routes, so with PostgreSQL there is nothing to keep on disk and
+# this can be turned off entirely.
 persistence:
   enabled: true
   size: 1Gi

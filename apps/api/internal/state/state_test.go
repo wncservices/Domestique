@@ -12,12 +12,32 @@ func tempState(t *testing.T) string {
 	return filepath.Join(t.TempDir(), "state.json")
 }
 
+// mustAll and mustForAccount keep the tests readable now that the reads can
+// fail. A failure here is a broken test, not a case under test.
+func mustAll(t *testing.T, store Store) []Entry {
+	t.Helper()
+	entries, err := store.All()
+	if err != nil {
+		t.Fatalf("All: %v", err)
+	}
+	return entries
+}
+
+func mustForAccount(t *testing.T, store Store, accountID string) map[string]Entry {
+	t.Helper()
+	entries, err := store.ForAccount(accountID)
+	if err != nil {
+		t.Fatalf("ForAccount(%s): %v", accountID, err)
+	}
+	return entries
+}
+
 func TestOpenCreatesEmptyStore(t *testing.T) {
 	store, err := Open(tempState(t))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	if entries := store.All(); len(entries) != 0 {
+	if entries := mustAll(t, store); len(entries) != 0 {
 		t.Errorf("fresh store has %d entries", len(entries))
 	}
 }
@@ -42,7 +62,7 @@ func TestStateSurvivesReopen(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	entries := reopened.All()
+	entries := mustAll(t, reopened)
 	if len(entries) != 1 {
 		t.Fatalf("got %d entries after reopen, want 1", len(entries))
 	}
@@ -71,7 +91,7 @@ func TestRecordUpdatesInPlace(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	entries := store.All()
+	entries := mustAll(t, store)
 	if len(entries) != 1 {
 		t.Fatalf("got %d entries, want the row replaced not duplicated", len(entries))
 	}
@@ -97,21 +117,21 @@ func TestForAccountIsolatesAccounts(t *testing.T) {
 		}
 	}
 
-	garmin := store.ForAccount("garmin:wilant")
+	garmin := mustForAccount(t, store, "garmin:wilant")
 	if len(garmin) != 1 || garmin["loop"].RemoteID != "remote-garmin:wilant" {
 		t.Errorf("garmin view = %+v", garmin)
 	}
-	if got := store.ForAccount("nobody"); len(got) != 0 {
+	if got := mustForAccount(t, store, "nobody"); len(got) != 0 {
 		t.Errorf("unknown account returned %d entries", len(got))
 	}
 
 	if err := store.Forget("garmin:wilant", "loop"); err != nil {
 		t.Fatal(err)
 	}
-	if len(store.ForAccount("garmin:wilant")) != 0 {
+	if len(mustForAccount(t, store, "garmin:wilant")) != 0 {
 		t.Error("forget did not remove the entry")
 	}
-	if len(store.ForAccount("wahoo:friend")) != 1 {
+	if len(mustForAccount(t, store, "wahoo:friend")) != 1 {
 		t.Error("forget removed the other account's entry too")
 	}
 }
@@ -142,7 +162,7 @@ func TestAllIsSortedForStableOutput(t *testing.T) {
 		}
 	}
 
-	entries := store.All()
+	entries := mustAll(t, store)
 	want := []string{"garmin:wilant/alpha", "garmin:wilant/beta", "wahoo:friend/zebra"}
 	for i, entry := range entries {
 		if got := entry.AccountID + "/" + entry.Slug; got != want[i] {

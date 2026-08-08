@@ -26,9 +26,14 @@ type Entry struct {
 }
 
 // Store is the persistence seam.
+//
+// The reads return errors because a database-backed store can fail at any
+// moment, and the failure modes are both bad: treating an error as "no state"
+// re-pushes every route to every device, and panicking takes the server down.
+// The caller has to decide, so it has to be told.
 type Store interface {
-	All() []Entry
-	ForAccount(accountID string) map[string]Entry
+	All() ([]Entry, error)
+	ForAccount(accountID string) (map[string]Entry, error)
 	Record(e Entry) error
 	Forget(accountID, slug string) error
 }
@@ -61,7 +66,7 @@ func Open(path string) (Store, error) {
 	return s, nil
 }
 
-func (s *fileStore) All() []Entry {
+func (s *fileStore) All() ([]Entry, error) {
 	out := make([]Entry, 0, len(s.entries))
 	for _, e := range s.entries {
 		out = append(out, e)
@@ -72,17 +77,17 @@ func (s *fileStore) All() []Entry {
 		}
 		return out[i].Slug < out[j].Slug
 	})
-	return out
+	return out, nil
 }
 
-func (s *fileStore) ForAccount(accountID string) map[string]Entry {
+func (s *fileStore) ForAccount(accountID string) (map[string]Entry, error) {
 	out := map[string]Entry{}
 	for _, e := range s.entries {
 		if e.AccountID == accountID {
 			out[e.Slug] = e
 		}
 	}
-	return out
+	return out, nil
 }
 
 func (s *fileStore) Record(e Entry) error {
@@ -103,7 +108,11 @@ func (s *fileStore) flush() error {
 		return err
 	}
 
-	raw, err := json.MarshalIndent(s.All(), "", "  ")
+	entries, err := s.All()
+	if err != nil {
+		return err
+	}
+	raw, err := json.MarshalIndent(entries, "", "  ")
 	if err != nil {
 		return err
 	}
