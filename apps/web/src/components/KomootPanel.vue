@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, h, onMounted, ref, resolveComponent } from 'vue'
 import type { TableColumn } from '@nuxt/ui'
+import { useToast } from '@nuxt/ui/composables'
 import { api } from '@/api/client'
 import type { KomootTour } from '@/api/types'
 

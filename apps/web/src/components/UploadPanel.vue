@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { useToast } from '@nuxt/ui/composables'
 import { api } from '@/api/client'
 import type { Account, Me } from '@/api/types'
 
