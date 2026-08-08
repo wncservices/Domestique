@@ -49,18 +49,11 @@ func TestFSSourceDefaultsItsPath(t *testing.T) {
 	}
 }
 
-func TestLoadParsesAccountsAndSource(t *testing.T) {
+func TestLoadParsesSource(t *testing.T) {
 	cfg, err := Load(writeConfig(t, `
 source:
   kind: db
   dsn: ./data/routes.db
-accounts:
-  - id: garmin:wilant
-    provider: garmin
-    rider: wilant
-    label: Wilant's Edge
-default_targets:
-  - garmin:wilant
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -69,31 +62,19 @@ default_targets:
 	if cfg.Source.Kind != SourceDB || cfg.Source.DSN != "./data/routes.db" {
 		t.Errorf("source = %+v", cfg.Source)
 	}
-	if len(cfg.Accounts) != 1 || cfg.Accounts[0].Label != "Wilant's Edge" {
-		t.Errorf("accounts = %+v", cfg.Accounts)
-	}
 }
 
 func TestLoadRejectsBadConfigs(t *testing.T) {
 	for name, body := range map[string]string{
-		"invalid yaml": "accounts: [oops",
-		"duplicate account id": `
-accounts:
-  - {id: garmin:wilant, provider: garmin, rider: wilant}
-  - {id: garmin:wilant, provider: garmin, rider: someone}
-`,
-		"account without rider": `
-accounts:
-  - {id: garmin:wilant, provider: garmin}
-`,
-		"default target names nobody": `
-accounts:
-  - {id: garmin:wilant, provider: garmin, rider: wilant}
-default_targets: [wahoo:ghost]
-`,
+		"invalid yaml": "source: [oops",
 		"unknown source kind": `
 source:
   kind: carrier-pigeon
+`,
+		"required group with no auth": `
+auth:
+  mode: none
+  required_group: riders
 `,
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -101,6 +82,28 @@ source:
 				t.Error("expected an error, got none")
 			}
 		})
+	}
+}
+
+// Accounts are linked through the UI and live in the database. Anything in the
+// config file naming them would be a second source of truth.
+func TestConfigHasNoAccounts(t *testing.T) {
+	cfg, err := Load(writeConfig(t, `
+accounts:
+  - id: garmin:someone
+    provider: garmin
+    rider: someone
+default_targets: [garmin:someone]
+source:
+  kind: db
+  dsn: x.db
+`))
+	if err != nil {
+		t.Fatalf("stray keys should be ignored, not fatal: %v", err)
+	}
+	// The point: nothing above reaches the app.
+	if cfg.Source.DSN != "x.db" {
+		t.Errorf("source = %+v", cfg.Source)
 	}
 }
 
@@ -122,114 +125,57 @@ func TestValidateCatchesOverriddenSource(t *testing.T) {
 	}
 }
 
-func TestTargetsForFallsBackToDefaults(t *testing.T) {
-	cfg := &Config{DefaultTargets: []string{"garmin:wilant", "wahoo:friend"}}
-
-	// No targets named: inherit the defaults.
-	if got := cfg.TargetsFor(model.Route{}); len(got) != 2 {
-		t.Errorf("targets = %v, want both defaults", got)
+func TestTargetsForDefaultsToEveryLinkedAccount(t *testing.T) {
+	linked := []model.Account{
+		{ID: "garmin:one", Provider: model.ProviderGarmin, Rider: "one"},
+		{ID: "wahoo:two", Provider: model.ProviderWahoo, Rider: "two"},
 	}
 
-	// Targets named: use exactly those. This is what keeps one rider's
-	// private routes off the other's head unit.
-	only := []string{"garmin:wilant"}
+	// No targets named: every linked account, which is the useful default for
+	// a library two people share.
+	if got := TargetsFor(model.Route{}, linked); len(got) != 2 {
+		t.Errorf("targets = %v, want both linked accounts", got)
+	}
+
+	// Targets named: exactly those. This is what keeps one rider's private
+	// routes off the other's head unit.
+	only := []string{"garmin:one"}
 	route := model.Route{RouteMeta: model.RouteMeta{Targets: &only}}
-	if got := cfg.TargetsFor(route); len(got) != 1 || got[0] != "garmin:wilant" {
-		t.Errorf("targets = %v, want [garmin:wilant]", got)
+	if got := TargetsFor(route, linked); len(got) != 1 || got[0] != "garmin:one" {
+		t.Errorf("targets = %v, want [garmin:one]", got)
 	}
 
-	// An explicitly empty list means nowhere, not "the defaults".
+	// An explicitly empty list means nowhere, not "everywhere".
 	none := []string{}
 	route = model.Route{RouteMeta: model.RouteMeta{Targets: &none}}
-	if got := cfg.TargetsFor(route); len(got) != 0 {
+	if got := TargetsFor(route, linked); len(got) != 0 {
 		t.Errorf("targets = %v, want none", got)
+	}
+
+	// And with nothing linked there is nowhere to push, which is honest
+	// rather than an error.
+	if got := TargetsFor(model.Route{}, nil); len(got) != 0 {
+		t.Errorf("targets = %v, want none when nothing is linked", got)
 	}
 }
 
 func TestUnknownTargetsAreReported(t *testing.T) {
-	cfg := &Config{
-		Accounts: []model.Account{
-			{ID: "garmin:wilant", Provider: model.ProviderGarmin, Rider: "wilant"},
-		},
-	}
+	linked := []model.Account{{ID: "garmin:one", Provider: model.ProviderGarmin, Rider: "one"}}
 
-	typo := []string{"garmin:wilnat"}
+	typo := []string{"garmin:onee"}
 	route := model.Route{RouteMeta: model.RouteMeta{Targets: &typo}}
-
-	unknown := cfg.UnknownTargets(route)
-	if len(unknown) != 1 || unknown[0] != "garmin:wilnat" {
+	if unknown := UnknownTargets(route, linked); len(unknown) != 1 {
 		t.Errorf("unknown = %v, want the typo flagged", unknown)
 	}
 
-	good := []string{"garmin:wilant"}
+	good := []string{"garmin:one"}
 	route = model.Route{RouteMeta: model.RouteMeta{Targets: &good}}
-	if unknown := cfg.UnknownTargets(route); len(unknown) != 0 {
+	if unknown := UnknownTargets(route, linked); len(unknown) != 0 {
 		t.Errorf("unknown = %v, want none", unknown)
 	}
-}
 
-func TestAccountLookup(t *testing.T) {
-	cfg := &Config{
-		Accounts: []model.Account{
-			{ID: "wahoo:friend", Provider: model.ProviderWahoo, Rider: "friend"},
-		},
-	}
-
-	if _, ok := cfg.Account("wahoo:friend"); !ok {
-		t.Error("known account not found")
-	}
-	if _, ok := cfg.Account("garmin:nobody"); ok {
-		t.Error("unknown account reported as found")
-	}
-}
-
-// A PostgreSQL DSN carries a password, so a deployment supplies it through the
-// environment. Without this, the only way to configure one is to write a
-// credential into a file meant to be readable.
-func TestSourceDSNFromEnvironment(t *testing.T) {
-	const dsn = "postgres://domestique:secret@db.internal:5432/domestique"
-	t.Setenv(EnvSourceDSN, dsn)
-
-	cfg, err := Load(writeConfig(t, "source:\n  kind: fs\n  path: ./routes\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// The environment wins, and switches the source to db along with it —
-	// otherwise a leftover `kind: fs` would silently ignore the DSN.
-	if cfg.Source.Kind != SourceDB {
-		t.Errorf("kind = %q, want db", cfg.Source.Kind)
-	}
-	if cfg.Source.DSN != dsn {
-		t.Errorf("dsn = %q, want the environment's", cfg.Source.DSN)
-	}
-}
-
-func TestSourceDSNEnvironmentIsOptional(t *testing.T) {
-	cfg, err := Load(writeConfig(t, "source:\n  kind: db\n  dsn: ./local.db\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.Source.DSN != "./local.db" {
-		t.Errorf("dsn = %q, want the config file's when the env var is unset", cfg.Source.DSN)
-	}
-}
-
-// The container case: no config file at all, everything from the environment.
-// This regressed once — Load returned early on a missing file, before the
-// override ran — and it is the deployment's normal path.
-func TestSourceDSNFromEnvironmentWithNoConfigFile(t *testing.T) {
-	const dsn = "postgres://domestique:secret@db.internal:5432/domestique"
-	t.Setenv(EnvSourceDSN, dsn)
-
-	cfg, err := Load(filepath.Join(t.TempDir(), "absent.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.Source.DSN != dsn {
-		t.Errorf("dsn = %q, want the environment's — the override was skipped", cfg.Source.DSN)
-	}
-	if cfg.Source.Kind != SourceDB {
-		t.Errorf("kind = %q, want db", cfg.Source.Kind)
+	// A route with no targets inherits the linked set, so nothing is unknown.
+	if unknown := UnknownTargets(model.Route{}, linked); len(unknown) != 0 {
+		t.Errorf("unknown = %v, want none", unknown)
 	}
 }

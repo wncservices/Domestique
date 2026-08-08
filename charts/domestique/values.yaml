@@ -41,13 +41,9 @@ config:
   komoot:
     enabled: false
 
-  accounts: []
-  # - id: garmin:rider-one
-  #   provider: garmin
-  #   rider: rider-one
-  #   label: First rider's Garmin
-
-  default_targets: []
+  # Head units are not configured here. Riders link their own Garmin or Wahoo
+  # from the web UI and it is stored in the database, so there is no second
+  # place where somebody's devices are written down.
 
 # Secrets reach the pod as environment variables. Create the Secret separately
 # — with an ExternalSecret from Vault, for instance — and name it here.

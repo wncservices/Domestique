@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/wncservices/domestique/apps/api/internal/accounts"
 	"github.com/wncservices/domestique/apps/api/internal/auth"
 	"github.com/wncservices/domestique/apps/api/internal/config"
 	"github.com/wncservices/domestique/apps/api/internal/fitcourse"
@@ -36,11 +37,12 @@ const maxUploadBytes = 20 << 20 // 20 MiB
 
 // Server holds the request-scoped dependencies.
 type Server struct {
-	Source source.Source
-	Config *config.Config
-	Store  state.Store
-	Auth   *auth.Authenticator
-	Log    *slog.Logger
+	Source   source.Source
+	Config   *config.Config
+	Store    state.Store
+	Accounts *accounts.Store
+	Auth     *auth.Authenticator
+	Log      *slog.Logger
 	// Komoot imports routes from a Komoot account. Nil disables the feature.
 	Komoot KomootImporter
 	// WebFS is the built frontend. Nil serves an API-only server.
@@ -62,6 +64,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/config", s.handleConfig)
 	mux.HandleFunc("GET /api/me", s.handleMe)
 	mux.HandleFunc("GET /api/accounts", s.handleAccounts)
+	mux.HandleFunc("POST /api/accounts", s.handleLinkAccount)
+	mux.HandleFunc("DELETE /api/accounts/{id}", s.handleUnlinkAccount)
 	mux.HandleFunc("GET /api/routes", s.handleRoutes)
 	mux.HandleFunc("GET /api/plan", s.handlePlan)
 	mux.HandleFunc("POST /api/push", s.handlePush)
@@ -174,6 +178,8 @@ type accountDTO struct {
 	Label    string `json:"label"`
 	// Implemented reports whether pushes to this provider actually work yet.
 	Implemented bool `json:"implemented"`
+	// Mine tells the UI whether the viewer may unlink this one.
+	Mine bool `json:"mine"`
 }
 
 type routeDTO struct {
@@ -264,18 +270,155 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) handleAccounts(w http.ResponseWriter, _ *http.Request) {
-	out := make([]accountDTO, 0, len(s.Config.Accounts))
-	for _, a := range s.Config.Accounts {
+func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request) {
+	if !s.require(w, r, auth.PermReadRoutes) {
+		return
+	}
+
+	linked, ok := s.linkedAccounts(w)
+	if !ok {
+		return
+	}
+
+	identity := auth.FromContext(r.Context())
+	out := make([]accountDTO, 0, len(linked))
+	for _, a := range linked {
 		out = append(out, accountDTO{
 			ID:          a.ID,
 			Provider:    string(a.Provider),
 			Rider:       a.Rider,
 			Label:       a.Label,
 			Implemented: targets.Implemented(a.Provider),
+			Mine:        identity.CanEditRoute(a.Rider),
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// handleLinkAccount connects a provider for the signed-in rider.
+//
+// The rider comes from the session, never the request body: an account is
+// yours because you linked it, and letting the body say otherwise would let
+// someone create an account they cannot then unlink.
+func (s *Server) handleLinkAccount(w http.ResponseWriter, r *http.Request) {
+	if !s.require(w, r, auth.PermManageAccounts) {
+		return
+	}
+	if !s.accountsWritable(w) {
+		return
+	}
+
+	var body struct {
+		Provider string `json:"provider"`
+		Label    string `json:"label"`
+		// Rider is honoured only for an admin linking on someone's behalf.
+		Rider string `json:"rider"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	identity := auth.FromContext(r.Context())
+	rider := identity.User
+	if body.Rider != "" && !strings.EqualFold(body.Rider, identity.User) {
+		if !identity.Role.Can(auth.PermEditAny) {
+			writeJSON(w, http.StatusForbidden, map[string]string{
+				"error": "only an admin can link an account for somebody else",
+			})
+			return
+		}
+		rider = body.Rider
+	}
+
+	account, err := s.Accounts.Link(model.Provider(body.Provider), rider, body.Label)
+	if err != nil {
+		status := http.StatusBadRequest
+		if errors.Is(err, accounts.ErrExists) {
+			status = http.StatusConflict
+		}
+		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+
+	s.logger().Info("account linked", "id", account.ID, "by", identity.User)
+	writeJSON(w, http.StatusCreated, accountDTO{
+		ID:          account.ID,
+		Provider:    string(account.Provider),
+		Rider:       account.Rider,
+		Label:       account.Label,
+		Implemented: targets.Implemented(account.Provider),
+		Mine:        true,
+	})
+}
+
+// handleUnlinkAccount removes a linked provider. Riders may unlink their own;
+// admins anyone's.
+func (s *Server) handleUnlinkAccount(w http.ResponseWriter, r *http.Request) {
+	if !s.require(w, r, auth.PermManageAccounts) {
+		return
+	}
+	if !s.accountsWritable(w) {
+		return
+	}
+
+	id := cleanSlug(r.PathValue("id"))
+	account, err := s.Accounts.Get(id)
+	if err != nil {
+		s.failAccount(w, err)
+		return
+	}
+
+	identity := auth.FromContext(r.Context())
+	if !identity.CanEditRoute(account.Rider) {
+		writeJSON(w, http.StatusForbidden, map[string]string{
+			"error": "that account belongs to " + account.Rider + "; only they or an admin can unlink it",
+		})
+		return
+	}
+
+	if err := s.Accounts.Unlink(id); err != nil {
+		s.failAccount(w, err)
+		return
+	}
+
+	s.logger().Info("account unlinked", "id", id, "by", identity.User)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// accountsWritable reports whether accounts can be linked at all.
+func (s *Server) accountsWritable(w http.ResponseWriter) bool {
+	if s.Accounts != nil {
+		return true
+	}
+	writeJSON(w, http.StatusNotImplemented, map[string]string{
+		"error": "this library has no database, so head units cannot be linked — " +
+			"use a database source",
+	})
+	return false
+}
+
+func (s *Server) failAccount(w http.ResponseWriter, err error) {
+	if errors.Is(err, accounts.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	}
+	s.fail(w, err)
+}
+
+// linkedAccounts reads the accounts, or writes the error and reports false.
+func (s *Server) linkedAccounts(w http.ResponseWriter) ([]model.Account, bool) {
+	if s.Accounts == nil {
+		// A directory-backed library has no database to link against.
+		return nil, true
+	}
+
+	linked, err := s.Accounts.List()
+	if err != nil {
+		s.fail(w, err)
+		return nil, false
+	}
+	return linked, true
 }
 
 func (s *Server) handleRoutes(w http.ResponseWriter, r *http.Request) {
@@ -288,8 +431,13 @@ func (s *Server) handleRoutes(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
+	linked, ok := s.linkedAccounts(w)
+	if !ok {
+		return
+	}
+
 	writeJSON(w, http.StatusOK, libraryResponse{
-		Routes:   s.toRouteDTOs(routes),
+		Routes:   s.toRouteDTOs(routes, linked),
 		Problems: orEmpty(problems),
 	})
 }
@@ -406,7 +554,12 @@ func (s *Server) handlePlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	plan, err := syncer.BuildPlan(routes, s.Config, s.Store)
+	linked, ok := s.linkedAccounts(w)
+	if !ok {
+		return
+	}
+
+	plan, err := syncer.BuildPlan(routes, linked, s.Store)
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -434,13 +587,18 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	linked, ok := s.linkedAccounts(w)
+	if !ok {
+		return
+	}
+
 	build := s.TargetFactory
 	if build == nil {
 		build = targets.Build
 	}
 
 	byAccount := map[string]targets.Target{}
-	for _, account := range s.Config.Accounts {
+	for _, account := range linked {
 		target, err := build(account)
 		if err != nil {
 			s.fail(w, err)
@@ -449,7 +607,7 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 		byAccount[account.ID] = target
 	}
 
-	plan, err := syncer.BuildPlan(routes, s.Config, s.Store)
+	plan, err := syncer.BuildPlan(routes, linked, s.Store)
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -536,8 +694,13 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	linked, ok := s.linkedAccounts(w)
+	if !ok {
+		return
+	}
+
 	s.logger().Info("route uploaded", "slug", route.Slug, "by", req.UploadedBy)
-	writeJSON(w, http.StatusCreated, s.toRouteDTO(route))
+	writeJSON(w, http.StatusCreated, s.toRouteDTO(route, linked))
 }
 
 func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
@@ -579,7 +742,12 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		s.failLookup(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.toRouteDTO(route))
+	linked, ok := s.linkedAccounts(w)
+	if !ok {
+		return
+	}
+
+	writeJSON(w, http.StatusOK, s.toRouteDTO(route, linked))
 }
 
 // handleDelete removes a route from the source. It deliberately leaves sync
@@ -611,10 +779,10 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 
 // ---------- plumbing ----------
 
-func (s *Server) toRouteDTOs(routes []model.Route) []routeDTO {
+func (s *Server) toRouteDTOs(routes []model.Route, linked []model.Account) []routeDTO {
 	out := make([]routeDTO, 0, len(routes))
 	for _, r := range routes {
-		out = append(out, s.toRouteDTO(r))
+		out = append(out, s.toRouteDTO(r, linked))
 	}
 	return out
 }
@@ -631,8 +799,8 @@ func (s *Server) stateFor(accountID string) map[string]state.Entry {
 	return entries
 }
 
-func (s *Server) toRouteDTO(r model.Route) routeDTO {
-	targetIDs := s.Config.TargetsFor(r)
+func (s *Server) toRouteDTO(r model.Route, linked []model.Account) routeDTO {
+	targetIDs := config.TargetsFor(r, linked)
 	statuses := make([]syncStatus, 0, len(targetIDs))
 	for _, id := range targetIDs {
 		entry, seen := s.stateFor(id)[r.Slug]
@@ -667,7 +835,7 @@ func (s *Server) toRouteDTO(r model.Route) routeDTO {
 		Owner:          r.Owner,
 		UpdatedAt:      r.UpdatedAt,
 		Targets:        orEmpty(targetIDs),
-		UnknownTargets: orEmpty(s.Config.UnknownTargets(r)),
+		UnknownTargets: orEmpty(config.UnknownTargets(r, linked)),
 		SyncState:      statuses,
 	}
 }

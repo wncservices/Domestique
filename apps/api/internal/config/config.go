@@ -50,12 +50,16 @@ type KomootConfig struct {
 }
 
 // Config is domestique.yaml.
+//
+// Deliberately small. Accounts are not here: they are linked by riders through
+// the UI and live in the database, so there is no second place where somebody's
+// devices are written down and no way for the two to disagree. What is left is
+// what a process needs before it can reach anything — where the database is,
+// and how to recognise a user.
 type Config struct {
-	Accounts       []model.Account `yaml:"accounts"`
-	DefaultTargets []string        `yaml:"default_targets"`
-	Source         SourceConfig    `yaml:"source"`
-	Auth           auth.Config     `yaml:"auth"`
-	Komoot         KomootConfig    `yaml:"komoot"`
+	Source SourceConfig `yaml:"source"`
+	Auth   auth.Config  `yaml:"auth"`
+	Komoot KomootConfig `yaml:"komoot"`
 }
 
 // DefaultDSN is where a database library lives unless configured otherwise.
@@ -119,21 +123,6 @@ func (c *Config) applyDefaults() {
 // flags can rewrite the source after Load, and an unchecked override would
 // otherwise silently fall back to a filesystem source.
 func (c *Config) Validate() error {
-	seen := map[string]bool{}
-	for _, a := range c.Accounts {
-		if a.ID == "" || a.Rider == "" {
-			return fmt.Errorf("account %q: id and rider are both required", a.ID)
-		}
-		if seen[a.ID] {
-			return fmt.Errorf("duplicate account id %q", a.ID)
-		}
-		seen[a.ID] = true
-	}
-	for _, target := range c.DefaultTargets {
-		if !seen[target] {
-			return fmt.Errorf("default_targets names unknown account %q", target)
-		}
-	}
 	switch c.Source.Kind {
 	case SourceFS, SourceDB:
 	default:
@@ -147,31 +136,39 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// Account looks up a configured account by id.
-func (c *Config) Account(id string) (model.Account, bool) {
-	for _, a := range c.Accounts {
-		if a.ID == id {
-			return a, true
-		}
-	}
-	return model.Account{}, false
-}
-
-// TargetsFor returns the accounts a route should be pushed to. A route that
-// does not name targets inherits the library default.
-func (c *Config) TargetsFor(r model.Route) []string {
+// TargetsFor returns the accounts a route should be pushed to.
+//
+// A route that names targets goes exactly there — that is what keeps one
+// rider's private routes off the other's head unit. A route that names none
+// goes to every linked account, which is the useful default for a library two
+// people share.
+func TargetsFor(r model.Route, linked []model.Account) []string {
 	if r.Targets != nil {
 		return *r.Targets
 	}
-	return c.DefaultTargets
+
+	out := make([]string, 0, len(linked))
+	for _, a := range linked {
+		out = append(out, a.ID)
+	}
+	return out
 }
 
-// UnknownTargets reports targets that name accounts which do not exist, so the
-// UI can surface a typo instead of silently never syncing a route.
-func (c *Config) UnknownTargets(r model.Route) []string {
+// UnknownTargets reports targets naming accounts that are not linked, so the
+// UI can show a route that will never sync rather than leaving it silent.
+func UnknownTargets(r model.Route, linked []model.Account) []string {
+	if r.Targets == nil {
+		return nil
+	}
+
+	known := make(map[string]bool, len(linked))
+	for _, a := range linked {
+		known[a.ID] = true
+	}
+
 	var unknown []string
-	for _, target := range c.TargetsFor(r) {
-		if _, ok := c.Account(target); !ok {
+	for _, target := range *r.Targets {
+		if !known[target] {
 			unknown = append(unknown, target)
 		}
 	}

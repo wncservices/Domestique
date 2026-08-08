@@ -7,23 +7,16 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/wncservices/domestique/apps/api/internal/accounts"
+	"github.com/wncservices/domestique/apps/api/internal/model"
+	"github.com/wncservices/domestique/apps/api/internal/source"
 )
 
 const testConfig = `
 source:
   kind: fs
   path: ./routes
-accounts:
-  - id: garmin:wilant
-    provider: garmin
-    rider: wilant
-    label: Wilant's Edge
-  - id: wahoo:friend
-    provider: wahoo
-    rider: friend
-default_targets:
-  - garmin:wilant
-  - wahoo:friend
 `
 
 const exampleGPX = `<?xml version="1.0" encoding="UTF-8"?>
@@ -51,6 +44,27 @@ func workspace(t *testing.T) string {
 
 	t.Chdir(dir)
 	return dir
+}
+
+// linkAccount links a head unit the way the UI would, so the CLI tests have
+// something to push to. Accounts live in the database now; nothing in the
+// config file names them.
+func linkAccount(t *testing.T, dsn, provider, rider string) {
+	t.Helper()
+
+	db, err := source.OpenDB(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	store, err := accounts.UseDB(db.Conn(), db.DSN())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Link(model.Provider(provider), rider, ""); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func write(t *testing.T, path, body string) {
@@ -122,7 +136,7 @@ func TestCLIValidate(t *testing.T) {
 	workspace(t)
 
 	out := mustRun(t, "validate")
-	for _, want := range []string{"kemmelberg-loop", "Kemmelberg Loop", "1 route(s)", "2 account(s)"} {
+	for _, want := range []string{"kemmelberg-loop", "Kemmelberg Loop", "1 route(s)"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("validate output missing %q:\n%s", want, out)
 		}
@@ -174,37 +188,44 @@ func TestCLIValidateWithNoConfigCreatesDatabase(t *testing.T) {
 	}
 }
 
-func TestCLIPlan(t *testing.T) {
+// A directory library has no database, so nothing can be linked and there is
+// nowhere to push. Plan says so by having nothing to do.
+func TestCLIPlanWithNothingLinked(t *testing.T) {
 	workspace(t)
 
 	out := mustRun(t, "plan")
-	if !strings.Contains(out, "create") {
-		t.Errorf("plan has no creates:\n%s", out)
+	if !strings.Contains(out, "up to date") && !strings.Contains(out, "0 change") {
+		t.Errorf("expected an empty plan with nothing linked:\n%s", out)
 	}
-	for _, account := range []string{"garmin:wilant", "wahoo:friend"} {
-		if !strings.Contains(out, account) {
-			t.Errorf("plan does not mention %s:\n%s", account, out)
-		}
-	}
-	if !strings.Contains(out, "2 change(s)") {
-		t.Errorf("plan summary missing:\n%s", out)
+}
+
+// With a database and a linked head unit, the same route does produce a plan.
+func TestCLIPlanWithALinkedAccount(t *testing.T) {
+	dir := workspace(t)
+	db := filepath.Join(dir, "data", "routes.db")
+
+	mustRun(t, "import", "--source", "db", "--db", db, "--from", "./routes")
+	linkAccount(t, db, "garmin", "one")
+
+	out := mustRun(t, "plan", "--source", "db", "--db", db)
+	if !strings.Contains(out, "create") || !strings.Contains(out, "garmin:one") {
+		t.Errorf("plan does not target the linked account:\n%s", out)
 	}
 }
 
 func TestCLIPushDryRunChangesNothing(t *testing.T) {
 	dir := workspace(t)
+	db := filepath.Join(dir, "data", "routes.db")
+	mustRun(t, "import", "--source", "db", "--db", db, "--from", "./routes")
+	linkAccount(t, db, "garmin", "one")
 
-	out := mustRun(t, "push", "--dry-run")
+	out := mustRun(t, "push", "--source", "db", "--db", db, "--dry-run")
 	if !strings.Contains(out, "dry run") {
 		t.Errorf("dry run not announced:\n%s", out)
 	}
 
-	if _, err := os.Stat(filepath.Join(dir, ".domestique-state.json")); err == nil {
-		t.Error("dry run wrote a state file")
-	}
-
 	// And the plan is unchanged afterwards.
-	if out := mustRun(t, "plan"); !strings.Contains(out, "2 change(s)") {
+	if out := mustRun(t, "plan", "--source", "db", "--db", db); !strings.Contains(out, "1 change(s)") {
 		t.Errorf("dry run changed the plan:\n%s", out)
 	}
 }
@@ -212,9 +233,12 @@ func TestCLIPushDryRunChangesNothing(t *testing.T) {
 // The adapters are stubs, so a real push must fail loudly rather than
 // silently recording success.
 func TestCLIPushFailsWhileAdaptersAreStubs(t *testing.T) {
-	workspace(t)
+	dir := workspace(t)
+	db := filepath.Join(dir, "data", "routes.db")
+	mustRun(t, "import", "--source", "db", "--db", db, "--from", "./routes")
+	linkAccount(t, db, "garmin", "one")
 
-	_, err := capture(t, "push")
+	_, err := capture(t, "push", "--source", "db", "--db", db)
 	if err == nil {
 		t.Fatal("push reported success with stub adapters")
 	}

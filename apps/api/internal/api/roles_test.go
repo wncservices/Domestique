@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/wncservices/domestique/apps/api/internal/accounts"
 	"github.com/wncservices/domestique/apps/api/internal/api"
 	"github.com/wncservices/domestique/apps/api/internal/auth"
 	"github.com/wncservices/domestique/apps/api/internal/config"
@@ -60,16 +61,13 @@ func newAuthHarness(t *testing.T, komootClient api.KomootImporter) *authHarness 
 	}
 
 	srv := &api.Server{
-		Source: db,
-		Store:  store,
-		Auth:   authenticator,
-		Komoot: komootClient,
+		Source:   db,
+		Store:    store,
+		Auth:     authenticator,
+		Komoot:   komootClient,
+		Accounts: seedRoleAccounts(t, db),
 		Config: &config.Config{
-			Accounts: []model.Account{
-				{ID: "garmin:wilant", Provider: model.ProviderGarmin, Rider: "wilant"},
-			},
-			DefaultTargets: []string{"garmin:wilant"},
-			Komoot:         config.KomootConfig{Enabled: komootClient != nil},
+			Komoot: config.KomootConfig{Enabled: komootClient != nil},
 		},
 		TargetFactory: func(model.Account) (targets.Target, error) {
 			return stubTarget{}, nil
@@ -80,6 +78,20 @@ func newAuthHarness(t *testing.T, komootClient api.KomootImporter) *authHarness 
 	t.Cleanup(server.Close)
 
 	return &authHarness{t: t, client: server.Client(), base: server.URL, src: db}
+}
+
+// seedRoleAccounts links one head unit, owned by "wilant".
+func seedRoleAccounts(t *testing.T, db *source.DB) *accounts.Store {
+	t.Helper()
+
+	store, err := accounts.UseDB(db.Conn(), db.DSN())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Link(model.ProviderGarmin, "wilant", ""); err != nil {
+		t.Fatal(err)
+	}
+	return store
 }
 
 type stubTarget struct{}
@@ -407,4 +419,129 @@ func TestKomootDisabledWhenNotConfigured(t *testing.T) {
 	if resp.StatusCode != http.StatusNotImplemented {
 		t.Errorf("status = %d, want 501 when Komoot is not configured", resp.StatusCode)
 	}
+}
+
+// ---------- linking head units ----------
+
+// An account is yours because you linked it. The rider comes from the session,
+// never the body — otherwise someone could create an account they cannot then
+// unlink, or plant one on somebody else.
+func TestLinkingUsesTheSessionRider(t *testing.T) {
+	h := newAuthHarness(t, nil)
+
+	resp := h.as("wilant", "cyclists", http.MethodPost, "/api/accounts",
+		`{"provider":"wahoo","rider":"somebody-else"}`)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 for linking as another rider", resp.StatusCode)
+	}
+
+	resp = h.as("wilant", "cyclists", http.MethodPost, "/api/accounts", `{"provider":"wahoo"}`)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("linking own account: status = %d", resp.StatusCode)
+	}
+
+	var created struct {
+		ID    string `json:"id"`
+		Rider string `json:"rider"`
+		Mine  bool   `json:"mine"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if created.Rider != "wilant" || created.ID != "wahoo:wilant" {
+		t.Errorf("created = %+v, want it owned by the session user", created)
+	}
+	if !created.Mine {
+		t.Error("the linker cannot manage what they just linked")
+	}
+}
+
+func TestLinkingTwiceIsAConflict(t *testing.T) {
+	h := newAuthHarness(t, nil)
+
+	if resp := h.as("wilant", "cyclists", http.MethodPost, "/api/accounts",
+		`{"provider":"wahoo"}`); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("first link: %d", resp.StatusCode)
+	}
+	// One head unit per rider per provider; a duplicate would give two rows
+	// claiming the same device.
+	if resp := h.as("wilant", "cyclists", http.MethodPost, "/api/accounts",
+		`{"provider":"wahoo"}`); resp.StatusCode != http.StatusConflict {
+		t.Errorf("second link: status = %d, want 409", resp.StatusCode)
+	}
+}
+
+func TestUnlinkingRespectsOwnership(t *testing.T) {
+	h := newAuthHarness(t, nil)
+
+	// The harness links garmin:wilant. Another rider must not remove it.
+	if resp := h.as("friend", "cyclists", http.MethodDelete,
+		"/api/accounts/garmin:wilant", ""); resp.StatusCode != http.StatusForbidden {
+		t.Errorf("another rider unlinked it: status = %d, want 403", resp.StatusCode)
+	}
+
+	// An admin may.
+	if resp := h.as("boss", "domestique-admins", http.MethodDelete,
+		"/api/accounts/garmin:wilant", ""); resp.StatusCode != http.StatusNoContent {
+		t.Errorf("admin unlink: status = %d, want 204", resp.StatusCode)
+	}
+}
+
+func TestViewerCannotLink(t *testing.T) {
+	h := newAuthHarness(t, nil)
+
+	if resp := h.as("guest", "guests", http.MethodPost, "/api/accounts",
+		`{"provider":"garmin"}`); resp.StatusCode != http.StatusForbidden {
+		t.Errorf("viewer linked an account: status = %d, want 403", resp.StatusCode)
+	}
+}
+
+func TestUnlinkingSomethingMissing(t *testing.T) {
+	h := newAuthHarness(t, nil)
+
+	if resp := h.as("wilant", "cyclists", http.MethodDelete,
+		"/api/accounts/garmin:nobody", ""); resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+// A route with no targets of its own goes to every linked head unit, so
+// linking one immediately gives the routes somewhere to go.
+func TestLinkingChangesWhatRoutesTarget(t *testing.T) {
+	h := newAuthHarness(t, nil)
+	h.seedRoute(t, "Shared route", "wilant")
+
+	before := h.routeTargets(t)
+	if len(before) != 1 {
+		t.Fatalf("targets = %v, want the one account the harness linked", before)
+	}
+
+	if resp := h.as("friend", "cyclists", http.MethodPost, "/api/accounts",
+		`{"provider":"wahoo"}`); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("link: %d", resp.StatusCode)
+	}
+
+	after := h.routeTargets(t)
+	if len(after) != 2 {
+		t.Errorf("targets = %v, want both linked accounts", after)
+	}
+}
+
+// routeTargets reads the targets of the first route.
+func (h *authHarness) routeTargets(t *testing.T) []string {
+	t.Helper()
+
+	resp := h.as("wilant", "cyclists", http.MethodGet, "/api/routes", "")
+	var library struct {
+		Routes []struct {
+			Targets []string `json:"targets"`
+		} `json:"routes"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&library); err != nil {
+		t.Fatal(err)
+	}
+	if len(library.Routes) == 0 {
+		return nil
+	}
+	return library.Routes[0].Targets
 }

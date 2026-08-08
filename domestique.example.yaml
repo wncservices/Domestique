@@ -75,19 +75,11 @@ komoot:
   # Also import rides you have recorded, not just routes you have plotted.
   # include_recorded: false
 
-# The riders' accounts. IDs are "<provider>:<rider>".
-accounts:
-  - id: garmin:wilant
-    provider: garmin
-    rider: wilant
-    label: Wilant's Garmin Edge
-
-  - id: wahoo:friend
-    provider: wahoo
-    rider: friend
-    label: Friend's Wahoo ELEMNT
-
-# Where a route goes when it does not name targets itself.
-default_targets:
-  - garmin:wilant
-  - wahoo:friend
+# Head units are not configured here.
+#
+# Riders link their own Garmin or Wahoo from the web UI, and the link is stored
+# in the database next to the routes. The rider is taken from the Authelia
+# session at link time, so there is no second place where somebody's name and
+# devices are written down, and no way for the two to disagree.
+#
+# A route with no `targets` of its own goes to every linked head unit.

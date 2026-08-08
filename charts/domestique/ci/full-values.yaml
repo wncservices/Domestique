@@ -25,19 +25,7 @@ config:
   komoot:
     enabled: true
 
-  accounts:
-    - id: garmin:rider-one
-      provider: garmin
-      rider: rider-one
-      label: First rider's Garmin
-    - id: wahoo:rider-two
-      provider: wahoo
-      rider: rider-two
-      label: Second rider's Wahoo
-
-  default_targets:
-    - garmin:rider-one
-    - wahoo:rider-two
+  # No accounts here: riders link their own head units from the UI.
 
 # Create this Secret yourself — an ExternalSecret from a secret manager, for
 # instance. It must carry DOMESTIQUE_SOURCE_DSN, and KOMOOT_EMAIL /

@@ -22,6 +22,38 @@ route data**:
 Go module: `github.com/wncservices/domestique/apps/api`, wired through the root `go.work`.
 npm workspace: `@domestique/web`, wired through the root `package.json`.
 
+## Users, riders and accounts
+
+Three words that are easy to confuse, and the distinction is the whole design:
+
+- A **user** is a person who logs in. Users come from Authelia and are **never
+  stored** — no table, no config. `Remote-User` says who, `Remote-Groups` says
+  what they may do.
+- A **rider** is that user's name as it appears on things they own. It is
+  simply the Authelia username, copied at the moment they act.
+- An **account** is a *connection to a head unit* — a Garmin Connect or Wahoo
+  account, with a label and (once the adapters exist) a credential. Authelia
+  knows nothing about anyone's Garmin login, so these cannot come from there.
+
+Accounts live in the `accounts` table and are created by **riders linking their
+own** through the UI. Nothing in the config file names them. Two rules hold
+this together:
+
+- **The rider comes from the session, never the request body.** Letting the
+  body decide would let someone plant an account on another rider, or create
+  one they cannot then unlink. An admin may link on someone's behalf, and only
+  an admin.
+- **One account per rider per provider**, which is what makes `provider:rider`
+  a safe primary key. A duplicate would mean two rows claiming one device.
+
+A route with no `targets` of its own goes to **every linked account** — the
+useful default for a library two people share. Naming targets is what keeps a
+private route off the other rider's head unit.
+
+**A directory-backed library has no database, so nothing can be linked to it.**
+Browsing, downloading and FIT export still work; syncing needs a database
+source. Linking against an fs library answers 501 rather than pretending.
+
 ## Authentication and roles
 
 The app authenticates nobody. It sits behind Traefik with an Authelia
@@ -187,8 +219,9 @@ state file ──────Open────> state.Store ───┘
 
 - `internal/gpx` — parses GPX with the stdlib `encoding/xml` (no dependency), derives
   distance/ascent/start point, computes the content hash.
-- `internal/config` — `domestique.yaml`: accounts, default targets, which source to use. Separate
-  from the routes on purpose, since a DB source has no config file of its own.
+- `internal/accounts` — the linked head units. See above.
+- `internal/config` — `domestique.yaml`, deliberately small: where the database
+  is, and how to recognise a user. No accounts, no targets.
 - `internal/auth` — identity, roles and permissions. See above.
 - `internal/fitcourse` — GPX to FIT course conversion. See above.
 - `internal/komoot` — the undocumented Komoot client.

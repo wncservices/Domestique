@@ -18,6 +18,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/wncservices/domestique/apps/api/internal/accounts"
 	"github.com/wncservices/domestique/apps/api/internal/api"
 	"github.com/wncservices/domestique/apps/api/internal/auth"
 	"github.com/wncservices/domestique/apps/api/internal/config"
@@ -149,17 +150,22 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+
+	linkedAccounts, err := openAccounts(src)
+	if err != nil {
+		return err
+	}
 	if closer, ok := store.(interface{ Close() error }); ok {
 		defer func() { _ = closer.Close() }()
 	}
 
 	switch cmd {
 	case "validate":
-		return runValidate(src, cfg)
+		return runValidate(src, linkedAccounts)
 	case "plan":
-		return runPlan(src, cfg, store)
+		return runPlan(src, linkedAccounts, store)
 	case "push":
-		return runPush(src, cfg, store, *dryRun)
+		return runPush(src, linkedAccounts, store, *dryRun)
 	case "import":
 		return runImport(src, *from)
 	case "state":
@@ -371,6 +377,32 @@ func openSource(cfg *config.Config) (source.Source, error) {
 	}
 }
 
+// openAccounts reads the linked head units.
+//
+// They live in the database beside the routes, put there by riders through the
+// UI. A directory-backed library has no database, so there is nothing to link
+// against and the CLI reports none — plan and push then have nothing to do,
+// which is the honest answer.
+func openAccounts(src source.Source) ([]model.Account, error) {
+	store, err := accountStoreFor(src)
+	if err != nil || store == nil {
+		return nil, err
+	}
+	return store.List()
+}
+
+// accountStoreFor builds the accounts store the API links through.
+//
+// Linking needs somewhere to write, so it needs a database. A directory-backed
+// library has none, and the API says so rather than pretending.
+func accountStoreFor(src source.Source) (*accounts.Store, error) {
+	db, ok := src.(*source.DB)
+	if !ok {
+		return nil, nil
+	}
+	return accounts.UseDB(db.Conn(), db.DSN())
+}
+
 // openState decides where sync state lives.
 //
 // With a database source it goes in that same database, which is the whole
@@ -383,7 +415,7 @@ func openState(src source.Source, path string) (state.Store, error) {
 	return state.Open(path)
 }
 
-func runValidate(src source.Source, cfg *config.Config) error {
+func runValidate(src source.Source, linked []model.Account) error {
 	routes, problems, err := src.List()
 	if err != nil {
 		return err
@@ -395,24 +427,24 @@ func runValidate(src source.Source, cfg *config.Config) error {
 	for _, r := range routes {
 		fmt.Fprintf(w, "%s\t%s\t%.1f km\t%.0f m\t%d\t%v\n",
 			r.Slug, r.Name, r.Stats.DistanceM/1000, r.Stats.AscentM,
-			r.Stats.PointCount, cfg.TargetsFor(r))
-		for _, unknown := range cfg.UnknownTargets(r) {
+			r.Stats.PointCount, config.TargetsFor(r, linked))
+		for _, unknown := range config.UnknownTargets(r, linked) {
 			problems = append(problems, fmt.Sprintf("%s: unknown target %q", r.Slug, unknown))
 		}
 	}
 	w.Flush()
 
-	fmt.Printf("\n%d route(s), %d account(s)\n", len(routes), len(cfg.Accounts))
+	fmt.Printf("\n%d route(s), %d linked account(s)\n", len(routes), len(linked))
 	return reportProblems(problems)
 }
 
-func runPlan(src source.Source, cfg *config.Config, store state.Store) error {
+func runPlan(src source.Source, linked []model.Account, store state.Store) error {
 	routes, problems, err := src.List()
 	if err != nil {
 		return err
 	}
 
-	plan, err := sync.BuildPlan(routes, cfg, store)
+	plan, err := sync.BuildPlan(routes, linked, store)
 	if err != nil {
 		return err
 	}
@@ -421,13 +453,13 @@ func runPlan(src source.Source, cfg *config.Config, store state.Store) error {
 	return reportProblems(problems)
 }
 
-func runPush(src source.Source, cfg *config.Config, store state.Store, dryRun bool) error {
+func runPush(src source.Source, linked []model.Account, store state.Store, dryRun bool) error {
 	routes, problems, err := src.List()
 	if err != nil {
 		return err
 	}
 
-	plan, err := sync.BuildPlan(routes, cfg, store)
+	plan, err := sync.BuildPlan(routes, linked, store)
 	if err != nil {
 		return err
 	}
@@ -442,7 +474,7 @@ func runPush(src source.Source, cfg *config.Config, store state.Store, dryRun bo
 	}
 
 	byAccount := map[string]targets.Target{}
-	for _, account := range cfg.Accounts {
+	for _, account := range linked {
 		target, err := targets.Build(account)
 		if err != nil {
 			return err
@@ -555,7 +587,19 @@ func runServe(src source.Source, cfg *config.Config, store state.Store, addr, we
 		return err
 	}
 
-	srv := &api.Server{Source: src, Config: cfg, Store: store, Auth: authenticator, Log: log}
+	accountStore, err := accountStoreFor(src)
+	if err != nil {
+		return err
+	}
+
+	srv := &api.Server{
+		Source:   src,
+		Config:   cfg,
+		Store:    store,
+		Accounts: accountStore,
+		Auth:     authenticator,
+		Log:      log,
+	}
 
 	if cfg.Komoot.Enabled {
 		client, err := komootClient()

@@ -21,6 +21,7 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"github.com/wncservices/domestique/apps/api/internal/accounts"
 	"github.com/wncservices/domestique/apps/api/internal/api"
 	"github.com/wncservices/domestique/apps/api/internal/config"
 	"github.com/wncservices/domestique/apps/api/internal/model"
@@ -78,11 +79,34 @@ func (f *fakeTarget) Delete(string) error {
 	return nil
 }
 
-func testAccounts() []model.Account {
-	return []model.Account{
-		{ID: "garmin:wilant", Provider: model.ProviderGarmin, Rider: "wilant", Label: "Wilant's Edge"},
-		{ID: "wahoo:friend", Provider: model.ProviderWahoo, Rider: "friend", Label: "Friend's ELEMNT"},
+// seedAccounts links two head units the way riders would through the UI.
+//
+// A directory-backed source has no database and therefore no accounts, which
+// is why the fs harness pushes to nothing.
+func seedAccounts(t *testing.T, src source.Source) *accounts.Store {
+	t.Helper()
+
+	db, ok := src.(*source.DB)
+	if !ok {
+		return nil
 	}
+
+	store, err := accounts.UseDB(db.Conn(), db.DSN())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range []struct {
+		provider model.Provider
+		rider    string
+	}{
+		{model.ProviderGarmin, "one"},
+		{model.ProviderWahoo, "two"},
+	} {
+		if _, err := store.Link(a.provider, a.rider, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return store
 }
 
 // newHarness starts a server over real HTTP. Pass "fs" or "db".
@@ -115,12 +139,10 @@ func newHarness(t *testing.T, kind string) *harness {
 
 	ledger := &fakeLedger{}
 	srv := &api.Server{
-		Source: src,
-		Store:  store,
-		Config: &config.Config{
-			Accounts:       testAccounts(),
-			DefaultTargets: []string{"garmin:wilant", "wahoo:friend"},
-		},
+		Source:   src,
+		Store:    store,
+		Accounts: seedAccounts(t, src),
+		Config:   &config.Config{},
 		// A minimal SPA, so the fallback behaviour is covered too.
 		WebFS: fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("<html>app</html>")}},
 		TargetFactory: func(account model.Account) (targets.Target, error) {
@@ -201,6 +223,15 @@ func (h *harness) upload(fields map[string]string, gpx []byte, filename string) 
 	}
 
 	return h.do(http.MethodPost, "/api/routes", &buf, writer.FormDataContentType())
+}
+
+// syncHarness is a database library with two head units linked and one route
+// in it — everything sync needs. The fs harness deliberately has no accounts,
+// because a directory library has no database to link against.
+func syncHarness(t *testing.T) (*harness, routeDTO) {
+	t.Helper()
+	h := newHarness(t, "db")
+	return h, h.uploadExample("Kemmelberg Loop")
 }
 
 func (h *harness) uploadExample(name string) routeDTO {
@@ -317,7 +348,7 @@ func TestConfigEndpoint(t *testing.T) {
 }
 
 func TestAccountsEndpoint(t *testing.T) {
-	h := newHarness(t, "fs")
+	h := newHarness(t, "db")
 	resp := h.get("/api/accounts")
 	h.expectStatus(resp, http.StatusOK)
 
@@ -330,7 +361,7 @@ func TestAccountsEndpoint(t *testing.T) {
 	h.decode(resp, &accounts)
 
 	if len(accounts) != 2 {
-		t.Fatalf("got %d accounts, want 2", len(accounts))
+		t.Fatalf("got %d accounts, want the two that were linked", len(accounts))
 	}
 	// Both adapters are still stubs; the UI relies on this to disable push.
 	for _, account := range accounts {
@@ -362,7 +393,7 @@ func TestRoutesEndpointOnEmptyDatabase(t *testing.T) {
 }
 
 func TestRoutesEndpointReportsStatsAndTargets(t *testing.T) {
-	h := newHarness(t, "fs")
+	h, _ := syncHarness(t)
 	var library libraryDTO
 	h.decode(h.get("/api/routes"), &library)
 
@@ -447,7 +478,7 @@ func TestGPXDownloadMissingRoute(t *testing.T) {
 // ---------- plan and push ----------
 
 func TestPlanThenPushThenPlanIsEmpty(t *testing.T) {
-	h := newHarness(t, "fs")
+	h, _ := syncHarness(t)
 
 	var before planDTO
 	h.decode(h.get("/api/plan"), &before)
@@ -500,8 +531,8 @@ func TestPlanThenPushThenPlanIsEmpty(t *testing.T) {
 
 // One provider failing must not stop the other rider's routes going out.
 func TestPushReportsPerAccountFailures(t *testing.T) {
-	h := newHarness(t, "fs")
-	h.pushed.failOn = "wahoo:friend"
+	h, _ := syncHarness(t)
+	h.pushed.failOn = "wahoo:two"
 
 	resp := h.do(http.MethodPost, "/api/push", nil, "")
 	h.expectStatus(resp, http.StatusOK)
@@ -515,7 +546,7 @@ func TestPushReportsPerAccountFailures(t *testing.T) {
 	if len(push.Failures) != 1 {
 		t.Fatalf("failures = %v, want exactly one", push.Failures)
 	}
-	if !strings.Contains(push.Failures[0], "wahoo:friend") {
+	if !strings.Contains(push.Failures[0], "wahoo:two") {
 		t.Errorf("failure does not name the account: %q", push.Failures[0])
 	}
 
@@ -524,7 +555,7 @@ func TestPushReportsPerAccountFailures(t *testing.T) {
 	h.decode(h.get("/api/routes"), &library)
 	for _, status := range library.Routes[0].SyncState {
 		want := "synced"
-		if status.AccountID == "wahoo:friend" {
+		if status.AccountID == "wahoo:two" {
 			want = "pending"
 		}
 		if status.Status != want {
@@ -555,7 +586,7 @@ func TestUploadLifecycle(t *testing.T) {
 		"name":        "Kemmelberg Loop",
 		"description": "Cobbles and regret",
 		"tags":        "gravel, hills",
-		"targets":     "garmin:wilant",
+		"targets":     "garmin:one",
 		"uploadedBy":  "wilant",
 	}, exampleGPX(t), "kemmelberg.gpx")
 	h.expectStatus(resp, http.StatusCreated)
@@ -572,7 +603,7 @@ func TestUploadLifecycle(t *testing.T) {
 	if len(created.Tags) != 2 || created.Tags[0] != "gravel" {
 		t.Errorf("tags = %v, want [gravel hills]", created.Tags)
 	}
-	if len(created.Targets) != 1 || created.Targets[0] != "garmin:wilant" {
+	if len(created.Targets) != 1 || created.Targets[0] != "garmin:one" {
 		t.Errorf("targets = %v, want only garmin:wilant", created.Targets)
 	}
 	if created.DistanceM == 0 || created.ContentHash == "" {
@@ -594,7 +625,7 @@ func TestUploadLifecycle(t *testing.T) {
 	if len(plan.Items) != 1 {
 		t.Fatalf("plan = %+v, want a single create", plan.Items)
 	}
-	if plan.Items[0].AccountID != "garmin:wilant" {
+	if plan.Items[0].AccountID != "garmin:one" {
 		t.Errorf("planned for %s; per-route targets were ignored", plan.Items[0].AccountID)
 	}
 }
@@ -727,13 +758,13 @@ func TestPatchRetargetsRoute(t *testing.T) {
 	route := h.uploadExample("Shared")
 
 	resp := h.do(http.MethodPatch, "/api/routes/"+route.Slug,
-		strings.NewReader(`{"targets":["wahoo:friend"]}`), "application/json")
+		strings.NewReader(`{"targets":["wahoo:two"]}`), "application/json")
 	h.expectStatus(resp, http.StatusOK)
 
 	var plan planDTO
 	h.decode(h.get("/api/plan"), &plan)
 	for _, item := range plan.Items {
-		if item.AccountID != "wahoo:friend" {
+		if item.AccountID != "wahoo:two" {
 			t.Errorf("still planning for %s after retargeting", item.AccountID)
 		}
 	}

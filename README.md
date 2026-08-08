@@ -95,8 +95,8 @@ auth:
 | Role | Can |
 |---|---|
 | `viewer` | read routes, download GPX, see what would be pushed |
-| `rider` | + upload, import from Komoot, push to devices, edit and delete **their own** routes |
-| `admin` | + edit and delete **anyone's** routes |
+| `rider` | + upload, import from Komoot, link **their own** head units, push, edit and delete **their own** routes |
+| `admin` | + edit and delete **anyone's** routes and head units |
 
 > **The app must not be reachable except through the proxy.** With `mode: proxy`
 > it believes the `Remote-User` header — and so would anyone who can talk to it
@@ -106,6 +106,16 @@ auth:
 With `mode: none` (the default) there is no login at all and every visitor is
 an admin. That is right for a laptop and wrong for anything else; the UI says
 so in the header.
+
+## Linking a head unit
+
+Nothing about riders or devices is configured. Each rider signs in and links
+their own Garmin or Wahoo from the web UI; the link is stored in the database,
+keyed to their Authelia username. A route with no targets of its own goes to
+every linked head unit.
+
+This needs a database source — a directory-backed library has nowhere to store
+the link, and says so rather than pretending.
 
 ## Importing from Komoot
 
@@ -162,12 +172,13 @@ and `charts/domestique/ci/full-values.yaml` is a complete worked example.
 
 ## Configuration
 
-Copy `domestique.example.yaml` to `domestique.yaml`. It holds the route source and the riders'
-accounts — **account ids and labels only, never a credential**. Provider credentials come from
-the environment; in a cluster, Vault → ExternalSecret → `envFrom`.
+Copy `domestique.example.yaml` to `domestique.yaml`. It is deliberately small: where the database
+is, and how to recognise a user. **No accounts, no riders, no credentials** — head units are
+linked through the UI, and credentials come from the environment (in a cluster, Vault →
+ExternalSecret → `envFrom`).
 
-A route is pushed to the accounts it names in `targets`, or to `default_targets` when it names
-none. That is what keeps one rider's private routes off the other's head unit.
+A route is pushed to the head units it names in `targets`, or to every linked one when it names
+none. Naming targets is what keeps one rider's private routes off the other's device.
 
 ## Layout
 

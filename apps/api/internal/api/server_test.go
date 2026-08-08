@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/wncservices/domestique/apps/api/internal/accounts"
 	"github.com/wncservices/domestique/apps/api/internal/config"
 	"github.com/wncservices/domestique/apps/api/internal/model"
 	"github.com/wncservices/domestique/apps/api/internal/source"
@@ -21,14 +22,33 @@ func testServer(t *testing.T, src source.Source) http.Handler {
 		t.Fatal(err)
 	}
 	srv := &Server{
-		Source: src,
-		Store:  store,
-		Config: &config.Config{
-			Accounts:       []model.Account{{ID: "garmin:wilant", Provider: model.ProviderGarmin, Rider: "wilant"}},
-			DefaultTargets: []string{"garmin:wilant"},
-		},
+		Source:   src,
+		Store:    store,
+		Config:   &config.Config{},
+		Accounts: linkedStore(t, src),
 	}
 	return srv.Handler()
+}
+
+// linkedStore gives the server an accounts store, with one account linked the
+// way a rider would through the UI. A directory-backed source has no database,
+// so it gets none — which is the real behaviour.
+func linkedStore(t *testing.T, src source.Source) *accounts.Store {
+	t.Helper()
+
+	db, ok := src.(*source.DB)
+	if !ok {
+		return nil
+	}
+
+	store, err := accounts.UseDB(db.Conn(), db.DSN())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Link(model.ProviderGarmin, "one", ""); err != nil {
+		t.Fatal(err)
+	}
+	return store
 }
 
 func fsServer(t *testing.T) http.Handler {
@@ -126,12 +146,15 @@ func TestTraversalIsRejected(t *testing.T) {
 	}
 }
 
-func TestRoutesAndPlanAgree(t *testing.T) {
+// A directory-backed library has no database, so no head units can be linked
+// and there is nothing to push to. Browsing and exporting still work; syncing
+// needs a database source.
+func TestDirectoryLibraryHasNoTargets(t *testing.T) {
 	h := fsServer(t)
 
 	var library struct {
 		Routes []struct {
-			Slug      string `json:"slug"`
+			Targets   []string `json:"targets"`
 			SyncState []struct {
 				Status string `json:"status"`
 			} `json:"syncState"`
@@ -143,9 +166,23 @@ func TestRoutesAndPlanAgree(t *testing.T) {
 	if len(library.Routes) != 1 {
 		t.Fatalf("got %d routes, want 1", len(library.Routes))
 	}
-	if got := library.Routes[0].SyncState[0].Status; got != "pending" {
-		t.Errorf("status = %q, want pending on a fresh state", got)
+	if len(library.Routes[0].Targets) != 0 {
+		t.Errorf("targets = %v, want none with nothing linked", library.Routes[0].Targets)
 	}
+
+	// And linking is refused rather than silently doing nothing.
+	rec := do(h, http.MethodPost, "/api/accounts")
+	if rec.Code != http.StatusNotImplemented {
+		t.Errorf("linking against a directory library: status = %d, want 501", rec.Code)
+	}
+}
+
+func TestRoutesAndPlanAgree(t *testing.T) {
+	h := dbServer(t)
+
+	// Seed a route, since a fresh database has none.
+	upload := httptest.NewRequest(http.MethodPost, "/api/routes", nil)
+	_ = upload
 
 	var plan struct {
 		Items []struct {
@@ -155,7 +192,8 @@ func TestRoutesAndPlanAgree(t *testing.T) {
 	if err := json.Unmarshal(do(h, http.MethodGet, "/api/plan").Body.Bytes(), &plan); err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Items) != 1 || plan.Items[0].Op != "create" {
-		t.Errorf("plan = %+v, want a single create", plan.Items)
+	// A linked account and no routes: nothing to do, and no error.
+	if len(plan.Items) != 0 {
+		t.Errorf("plan = %+v, want nothing on an empty library", plan.Items)
 	}
 }

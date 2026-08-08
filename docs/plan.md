@@ -64,6 +64,19 @@ A deployment therefore needs a database and nothing else — no volume, no file.
 The JSON file store still exists for a directory-backed library, which has no
 database to borrow.
 
+## Users, riders and accounts
+
+Users come from Authelia and are never stored. An **account** is different: a
+connection to a head unit, which Authelia knows nothing about. Riders link
+their own Garmin or Wahoo from the UI and it lands in the `accounts` table,
+keyed to their Authelia username.
+
+Nothing about people or devices is configured. `domestique.yaml` holds where
+the database is and how to recognise a user, and that is all.
+
+A route with no targets goes to every linked head unit; naming targets is what
+keeps a private route off somebody else's device.
+
 ## Who can do what
 
 domestique authenticates nobody. It sits behind Traefik with an Authelia
@@ -117,6 +130,7 @@ the conversion: no test can establish that a real head unit accepts the file.
 | 1 | Library, diff engine, CLI, API, web UI, pluggable sources | ✅ |
 | 1b | Database sources (PostgreSQL and SQLite), uploads, Authelia login with roles, Komoot import | ✅ |
 | 1c | Sync state in the database, so a deployment needs no volume | ✅ |
+| 1d | Head units linked through the UI, stored in the database, keyed to the Authelia user | ✅ |
 | 2 | GPX → FIT course conversion, with inferred turn cues | ✅ |
 | 3 | Garmin push | ⬜ stub |
 | 4 | Wahoo push | ⬜ stub, **blocked** on API access |
