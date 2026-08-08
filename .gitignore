@@ -20,6 +20,11 @@ data/
 *.sqlite
 *.sqlite3
 
+# Not committed on purpose. It let an incomplete apps/api/go.sum pass locally
+# while the Docker build — which copies only the module, with no workspace —
+# failed on a missing checksum.
+go.work.sum
+
 # Build output
 bin/
 dist/
