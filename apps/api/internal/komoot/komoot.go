@@ -42,6 +42,37 @@ const (
 	maxPages = 50
 )
 
+// allowedHost reports whether a URL may be requested.
+//
+// This matters more than it looks. Pagination follows `_links.next.href`
+// straight out of Komoot's response body, and every request carries the
+// account's credentials in an Authorization header. Following that link
+// blindly would hand those credentials to whatever host the response names —
+// an SSRF with credential disclosure, and the response body is exactly the
+// part an attacker on the wire controls.
+//
+// So every request is checked against the hosts we were configured to talk
+// to, and anything else is refused before it is sent.
+func (c *Client) allowedHost(raw string) error {
+	target, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("komoot: unusable URL %q: %w", raw, err)
+	}
+
+	for _, base := range []string{c.BaseV6, c.BaseV7} {
+		known, err := url.Parse(base)
+		if err != nil {
+			continue
+		}
+		if target.Scheme == known.Scheme && strings.EqualFold(target.Host, known.Host) {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("komoot: refusing to call %s://%s — not a configured Komoot host",
+		target.Scheme, target.Host)
+}
+
 // Client talks to Komoot as one account.
 type Client struct {
 	HTTP   *http.Client
@@ -56,7 +87,14 @@ type Client struct {
 // New returns a client. Call Login before anything else.
 func New() *Client {
 	return &Client{
-		HTTP:   &http.Client{Timeout: defaultTimeout},
+		HTTP: &http.Client{
+			Timeout: defaultTimeout,
+			// Do not follow redirects. A redirect would carry the
+			// Authorization header to wherever it points.
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 		BaseV6: baseV006,
 		BaseV7: baseV007,
 	}
@@ -217,6 +255,10 @@ func (c *Client) GPX(tourID string) ([]byte, error) {
 }
 
 func (c *Client) do(req *http.Request, into any) error {
+	if err := c.allowedHost(req.URL.String()); err != nil {
+		return err
+	}
+
 	req.Header.Set("Accept", "application/json")
 	// Komoot's edge rejects requests without a browser-ish agent.
 	req.Header.Set("User-Agent", "domestique/1.0 (+https://github.com/wncservices/domestique)")

@@ -25,8 +25,10 @@ import (
 type Mode string
 
 const (
-	// ModeNone runs without authentication. Every request is anonymous, and
-	// nothing is gated. Right for a laptop, wrong for anything reachable.
+	// ModeNone runs without authentication. Every request is treated as the
+	// local admin (see LocalIdentity) and nothing is gated — running without a
+	// proxy means running on your own machine. Right for a laptop, wrong for
+	// anything reachable.
 	ModeNone Mode = "none"
 	// ModeProxy trusts Authelia's forwardAuth headers.
 	ModeProxy Mode = "proxy"
@@ -155,7 +157,8 @@ func (a *Authenticator) Enabled() bool { return a.mode != ModeNone }
 
 // Identify extracts the identity from a request.
 //
-// In ModeNone everyone is anonymous. In ModeProxy the headers are read only
+// In ModeNone the headers are ignored entirely and everyone is the local
+// admin. In ModeProxy the headers are read only
 // when the peer is a trusted proxy; headers from anywhere else are discarded
 // rather than trusted, because that is exactly what a spoofing attempt looks
 // like.

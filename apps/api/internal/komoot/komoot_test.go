@@ -270,6 +270,73 @@ func TestMovedEndpointGivesAReadableError(t *testing.T) {
 	}
 }
 
+// Pagination follows a URL out of the response body, and every request carries
+// the account's credentials. Following that link off-host would hand those
+// credentials to whoever wrote the response.
+func TestPaginationWillNotFollowAnotherHost(t *testing.T) {
+	var attackerCalled bool
+	attacker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attackerCalled = true
+		if _, _, ok := r.BasicAuth(); ok {
+			t.Error("credentials were sent to the attacker's host")
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"_embedded": map[string]any{}})
+	}))
+	defer attacker.Close()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v007/users/user-123/tours/", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"_embedded": map[string]any{"tours": []map[string]any{{
+				"id": 1, "name": "Real tour", "type": TypePlanned,
+			}}},
+			// The hostile part: a next link pointing somewhere else entirely.
+			"_links": map[string]any{
+				"next": map[string]string{"href": attacker.URL + "/steal"},
+			},
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	c := New()
+	c.BaseV6 = server.URL + "/v006"
+	c.BaseV7 = server.URL + "/v007"
+	c.LoginWithToken(testUserID, testToken)
+
+	_, err := c.Tours(false)
+	if err == nil {
+		t.Fatal("off-host pagination link was followed without complaint")
+	}
+	if attackerCalled {
+		t.Fatal("request was actually sent to the attacker's host")
+	}
+	if !strings.Contains(err.Error(), "not a configured Komoot host") {
+		t.Errorf("unclear error: %v", err)
+	}
+}
+
+func TestRequestsToOtherHostsAreRefused(t *testing.T) {
+	c := New()
+	c.BaseV6 = "https://api.komoot.de/v006"
+	c.BaseV7 = "https://api.komoot.de/v007"
+
+	for _, raw := range []string{
+		"http://169.254.169.254/latest/meta-data/", // cloud metadata
+		"http://localhost:8080/api/routes",         // the app itself
+		"https://api.komoot.de.evil.example/v007/", // suffix trick
+		"http://api.komoot.de/v007/",               // downgraded scheme
+	} {
+		if err := c.allowedHost(raw); err == nil {
+			t.Errorf("allowed %s", raw)
+		}
+	}
+
+	if err := c.allowedHost("https://api.komoot.de/v007/tours/1"); err != nil {
+		t.Errorf("refused a legitimate URL: %v", err)
+	}
+}
+
 func TestTourPlannedHelper(t *testing.T) {
 	if !(Tour{Type: TypePlanned}).Planned() {
 		t.Error("planned tour not recognised")
