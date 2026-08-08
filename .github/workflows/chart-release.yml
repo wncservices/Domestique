@@ -36,14 +36,16 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - uses: azure/setup-helm@v4
+      # Third-party actions are pinned to a commit. A tag is mutable, and
+      # these run with contents:write and packages:write.
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
 
       # Publishes to the Helm repository at
       # https://wncservices.github.io/domestique — the form ArgoCD and
       # `helm repo add` expect. Skips silently when the chart version has not
       # changed, so pushing a docs edit does not republish.
       - name: Release to the Helm repository
-        uses: helm/chart-releaser-action@v1
+        uses: helm/chart-releaser-action@cae68fefc6b5f367a0275617c9f83181ba54714f # v1.7.0
         with:
           charts_dir: charts
           skip_existing: true
