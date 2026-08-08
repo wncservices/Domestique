@@ -163,3 +163,21 @@ jobs:
         run: |
           docker run --rm domestique:ci --help | grep -q "fetch-and-carry"
           docker run --rm --entrypoint sh domestique:ci -c 'test -f /app/web/index.html'
+
+      # Run it the way a deployment does — no arguments, so the image's own
+      # default command is what gets tested. Checking `--help` is not enough:
+      # a stale flag in CMD passes that check and still fails to boot.
+      - name: Start the image with its default command
+        run: |
+          docker run -d --name smoke -p 8080:8080 domestique:ci
+          for _ in $(seq 1 30); do
+            if curl -fsS http://localhost:8080/api/health >/dev/null 2>&1; then
+              curl -fsS http://localhost:8080/ | grep -qi domestique
+              docker rm -f smoke
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "the container never became healthy:"
+          docker logs smoke
+          exit 1

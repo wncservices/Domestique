@@ -21,7 +21,7 @@ config:
     # DOMESTIQUE_SOURCE_DSN from a Secret — see `envFrom` below.
     dsn: /app/data/domestique.db
 
-  # domestique authenticates nobody itself. Behind Traefik with an Authelia
+  # Domestique authenticates nobody itself. Behind Traefik with an Authelia
   # forwardAuth middleware it reads the identity Authelia passes down.
   #
   # THIS DEFAULTS TO OFF, WHICH MEANS EVERY VISITOR IS AN ADMIN. Set mode to
@@ -47,7 +47,7 @@ config:
 # Secrets reach the pod as environment variables. Create the Secret separately
 # — with an ExternalSecret from Vault, for instance — and name it here.
 #
-# Keys domestique reads:
+# Keys Domestique reads:
 #   DOMESTIQUE_SOURCE_DSN   PostgreSQL connection string (overrides config.source.dsn)
 #   KOMOOT_EMAIL            Komoot account, when komoot.enabled
 #   KOMOOT_PASSWORD

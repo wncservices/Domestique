@@ -227,7 +227,7 @@ func (c *Client) Tours(includeRecorded bool) ([]Tour, error) {
 // GPX fetches one tour and renders it as a GPX 1.1 track.
 //
 // Komoot returns coordinates as JSON, not GPX, so the file is built here. That
-// is fine: the rest of domestique only ever wants lat/lon/ele.
+// is fine: the rest of Domestique only ever wants lat/lon/ele.
 func (c *Client) GPX(tourID string) ([]byte, error) {
 	if c.userID == "" || c.token == "" {
 		return nil, fmt.Errorf("komoot: not logged in")
@@ -325,7 +325,7 @@ type gpxPoint struct {
 func renderGPX(name string, coords [][]float64) ([]byte, error) {
 	var doc gpxDoc
 	doc.Version = "1.1"
-	doc.Creator = "domestique"
+	doc.Creator = "Domestique"
 	doc.NS = "http://www.topografix.com/GPX/1/1"
 	doc.Trk.Name = name
 

@@ -1,6 +1,6 @@
 // Package auth identifies the rider making a request.
 //
-// domestique does not authenticate anyone itself. It sits behind a reverse
+// Domestique does not authenticate anyone itself. It sits behind a reverse
 // proxy that does — Traefik with an Authelia forwardAuth middleware — and
 // Authelia hands the identity down as response headers the proxy copies onto
 // the request: Remote-User, Remote-Name, Remote-Email, Remote-Groups.
