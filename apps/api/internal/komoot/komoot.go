@@ -73,6 +73,17 @@ func (c *Client) allowedHost(raw string) error {
 		target.Scheme, target.Host)
 }
 
+// newRequest builds a request, refusing any URL that is not one of the hosts
+// this client was configured with. Validation happens here, before the URL is
+// used to construct anything, so there is no path that reaches the network
+// without passing it.
+func (c *Client) newRequest(rawURL string) (*http.Request, error) {
+	if err := c.allowedHost(rawURL); err != nil {
+		return nil, err
+	}
+	return http.NewRequest(http.MethodGet, rawURL, nil)
+}
+
 // Client talks to Komoot as one account.
 type Client struct {
 	HTTP   *http.Client
@@ -120,8 +131,7 @@ func (c *Client) Login(email, password string) error {
 		return fmt.Errorf("komoot: email and password are both required")
 	}
 
-	endpoint := fmt.Sprintf("%s/account/email/%s/", c.BaseV6, url.PathEscape(email))
-	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	req, err := c.newRequest(fmt.Sprintf("%s/account/email/%s/", c.BaseV6, url.PathEscape(email)))
 	if err != nil {
 		return err
 	}
@@ -164,7 +174,7 @@ func (c *Client) Tours(includeRecorded bool) ([]Tour, error) {
 	var tours []Tour
 
 	for page := 0; next != "" && page < maxPages; page++ {
-		req, err := http.NewRequest(http.MethodGet, next, nil)
+		req, err := c.newRequest(next)
 		if err != nil {
 			return nil, err
 		}
@@ -223,10 +233,9 @@ func (c *Client) GPX(tourID string) ([]byte, error) {
 		return nil, fmt.Errorf("komoot: not logged in")
 	}
 
-	endpoint := fmt.Sprintf(
+	req, err := c.newRequest(fmt.Sprintf(
 		"%s/tours/%s?_embedded=coordinates&format=coordinate_array",
-		c.BaseV7, url.PathEscape(tourID))
-	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+		c.BaseV7, url.PathEscape(tourID)))
 	if err != nil {
 		return nil, err
 	}
@@ -255,6 +264,8 @@ func (c *Client) GPX(tourID string) ([]byte, error) {
 }
 
 func (c *Client) do(req *http.Request, into any) error {
+	// Backstop. newRequest already refused anything off-host; this catches a
+	// future caller that builds a request by hand.
 	if err := c.allowedHost(req.URL.String()); err != nil {
 		return err
 	}
