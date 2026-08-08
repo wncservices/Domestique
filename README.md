@@ -22,10 +22,22 @@ device by hand; automatic pushing is not wired up yet.
 ## Where routes live
 
 GPX files are personal location data — a route usually starts at somebody's front door. So the
-app is generic and open source, and the routes live somewhere you control. Pick a source:
+app holds none, and the routes live in a store you control.
 
-**`fs` — a directory of GPX files.** Point it at a checkout of a separate, private routes repo.
-Read-only: routes are added by committing them, so you get review, history and blame for free.
+**A database, by default.** Routes are rows and the GPX is a blob in the row. Riders upload
+through the web UI or import from Komoot; no git, no checkout.
+
+| Engine | For | DSN |
+|---|---|---|
+| **PostgreSQL** | The deployed instance | `postgres://user:pass@host/domestique` |
+| **SQLite** | A laptop, or one container with a volume | `data/domestique.db` |
+
+The DSN picks the engine — a `postgres://` URL means PostgreSQL, anything else is a SQLite file
+path. Both are tested against the same suite.
+
+**A directory of GPX files also works**, and is not second-class. Point the `fs` source at a
+checkout of a separate, private routes repo and routes arrive by commit, with review and history
+for free. It is read-only by design: in a git-backed library, adding a route *is* the commit.
 
 ```
 routes/                          # a different repository, private
@@ -34,11 +46,8 @@ routes/                          # a different repository, private
     route.yaml                   # name, description, targets, tags (optional)
 ```
 
-**`db` — GPX blobs in a SQLite database.** Riders upload through the web UI. No git, no
-checkout; the database is the library, and the write endpoints appear automatically.
-
-Switch with one line of config, or `--source fs|db` on the CLI. Moving from one to the other is
-one command:
+Switch with one line of config, or `--source fs|db` on the CLI. Moving a directory library into
+a database is one command:
 
 ```bash
 just import ../routes

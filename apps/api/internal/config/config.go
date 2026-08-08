@@ -61,6 +61,10 @@ type Config struct {
 // DefaultDSN is where a database library lives unless configured otherwise.
 const DefaultDSN = "data/domestique.db"
 
+// EnvSourceDSN overrides source.dsn from the environment, so a password never
+// has to be written into the config file.
+const EnvSourceDSN = "DOMESTIQUE_SOURCE_DSN"
+
 // Load reads a config file. A missing file is not an error: the defaults (a
 // database library, no accounts) are enough to start uploading routes.
 func Load(path string) (*Config, error) {
@@ -68,26 +72,47 @@ func Load(path string) (*Config, error) {
 
 	// #nosec G304 -- the config path is operator configuration, not user input.
 	raw, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return cfg, nil
-	}
-	if err != nil {
+	switch {
+	case os.IsNotExist(err):
+		// No file is fine. Fall through: the environment may still configure
+		// the source, which is the normal case in a container.
+	case err != nil:
 		return nil, err
-	}
-	if err := yaml.Unmarshal(raw, cfg); err != nil {
-		return nil, fmt.Errorf("%s: invalid YAML: %w", path, err)
+	default:
+		if err := yaml.Unmarshal(raw, cfg); err != nil {
+			return nil, fmt.Errorf("%s: invalid YAML: %w", path, err)
+		}
 	}
 
-	if cfg.Source.Kind == "" {
-		cfg.Source.Kind = SourceDB
-	}
-	if cfg.Source.Kind == SourceFS && cfg.Source.Path == "" {
-		cfg.Source.Path = "routes"
-	}
-	if cfg.Source.Kind == SourceDB && cfg.Source.DSN == "" {
-		cfg.Source.DSN = DefaultDSN
-	}
+	cfg.applyDefaults()
 	return cfg, cfg.Validate()
+}
+
+// applyDefaults fills in what the file left out and lets the environment
+// override the source.
+//
+// This runs whether or not a config file exists. It used to run only after a
+// successful read, which meant DOMESTIQUE_SOURCE_DSN was ignored in a
+// container with no config file — precisely the case it is for.
+func (c *Config) applyDefaults() {
+	if c.Source.Kind == "" {
+		c.Source.Kind = SourceDB
+	}
+
+	// A PostgreSQL DSN carries a password, so a deployment supplies it through
+	// the environment rather than writing it into a config file that wants to
+	// be readable. Same Vault -> envFrom path as every other credential.
+	if dsn := os.Getenv(EnvSourceDSN); dsn != "" {
+		c.Source.Kind = SourceDB
+		c.Source.DSN = dsn
+	}
+
+	if c.Source.Kind == SourceFS && c.Source.Path == "" {
+		c.Source.Path = "routes"
+	}
+	if c.Source.Kind == SourceDB && c.Source.DSN == "" {
+		c.Source.DSN = DefaultDSN
+	}
 }
 
 // Validate checks a config for self-consistency. It is exported because CLI

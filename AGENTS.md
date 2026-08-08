@@ -103,10 +103,14 @@ accepts the file** — `domestique fit <slug>` writes one out for exactly that.
 The app is public; routes are personal location data. They are kept apart by
 `internal/source`, and that separation is load-bearing:
 
+- **`source.DB`** is the default: routes as rows, the GPX as a blob, uploads through the UI.
+  It speaks **PostgreSQL and SQLite** — PostgreSQL is what the cluster runs, SQLite is for a
+  laptop or a single container. `dialect.go` holds every place they differ (placeholders, the
+  boolean column, the blob type); queries are written once with `?` and rebound per engine.
+  Anything touching SQL must keep working on both, and `TestEachEngine` is what enforces that.
 - **`source.FS`** reads a directory of GPX files — typically a checkout of a *separate, private*
   routes repo. It is deliberately **read-only**: in a git-backed library, adding a route is a
   commit, which is where review and history come from. Do not add write methods to it.
-- **`source.DB`** stores GPX blobs in SQLite and accepts uploads through the UI.
 
 `source.AsWritable` is the only thing that decides whether write endpoints do anything. The
 write routes are **always registered**, and answer 405 with an explanation on a read-only
@@ -233,9 +237,9 @@ conversion navigates as a breadcrumb line with no turn cues. See `docs/plan.md`.
 
 ## Conventions
 
-- Go: standard library first. The dependencies are `gopkg.in/yaml.v3` and `modernc.org/sqlite`
-  (pure Go, so no cgo and the image stays small). That is the budget — add to it only for
-  something genuinely hard, like FIT encoding.
+- Go: standard library first. The dependencies are `gopkg.in/yaml.v3`, `modernc.org/sqlite`
+  (pure Go, so no cgo), `github.com/jackc/pgx/v5` and `github.com/muktihari/fit`. That is the
+  budget — add to it only for something genuinely hard, as FIT encoding was.
 - `gofmt` is the formatter; `go vet` must be clean.
 - Vue: `<script setup lang="ts">`, no state-management library — the app is one screen and
   `ref`/`computed` cover it.
