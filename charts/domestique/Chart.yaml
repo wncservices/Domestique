@@ -10,9 +10,9 @@ version: 0.1.0
 # The application version, which is also the default image tag.
 appVersion: "0.1.0"
 
-home: https://github.com/wncservices/domestique
+home: https://github.com/wncservices/Domestique
 sources:
-  - https://github.com/wncservices/domestique
+  - https://github.com/wncservices/Domestique
 keywords:
   - cycling
   - gpx

@@ -1,6 +1,6 @@
-# domestique Helm chart
+# Domestique Helm chart
 
-Deploys [domestique](https://github.com/wncservices/domestique) — a shared
+Deploys [Domestique](https://github.com/wncservices/domestique) — a shared
 cycling route library that syncs to Garmin and Wahoo head units.
 
 ## Install
@@ -30,7 +30,7 @@ kubectl -n domestique port-forward svc/domestique 8080:80
 ## Two things to set before exposing it
 
 **Authentication is off by default, which means every visitor is an admin** —
-they can upload, delete and push routes. domestique authenticates nobody
+they can upload, delete and push routes. Domestique authenticates nobody
 itself; it reads the identity a reverse proxy passes down. Behind Traefik with
 an Authelia forwardAuth middleware:
 

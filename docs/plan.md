@@ -1,4 +1,4 @@
-# domestique — design and plan
+# Domestique — design and plan
 
 Two riders, two different head units, one shared set of routes. This is what
 was built, why, and what is left.
@@ -67,7 +67,7 @@ keeps a private route off somebody else's device.
 
 ## Who can do what
 
-domestique authenticates nobody. It sits behind Traefik with an Authelia
+Domestique authenticates nobody. It sits behind Traefik with an Authelia
 forwardAuth middleware and reads the identity Authelia passes down. Roles come
 from Authelia groups:
 

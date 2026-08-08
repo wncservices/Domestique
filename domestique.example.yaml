@@ -1,4 +1,4 @@
-# domestique app config. Copy to domestique.yaml and edit.
+# Domestique app config. Copy to domestique.yaml and edit.
 #
 # Nothing here is a secret — account ids, labels and group names only. Every
 # credential comes from the environment (in a cluster: Vault -> ExternalSecret
@@ -20,7 +20,7 @@ source:
 
 # Who may use the app, and what they may do.
 #
-# domestique authenticates nobody itself. It sits behind Traefik with an
+# Domestique authenticates nobody itself. It sits behind Traefik with an
 # Authelia forwardAuth middleware, and reads the identity Authelia passes down
 # (Remote-User / Remote-Groups / Remote-Name / Remote-Email).
 #

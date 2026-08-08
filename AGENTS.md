@@ -4,7 +4,7 @@ Single source of truth for agent behaviour in this repository. Tool-agnostic —
 
 ## What this repo is
 
-**domestique** carries cycling routes to head units. Two riders share one route library; the
+**Domestique** carries cycling routes to head units. Two riders share one route library; the
 service reconciles it into each rider's Garmin Connect and Wahoo account, so a route added once
 shows up on both a Garmin Edge and a Wahoo ELEMNT.
 

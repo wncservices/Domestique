@@ -1,8 +1,8 @@
-# domestique
+# Domestique
 
 > The rider who fetches the bottles so the others can just ride.
 
-Two riders, two different head units, one shared set of routes. domestique keeps a route library
+Two riders, two different head units, one shared set of routes. Domestique keeps a route library
 in sync with each rider's Garmin Connect and Wahoo account, so a route added once shows up on a
 Garmin Edge *and* a Wahoo ELEMNT.
 
@@ -65,7 +65,7 @@ just push -- --dry-run           # same, in push's own words
 
 ## Logging in
 
-domestique has no login of its own. Put it behind Traefik with an Authelia
+Domestique has no login of its own. Put it behind Traefik with an Authelia
 forwardAuth middleware and it reads the identity Authelia passes down.
 
 ```yaml
@@ -152,6 +152,26 @@ values.
 
 [`charts/domestique/README.md`](charts/domestique/README.md) has the detail,
 and `charts/domestique/ci/full-values.yaml` is a complete worked example.
+
+## Releases
+
+The image and the chart release **separately**, because they change for
+different reasons — a values default is not an app change, and an app change
+usually needs no chart edit.
+
+| Track | Trigger | Produces |
+|---|---|---|
+| Container image, dev | every merge to `main` | `:dev`, `:sha-<short>` |
+| Container image, release | tag `v<x.y.z>` | `:x.y.z`, `:x.y`, `:x`, `:latest` |
+| Binaries | tag `v<x.y.z>` | a GitHub Release with tarballs |
+| Helm chart | any change under `charts/` on `main` | a chart release + `oci://ghcr.io/wncservices/charts/domestique` |
+
+`:dev` moves under you. Pin `:sha-<short>` when you want to know exactly what is
+running. Every image is built for amd64 and arm64 and carries a provenance
+attestation.
+
+The chart's `appVersion` is the image tag it deploys — bumping it is how a chart
+release picks up an app release.
 
 ## Configuration
 

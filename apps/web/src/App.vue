@@ -101,7 +101,7 @@ onMounted(refresh)
     <UContainer class="flex max-w-5xl flex-col gap-6 py-8">
       <header class="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 class="text-2xl font-semibold tracking-tight text-highlighted">domestique</h1>
+          <h1 class="text-2xl font-semibold tracking-tight text-highlighted">Domestique</h1>
           <p class="text-sm text-muted">Shared route library, carried to every head unit.</p>
           <p v-if="config" class="mt-1 font-mono text-xs text-dimmed">
             {{ config.source }}

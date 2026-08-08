@@ -3,6 +3,13 @@
   "private": true,
   "description": "Shared cycling route library that syncs to Garmin and Wahoo.",
   "license": "PolyForm-Noncommercial-1.0.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wncservices/Domestique.git"
+  },
+  "engines": {
+    "node": ">=24 <25"
+  },
   "workspaces": [
     "apps/web"
   ],

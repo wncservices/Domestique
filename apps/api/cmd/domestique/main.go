@@ -34,7 +34,7 @@ import (
 	"github.com/wncservices/domestique/apps/api/internal/targets"
 )
 
-const usage = `domestique — fetch-and-carry for cycling routes
+const usage = `Domestique — fetch-and-carry for cycling routes
 
 usage: domestique <command> [flags]
 
