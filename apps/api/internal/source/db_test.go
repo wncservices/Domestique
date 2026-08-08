@@ -42,7 +42,7 @@ func openTestPostgres(t *testing.T) *DB {
 	if _, err := db.db.Exec(`DROP TABLE IF EXISTS routes`); err != nil {
 		t.Fatalf("reset schema: %v", err)
 	}
-	if _, err := db.db.Exec(db.dialect.schema()); err != nil {
+	if _, err := db.db.Exec(routesSchema(db.dialect)); err != nil {
 		t.Fatalf("recreate schema: %v", err)
 	}
 

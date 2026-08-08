@@ -50,9 +50,10 @@ config:
 must not be reachable except through that proxy**. `trusted_proxies` narrows it
 further; leave it empty only for a ClusterIP-only Service.
 
-**Persistence is on by default and should stay on.** Sync state — what each
-account is recorded as holding — is a JSON file. Lose it and every route is
-pushed to every device again.
+**Persistence is only for SQLite.** Sync state lives in the database beside the
+routes, so a PostgreSQL deployment needs no volume at all — set
+`persistence.enabled: false`. With SQLite the volume holds the database file
+itself, and losing it means re-pushing every route to every device.
 
 ## PostgreSQL
 
@@ -78,7 +79,7 @@ for instance. Keys the app reads:
 | `KOMOOT_EMAIL` | Komoot import, when `config.komoot.enabled` |
 | `KOMOOT_PASSWORD` | |
 
-With PostgreSQL the volume holds only the state file, so it can be small.
+With PostgreSQL nothing is kept on disk: turn `persistence.enabled` off.
 
 ## Values
 
@@ -89,8 +90,8 @@ With PostgreSQL the volume holds only the state file, so it can be small.
 | `replicaCount` | `1` | Leave at 1 — two replicas race on the state file |
 | `config` | see `values.yaml` | Rendered into a ConfigMap as the app's config file. **No secrets** |
 | `envFrom` | `[]` | Where credentials come from |
-| `persistence.enabled` | `true` | Volume for sync state, and SQLite if used |
-| `persistence.size` | `1Gi` | 256Mi is plenty with PostgreSQL |
+| `persistence.enabled` | `true` | Only needed for SQLite; turn off with PostgreSQL |
+| `persistence.size` | `1Gi` | |
 | `ingressRoute.enabled` | `false` | Traefik `IngressRoute` |
 | `ingress.enabled` | `false` | Plain `Ingress`, as an alternative |
 | `serviceAccount.name` | release name | Vault's Kubernetes auth binds to this |

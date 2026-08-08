@@ -59,10 +59,10 @@ A content hash decides what changed. It ignores sub-metre coordinate jitter and
 timestamps — otherwise re-exporting the same route from a different planner
 churns everything — but includes the name, because the providers display it.
 
-**Sync state is still a JSON file**, not a database table. That is the one
-piece of the old design left standing, and it is the obvious next thing to move
-now that PostgreSQL is there: a deployment with a database should not also need
-a volume for one small file.
+**Sync state lives in the database**, in a `sync_state` table beside the routes.
+A deployment therefore needs a database and nothing else — no volume, no file.
+The JSON file store still exists for a directory-backed library, which has no
+database to borrow.
 
 ## Who can do what
 
@@ -116,10 +116,11 @@ the conversion: no test can establish that a real head unit accepts the file.
 |---|---|---|
 | 1 | Library, diff engine, CLI, API, web UI, pluggable sources | ✅ |
 | 1b | Database sources (PostgreSQL and SQLite), uploads, Authelia login with roles, Komoot import | ✅ |
+| 1c | Sync state in the database, so a deployment needs no volume | ✅ |
 | 2 | GPX → FIT course conversion, with inferred turn cues | ✅ |
 | 3 | Garmin push | ⬜ stub |
 | 4 | Wahoo push | ⬜ stub, **blocked** on API access |
-| 5 | Deploy: Helm chart, ArgoCD, Vault-backed credentials, scheduled reconcile | ⬜ |
+| 5 | Deploy: Helm chart ✅, ArgoCD, Vault-backed credentials, scheduled reconcile | 🟡 |
 | 6 | Metrics and staleness alerting | ⬜ |
 
 ### Phase 3 — Garmin

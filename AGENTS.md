@@ -193,7 +193,12 @@ state file ──────Open────> state.Store ───┘
 - `internal/fitcourse` — GPX to FIT course conversion. See above.
 - `internal/komoot` — the undocumented Komoot client.
 - `internal/source` — where routes come from. See the split above.
-- `internal/state` — a JSON file behind a `Store` interface, the seam for SQLite or Postgres.
+- `internal/dbx` — which engine a DSN means, and the few places SQLite and
+  PostgreSQL differ. Shared by the route source and the state store.
+- `internal/state` — sync state, in a database table when the source is a
+  database, otherwise a JSON file. **The reads return errors on purpose**:
+  treating a failed read as "no state" re-pushes every route to every device,
+  and panicking takes the server down, so the caller has to decide.
 - `internal/sync` — the diff engine. Pure: give it routes, config and a store, get a plan.
 - `internal/targets` — one adapter per provider. Adapters are dumb; the engine decides what to do.
 - `internal/api` — JSON API plus the built SPA.

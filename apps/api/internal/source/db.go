@@ -13,6 +13,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib" // PostgreSQL, for the deployed instance
 	_ "modernc.org/sqlite"             // SQLite, pure Go: no cgo, so the image stays small
 
+	"github.com/wncservices/domestique/apps/api/internal/dbx"
 	"github.com/wncservices/domestique/apps/api/internal/gpx"
 	"github.com/wncservices/domestique/apps/api/internal/model"
 )
@@ -21,12 +22,35 @@ import (
 // this is a mistake or an attack, and we would rather say so than buffer it.
 const maxGPXBytes = 20 << 20 // 20 MiB
 
+// routesSchema is the route table, in whichever types the engine uses.
+func routesSchema(d dbx.Dialect) string {
+	return fmt.Sprintf(`
+CREATE TABLE IF NOT EXISTS routes (
+    slug         TEXT PRIMARY KEY,
+    name         TEXT NOT NULL,
+    description  TEXT NOT NULL DEFAULT '',
+    tags         TEXT NOT NULL DEFAULT '',
+    targets      TEXT,
+    enabled      %s NOT NULL DEFAULT TRUE,
+    gpx          %s NOT NULL,
+    distance_m   DOUBLE PRECISION NOT NULL,
+    ascent_m     DOUBLE PRECISION NOT NULL,
+    start_lat    DOUBLE PRECISION NOT NULL,
+    start_lng    DOUBLE PRECISION NOT NULL,
+    point_count  INTEGER NOT NULL,
+    content_hash TEXT NOT NULL,
+    uploaded_by  TEXT NOT NULL DEFAULT '',
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+);`, d.Boolean, d.Blob)
+}
+
 // DB stores routes as rows, with the GPX itself as a blob. This is the mode
 // where riders upload through the web UI instead of committing files.
 type DB struct {
 	db      *sql.DB
 	dsn     string
-	dialect dialect
+	dialect dbx.Dialect
 }
 
 // OpenDB opens (and migrates) a route database.
@@ -35,13 +59,13 @@ type DB struct {
 // string) means PostgreSQL, anything else is a SQLite file path. ":memory:"
 // works for tests.
 func OpenDB(dsn string) (*DB, error) {
-	d, err := dialectFor(dsn)
+	d, err := dbx.For(dsn)
 	if err != nil {
 		return nil, err
 	}
 
 	connString := dsn
-	if d.name == "sqlite" {
+	if d.Name == dbx.SQLite.Name {
 		// Create the parent directory: the obvious DSN is ./data/domestique.db,
 		// and SQLite will not make the directory itself.
 		// #nosec G703 -- the DSN is operator configuration (a flag, the config
@@ -55,29 +79,37 @@ func OpenDB(dsn string) (*DB, error) {
 		connString = dsn + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
 	}
 
-	db, err := sql.Open(d.driver, connString)
+	db, err := sql.Open(d.Driver, connString)
 	if err != nil {
 		return nil, err
 	}
 	if err := db.Ping(); err != nil {
-		return nil, fmt.Errorf("open %s: %w", redactDSN(dsn), err)
+		return nil, fmt.Errorf("open %s: %w", dbx.Redact(dsn), err)
 	}
-	if _, err := db.Exec(d.schema()); err != nil {
-		return nil, fmt.Errorf("migrate %s: %w", redactDSN(dsn), err)
+	if _, err := db.Exec(routesSchema(d)); err != nil {
+		return nil, fmt.Errorf("migrate %s: %w", dbx.Redact(dsn), err)
 	}
 
 	return &DB{db: db, dsn: dsn, dialect: d}, nil
 }
 
+// Conn exposes the underlying connection so the sync state can share it
+// rather than opening a second one to the same database.
+func (d *DB) Conn() *sql.DB { return d.db }
+
+// DSN is the connection string this was opened with. It carries a password;
+// use dbx.Redact before showing it to anyone.
+func (d *DB) DSN() string { return d.dsn }
+
 // query rewrites the `?` placeholders for the engine in use.
-func (d *DB) query(q string) string { return d.dialect.rebind(q) }
+func (d *DB) query(q string) string { return d.dialect.Rebind(q) }
 
 func (d *DB) Close() error { return d.db.Close() }
 
 // Describe names the source for humans. The DSN can carry a password, so it is
 // redacted — this string reaches the log and the web UI.
 func (d *DB) Describe() string {
-	return fmt.Sprintf("%s database %s", d.dialect.name, redactDSN(d.dsn))
+	return fmt.Sprintf("%s database %s", d.dialect.Name, dbx.Redact(d.dsn))
 }
 
 func (d *DB) List() ([]model.Route, []string, error) {
