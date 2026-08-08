@@ -6,10 +6,20 @@
 
 # Where routes come from.
 source:
-  # db: GPX blobs in SQLite, uploaded through the web UI. The default, and the
-  #     right choice unless you specifically want routes under git.
+  # db: routes as rows, the GPX as a blob, uploaded through the web UI. The
+  #     default, and the right choice unless you specifically want routes
+  #     under git.
+  #
+  # The DSN picks the engine:
+  #   a postgres:// URL  -> PostgreSQL, which is what a deployed instance uses
+  #   anything else      -> a SQLite file, right for a laptop
   kind: db
   dsn: data/domestique.db
+  # dsn: postgres://domestique:PASSWORD@postgres-cluster-rw.postgres-cluster:5432/domestique
+  #
+  # The DSN carries a password, so in a cluster it comes from the environment
+  # rather than this file — DOMESTIQUE_SOURCE_DSN overrides what is written
+  # here. See the deployment notes in docs/plan.md.
 
   # fs: a directory of GPX routes, typically a checkout of a separate, private
   #     routes repo. Read-only — routes are added by committing them.

@@ -7,12 +7,45 @@ import (
 	"testing"
 )
 
+// openTestDB opens a SQLite database. Most tests use this; TestEachEngine runs
+// the behavioural suite against PostgreSQL as well.
 func openTestDB(t *testing.T) *DB {
 	t.Helper()
 	db, err := OpenDB(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
+	t.Cleanup(func() { db.Close() })
+	return db
+}
+
+// postgresDSN is where the tests find a PostgreSQL to exercise.
+//
+// PostgreSQL is what this runs against in the cluster, so "it works on SQLite"
+// is not enough: placeholders, the boolean column and the blob type all differ.
+// Set DOMESTIQUE_TEST_POSTGRES to a DSN to include it; CI does.
+const postgresEnv = "DOMESTIQUE_TEST_POSTGRES"
+
+func openTestPostgres(t *testing.T) *DB {
+	t.Helper()
+
+	dsn := os.Getenv(postgresEnv)
+	if dsn == "" {
+		t.Skipf("set %s to a PostgreSQL DSN to run this", postgresEnv)
+	}
+
+	db, err := OpenDB(dsn)
+	if err != nil {
+		t.Fatalf("open postgres: %v", err)
+	}
+	// Each test gets a clean table; they share one database.
+	if _, err := db.db.Exec(`DROP TABLE IF EXISTS routes`); err != nil {
+		t.Fatalf("reset schema: %v", err)
+	}
+	if _, err := db.db.Exec(db.dialect.schema()); err != nil {
+		t.Fatalf("recreate schema: %v", err)
+	}
+
 	t.Cleanup(func() { db.Close() })
 	return db
 }
@@ -168,4 +201,164 @@ func TestDBRoundTripsTargets(t *testing.T) {
 		t.Errorf("targets = %v, want [garmin:wilant]", got)
 	}
 	_ = route
+}
+
+// ---------- both engines ----------
+
+// The behavioural suite, run against every engine we support. SQLite and
+// PostgreSQL disagree on placeholders, booleans and blob types, so passing on
+// one says nothing about the other — and PostgreSQL is the one this runs
+// against in the cluster.
+func TestEachEngine(t *testing.T) {
+	engines := map[string]func(*testing.T) *DB{
+		"sqlite":   openTestDB,
+		"postgres": openTestPostgres,
+	}
+
+	for engine, open := range engines {
+		t.Run(engine, func(t *testing.T) {
+			t.Run("create and read back", func(t *testing.T) {
+				db := open(t)
+
+				route, err := db.Create(CreateRequest{
+					Filename:   "kemmelberg-loop.gpx",
+					Descript:   "Cobbles",
+					Tags:       []string{"gravel", "hills"},
+					UploadedBy: "wilant",
+					GPX:        exampleGPX(t),
+				})
+				if err != nil {
+					t.Fatalf("create: %v", err)
+				}
+				if route.Slug != "kemmelberg-loop" {
+					t.Errorf("slug = %q", route.Slug)
+				}
+				if route.Stats.DistanceM == 0 || route.ContentHash == "" {
+					t.Errorf("stats not derived: %+v", route.Stats)
+				}
+				if route.Owner != "wilant" {
+					t.Errorf("owner = %q, want wilant", route.Owner)
+				}
+				if len(route.Tags) != 2 {
+					t.Errorf("tags = %v", route.Tags)
+				}
+
+				// The GPX blob has to survive the round trip byte for byte, or
+				// the file that reaches the device is not the one uploaded.
+				raw, err := db.GPX(route.Slug)
+				if err != nil {
+					t.Fatalf("GPX: %v", err)
+				}
+				if string(raw) != string(exampleGPX(t)) {
+					t.Error("the stored GPX differs from what was uploaded")
+				}
+			})
+
+			t.Run("list skips disabled", func(t *testing.T) {
+				db := open(t)
+
+				visible, err := db.Create(CreateRequest{Name: "Visible", GPX: exampleGPX(t)})
+				if err != nil {
+					t.Fatal(err)
+				}
+				hidden, err := db.Create(CreateRequest{Name: "Hidden", GPX: exampleGPX(t)})
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				off := false
+				if _, err := db.Update(hidden.Slug, UpdateRequest{Enabled: &off}); err != nil {
+					t.Fatal(err)
+				}
+
+				routes, _, err := db.List()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(routes) != 1 || routes[0].Slug != visible.Slug {
+					t.Fatalf("list = %+v, want only the enabled route", routes)
+				}
+			})
+
+			t.Run("rename changes the hash", func(t *testing.T) {
+				db := open(t)
+
+				route, err := db.Create(CreateRequest{Name: "Before", GPX: exampleGPX(t)})
+				if err != nil {
+					t.Fatal(err)
+				}
+				after := "After"
+				updated, err := db.Update(route.Slug, UpdateRequest{Name: &after})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if updated.ContentHash == route.ContentHash {
+					t.Error("hash unchanged after a rename; it would never sync")
+				}
+			})
+
+			t.Run("targets round trip", func(t *testing.T) {
+				db := open(t)
+
+				only := []string{"garmin:wilant"}
+				if _, err := db.Create(CreateRequest{
+					Name: "Private", GPX: exampleGPX(t), Targets: &only,
+				}); err != nil {
+					t.Fatal(err)
+				}
+
+				routes, _, err := db.List()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(routes) != 1 || routes[0].Targets == nil {
+					t.Fatalf("targets lost: %+v", routes)
+				}
+				if got := *routes[0].Targets; len(got) != 1 || got[0] != "garmin:wilant" {
+					t.Errorf("targets = %v", got)
+				}
+			})
+
+			t.Run("slug disambiguation", func(t *testing.T) {
+				db := open(t)
+
+				first, err := db.Create(CreateRequest{Name: "Same Name", GPX: exampleGPX(t)})
+				if err != nil {
+					t.Fatal(err)
+				}
+				second, err := db.Create(CreateRequest{Name: "Same Name", GPX: exampleGPX(t)})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if first.Slug == second.Slug {
+					t.Fatalf("both got %q", first.Slug)
+				}
+			})
+
+			t.Run("delete", func(t *testing.T) {
+				db := open(t)
+
+				route, err := db.Create(CreateRequest{Name: "Doomed", GPX: exampleGPX(t)})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := db.Delete(route.Slug); err != nil {
+					t.Fatalf("delete: %v", err)
+				}
+				if err := db.Delete(route.Slug); !errors.Is(err, ErrNotFound) {
+					t.Errorf("second delete: %v, want ErrNotFound", err)
+				}
+				if _, err := db.GPX(route.Slug); !errors.Is(err, ErrNotFound) {
+					t.Errorf("GPX after delete: %v, want ErrNotFound", err)
+				}
+			})
+
+			t.Run("rejects bad gpx", func(t *testing.T) {
+				db := open(t)
+				if _, err := db.Create(CreateRequest{Name: "Bad", GPX: []byte("nope")}); err == nil {
+					t.Error("bad GPX accepted")
+				}
+			})
+		})
+	}
 }

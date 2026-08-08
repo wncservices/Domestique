@@ -10,7 +10,8 @@ import (
 	"strings"
 	"time"
 
-	_ "modernc.org/sqlite" // pure-Go driver: no cgo, so the image stays scratch-ish
+	_ "github.com/jackc/pgx/v5/stdlib" // PostgreSQL, for the deployed instance
+	_ "modernc.org/sqlite"             // SQLite, pure Go: no cgo, so the image stays small
 
 	"github.com/wncservices/domestique/apps/api/internal/gpx"
 	"github.com/wncservices/domestique/apps/api/internal/model"
@@ -20,68 +21,71 @@ import (
 // this is a mistake or an attack, and we would rather say so than buffer it.
 const maxGPXBytes = 20 << 20 // 20 MiB
 
-const schema = `
-CREATE TABLE IF NOT EXISTS routes (
-    slug         TEXT PRIMARY KEY,
-    name         TEXT NOT NULL,
-    description  TEXT NOT NULL DEFAULT '',
-    tags         TEXT NOT NULL DEFAULT '',
-    targets      TEXT,
-    enabled      INTEGER NOT NULL DEFAULT 1,
-    gpx          BLOB NOT NULL,
-    distance_m   REAL NOT NULL,
-    ascent_m     REAL NOT NULL,
-    start_lat    REAL NOT NULL,
-    start_lng    REAL NOT NULL,
-    point_count  INTEGER NOT NULL,
-    content_hash TEXT NOT NULL,
-    uploaded_by  TEXT NOT NULL DEFAULT '',
-    created_at   TEXT NOT NULL,
-    updated_at   TEXT NOT NULL
-);
-`
-
 // DB stores routes as rows, with the GPX itself as a blob. This is the mode
 // where riders upload through the web UI instead of committing files.
 type DB struct {
-	db  *sql.DB
-	dsn string
+	db      *sql.DB
+	dsn     string
+	dialect dialect
 }
 
-// OpenDB opens (and migrates) a SQLite database. The DSN is a file path;
-// ":memory:" works for tests.
+// OpenDB opens (and migrates) a route database.
+//
+// The DSN decides the engine: a postgres:// URL (or a key=value connection
+// string) means PostgreSQL, anything else is a SQLite file path. ":memory:"
+// works for tests.
 func OpenDB(dsn string) (*DB, error) {
-	// Create the parent directory: the obvious DSN is ./data/domestique.db,
-	// and SQLite will not make the directory itself.
-	if dir := filepath.Dir(dsn); dir != "" && dir != "." && !strings.Contains(dsn, ":memory:") {
-		if err := os.MkdirAll(dir, 0o750); err != nil {
-			return nil, fmt.Errorf("create %s: %w", dir, err)
-		}
+	d, err := dialectFor(dsn)
+	if err != nil {
+		return nil, err
 	}
 
-	// WAL keeps a reader (the UI) from blocking a writer (an upload).
-	db, err := sql.Open("sqlite", dsn+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
+	connString := dsn
+	if d.name == "sqlite" {
+		// Create the parent directory: the obvious DSN is ./data/domestique.db,
+		// and SQLite will not make the directory itself.
+		// #nosec G703 -- the DSN is operator configuration (a flag, the config
+		// file, or DOMESTIQUE_SOURCE_DSN), never user input.
+		if dir := filepath.Dir(dsn); dir != "" && dir != "." && !strings.Contains(dsn, ":memory:") {
+			if mkErr := os.MkdirAll(dir, 0o750); mkErr != nil {
+				return nil, fmt.Errorf("create %s: %w", dir, mkErr)
+			}
+		}
+		// WAL keeps a reader (the UI) from blocking a writer (an upload).
+		connString = dsn + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
+	}
+
+	db, err := sql.Open(d.driver, connString)
 	if err != nil {
 		return nil, err
 	}
 	if err := db.Ping(); err != nil {
-		return nil, fmt.Errorf("open %s: %w", dsn, err)
+		return nil, fmt.Errorf("open %s: %w", redactDSN(dsn), err)
 	}
-	if _, err := db.Exec(schema); err != nil {
-		return nil, fmt.Errorf("migrate %s: %w", dsn, err)
+	if _, err := db.Exec(d.schema()); err != nil {
+		return nil, fmt.Errorf("migrate %s: %w", redactDSN(dsn), err)
 	}
-	return &DB{db: db, dsn: dsn}, nil
+
+	return &DB{db: db, dsn: dsn, dialect: d}, nil
 }
 
-func (d *DB) Close() error     { return d.db.Close() }
-func (d *DB) Describe() string { return "database " + d.dsn }
+// query rewrites the `?` placeholders for the engine in use.
+func (d *DB) query(q string) string { return d.dialect.rebind(q) }
+
+func (d *DB) Close() error { return d.db.Close() }
+
+// Describe names the source for humans. The DSN can carry a password, so it is
+// redacted — this string reaches the log and the web UI.
+func (d *DB) Describe() string {
+	return fmt.Sprintf("%s database %s", d.dialect.name, redactDSN(d.dsn))
+}
 
 func (d *DB) List() ([]model.Route, []string, error) {
-	rows, err := d.db.Query(`
+	rows, err := d.db.Query(d.query(`
         SELECT slug, name, description, tags, targets, enabled,
                distance_m, ascent_m, start_lat, start_lng, point_count,
                content_hash, updated_at, uploaded_by
-        FROM routes WHERE enabled = 1 ORDER BY slug`)
+        FROM routes WHERE enabled = TRUE ORDER BY slug`))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -125,7 +129,7 @@ func (d *DB) Track(slug string) ([]gpx.Point, error) {
 
 func (d *DB) GPX(slug string) ([]byte, error) {
 	var raw []byte
-	err := d.db.QueryRow(`SELECT gpx FROM routes WHERE slug = ?`, slug).Scan(&raw)
+	err := d.db.QueryRow(d.query(`SELECT gpx FROM routes WHERE slug = ?`), slug).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -152,11 +156,11 @@ func (d *DB) Create(req CreateRequest) (model.Route, error) {
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	_, err = d.db.Exec(`
+	_, err = d.db.Exec(d.query(`
         INSERT INTO routes (slug, name, description, tags, targets, enabled, gpx,
                             distance_m, ascent_m, start_lat, start_lng, point_count,
                             content_hash, uploaded_by, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        VALUES (?, ?, ?, ?, ?, TRUE, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		slug, name, req.Descript, joinList(req.Tags), nullableList(req.Targets), req.GPX,
 		stats.DistanceM, stats.AscentM, stats.StartLat, stats.StartLng, stats.PointCount,
 		gpx.ContentHash(points, name, req.Descript), req.UploadedBy, now, now)
@@ -198,11 +202,11 @@ func (d *DB) Update(slug string, req UpdateRequest) (model.Route, error) {
 		}
 		current.Stats = stats
 		current.ContentHash = gpx.ContentHash(points, current.Name, current.Description)
-		_, err = d.db.Exec(`
+		_, err = d.db.Exec(d.query(`
             UPDATE routes SET name=?, description=?, tags=?, targets=?, enabled=?, gpx=?,
                    distance_m=?, ascent_m=?, start_lat=?, start_lng=?, point_count=?,
                    content_hash=?, updated_at=?
-            WHERE slug=?`,
+            WHERE slug=?`),
 			current.Name, current.Description, joinList(current.Tags),
 			nullableList(current.Targets), current.IsEnabled(), req.GPX,
 			stats.DistanceM, stats.AscentM, stats.StartLat, stats.StartLng, stats.PointCount,
@@ -221,10 +225,10 @@ func (d *DB) Update(slug string, req UpdateRequest) (model.Route, error) {
 	}
 	current.ContentHash = gpx.ContentHash(points, current.Name, current.Description)
 
-	_, err = d.db.Exec(`
+	_, err = d.db.Exec(d.query(`
         UPDATE routes SET name=?, description=?, tags=?, targets=?, enabled=?,
                content_hash=?, updated_at=?
-        WHERE slug=?`,
+        WHERE slug=?`),
 		current.Name, current.Description, joinList(current.Tags),
 		nullableList(current.Targets), current.IsEnabled(),
 		current.ContentHash, now, slug)
@@ -235,7 +239,7 @@ func (d *DB) Update(slug string, req UpdateRequest) (model.Route, error) {
 }
 
 func (d *DB) Delete(slug string) error {
-	result, err := d.db.Exec(`DELETE FROM routes WHERE slug = ?`, slug)
+	result, err := d.db.Exec(d.query(`DELETE FROM routes WHERE slug = ?`), slug)
 	if err != nil {
 		return err
 	}
@@ -252,11 +256,11 @@ func (d *DB) get(slug string) (model.Route, error) {
 		targets sql.NullString
 		enabled bool
 	)
-	err := d.db.QueryRow(`
+	err := d.db.QueryRow(d.query(`
         SELECT slug, name, description, tags, targets, enabled,
                distance_m, ascent_m, start_lat, start_lng, point_count,
                content_hash, updated_at, uploaded_by
-        FROM routes WHERE slug = ?`, slug).Scan(
+        FROM routes WHERE slug = ?`), slug).Scan(
 		&route.Slug, &route.Name, &route.Description, &tags, &targets, &enabled,
 		&route.Stats.DistanceM, &route.Stats.AscentM,
 		&route.Stats.StartLat, &route.Stats.StartLng, &route.Stats.PointCount,
@@ -286,7 +290,8 @@ func (d *DB) uniqueSlug(base string) (string, error) {
 	candidate := base
 	for attempt := 2; attempt < 1000; attempt++ {
 		var exists int
-		err := d.db.QueryRow(`SELECT COUNT(1) FROM routes WHERE slug = ?`, candidate).Scan(&exists)
+		err := d.db.QueryRow(
+			d.query(`SELECT COUNT(1) FROM routes WHERE slug = ?`), candidate).Scan(&exists)
 		if err != nil {
 			return "", err
 		}

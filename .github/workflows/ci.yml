@@ -27,6 +27,24 @@ jobs:
   api:
     name: API — build & tests
     runs-on: ubuntu-latest
+    services:
+      # PostgreSQL is what this runs against in the cluster. SQLite passing
+      # says nothing about it: placeholders, booleans and blob types all
+      # differ, so the database tests run against both here.
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: domestique
+          POSTGRES_DB: domestique_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DOMESTIQUE_TEST_POSTGRES: postgres://postgres:domestique@localhost:5432/domestique_test?sslmode=disable
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -37,8 +55,22 @@ jobs:
         working-directory: apps/api
       - run: go build -v ./...
         working-directory: apps/api
+      - name: Build without the workspace
+        # The Docker image copies apps/api alone, so the module must build with
+        # no go.work to fall back on. Catching that here fails in seconds
+        # rather than several minutes into the image build.
+        run: GOWORK=off go build ./...
+        working-directory: apps/api
       - name: Tests
         run: go test ./apps/api/... -count=1 -race -cover
+      - name: Fail if the PostgreSQL tests were skipped
+        # A silently skipped engine is worse than no test: it reads green while
+        # covering nothing.
+        run: |
+          if go test ./apps/api/internal/source/ -run TestEachEngine -v 2>&1 | grep -q "SKIP.*postgres"; then
+            echo "::error::the PostgreSQL tests skipped — the service container is not reachable"
+            exit 1
+          fi
       - name: gofmt
         run: |
           unformatted="$(gofmt -l apps/api)"

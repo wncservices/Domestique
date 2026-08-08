@@ -291,7 +291,9 @@ func TestConfigEndpoint(t *testing.T) {
 		wantSource   string
 	}{
 		{"fs", false, "directory"},
-		{"db", true, "database"},
+		// A database source names its engine, so the UI and the logs say
+		// which one is in use — sqlite on a laptop, postgres in the cluster.
+		{"db", true, "sqlite database"},
 	} {
 		t.Run(tc.kind, func(t *testing.T) {
 			h := newHarness(t, tc.kind)

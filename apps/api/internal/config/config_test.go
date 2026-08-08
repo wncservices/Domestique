@@ -182,3 +182,54 @@ func TestAccountLookup(t *testing.T) {
 		t.Error("unknown account reported as found")
 	}
 }
+
+// A PostgreSQL DSN carries a password, so a deployment supplies it through the
+// environment. Without this, the only way to configure one is to write a
+// credential into a file meant to be readable.
+func TestSourceDSNFromEnvironment(t *testing.T) {
+	const dsn = "postgres://domestique:secret@db.internal:5432/domestique"
+	t.Setenv(EnvSourceDSN, dsn)
+
+	cfg, err := Load(writeConfig(t, "source:\n  kind: fs\n  path: ./routes\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The environment wins, and switches the source to db along with it —
+	// otherwise a leftover `kind: fs` would silently ignore the DSN.
+	if cfg.Source.Kind != SourceDB {
+		t.Errorf("kind = %q, want db", cfg.Source.Kind)
+	}
+	if cfg.Source.DSN != dsn {
+		t.Errorf("dsn = %q, want the environment's", cfg.Source.DSN)
+	}
+}
+
+func TestSourceDSNEnvironmentIsOptional(t *testing.T) {
+	cfg, err := Load(writeConfig(t, "source:\n  kind: db\n  dsn: ./local.db\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Source.DSN != "./local.db" {
+		t.Errorf("dsn = %q, want the config file's when the env var is unset", cfg.Source.DSN)
+	}
+}
+
+// The container case: no config file at all, everything from the environment.
+// This regressed once — Load returned early on a missing file, before the
+// override ran — and it is the deployment's normal path.
+func TestSourceDSNFromEnvironmentWithNoConfigFile(t *testing.T) {
+	const dsn = "postgres://domestique:secret@db.internal:5432/domestique"
+	t.Setenv(EnvSourceDSN, dsn)
+
+	cfg, err := Load(filepath.Join(t.TempDir(), "absent.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Source.DSN != dsn {
+		t.Errorf("dsn = %q, want the environment's — the override was skipped", cfg.Source.DSN)
+	}
+	if cfg.Source.Kind != SourceDB {
+		t.Errorf("kind = %q, want db", cfg.Source.Kind)
+	}
+}
