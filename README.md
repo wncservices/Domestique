@@ -21,58 +21,44 @@ device by hand; automatic pushing is not wired up yet.
 
 ## Where routes live
 
-GPX files are personal location data — a route usually starts at somebody's front door. So the
-app holds none, and the routes live in a store you control.
-
-**A database, by default.** Routes are rows and the GPX is a blob in the row. Riders upload
-through the web UI or import from Komoot; no git, no checkout.
+**In a database.** Routes are rows and the GPX is a blob in the row.
 
 | Engine | For | DSN |
 |---|---|---|
-| **PostgreSQL** | The deployed instance | `postgres://user:pass@host/domestique` |
-| **SQLite** | A laptop, or one container with a volume | `data/domestique.db` |
+| **PostgreSQL** | A deployment | `postgres://user:pass@host/domestique` |
+| **SQLite** | A laptop | `data/domestique.db` |
 
 The DSN picks the engine — a `postgres://` URL means PostgreSQL, anything else is a SQLite file
 path. Both are tested against the same suite.
 
-**A directory of GPX files also works**, and is not second-class. Point the `fs` source at a
-checkout of a separate, private routes repo and routes arrive by commit, with review and history
-for free. It is read-only by design: in a git-backed library, adding a route *is* the commit.
-
-```
-routes/                          # a different repository, private
-  wilant/kemmelberg-loop/
-    route.gpx
-    route.yaml                   # name, description, targets, tags (optional)
-```
-
-Switch with one line of config, or `--source fs|db` on the CLI. Moving a directory library into
-a database is one command:
+Routes get in three ways: **uploaded** through the web UI, **imported from Komoot**, or loaded
+in bulk from a folder of files:
 
 ```bash
-just import ../routes
+just import ./some-folder-of-gpx
 ```
+
+That last one is a one-off. Nothing keeps reading that folder afterwards.
+
+GPX files are personal location data — a route usually starts at somebody's front door — so
+**this repository holds none**, and the database is yours.
 
 ## Quick start
 
 ```bash
 just install
 just build
-just demo          # serves the bundled example routes, read-only
+just demo          # a local SQLite library with the example route loaded
 ```
 
-Then open <http://localhost:8080>. To try uploads instead:
-
-```bash
-just demo-db
-```
+Then open <http://localhost:8080>.
 
 For frontend work run `just api` and `just web` side by side and use the Vite server on :5173.
 
 Without the UI:
 
 ```bash
-just validate                    # read the source, report problems
+just validate                    # read the library, report problems
 just plan                        # what would change on each account
 just push -- --dry-run           # same, in push's own words
 ```
@@ -95,8 +81,8 @@ auth:
 | Role | Can |
 |---|---|
 | `viewer` | read routes, download GPX, see what would be pushed |
-| `rider` | + upload, import from Komoot, push to devices, edit and delete **their own** routes |
-| `admin` | + edit and delete **anyone's** routes |
+| `rider` | + upload, import from Komoot, link **their own** head units, push, edit and delete **their own** routes |
+| `admin` | + edit and delete **anyone's** routes and head units |
 
 > **The app must not be reachable except through the proxy.** With `mode: proxy`
 > it believes the `Remote-User` header — and so would anyone who can talk to it
@@ -106,6 +92,13 @@ auth:
 With `mode: none` (the default) there is no login at all and every visitor is
 an admin. That is right for a laptop and wrong for anything else; the UI says
 so in the header.
+
+## Linking a head unit
+
+Nothing about riders or devices is configured. Each rider signs in and links
+their own Garmin or Wahoo from the web UI; the link is stored in the database,
+keyed to their Authelia username. A route with no targets of its own goes to
+every linked head unit.
 
 ## Importing from Komoot
 
@@ -162,12 +155,13 @@ and `charts/domestique/ci/full-values.yaml` is a complete worked example.
 
 ## Configuration
 
-Copy `domestique.example.yaml` to `domestique.yaml`. It holds the route source and the riders'
-accounts — **account ids and labels only, never a credential**. Provider credentials come from
-the environment; in a cluster, Vault → ExternalSecret → `envFrom`.
+Copy `domestique.example.yaml` to `domestique.yaml`. It is deliberately small: where the database
+is, and how to recognise a user. **No routes, no accounts, no riders, no credentials** — routes
+and head units live in the database, and credentials come from the environment (in a cluster,
+Vault → ExternalSecret → `envFrom`).
 
-A route is pushed to the accounts it names in `targets`, or to `default_targets` when it names
-none. That is what keeps one rider's private routes off the other's head unit.
+A route is pushed to the head units it names in `targets`, or to every linked one when it names
+none. Naming targets is what keeps one rider's private routes off the other's device.
 
 ## Layout
 
@@ -175,7 +169,7 @@ none. That is what keeps one rider's private routes off the other's head unit.
 |---|---|
 | `apps/api/` | Go service: CLI and HTTP API |
 | `apps/web/` | Vue 3 + Vite frontend |
-| `examples/routes/` | A sample route, so the demo has something to show |
+| `examples/routes/` | A sample .gpx, so the demo has something to import |
 | `charts/domestique/` | The Helm chart |
 | `docs/plan.md` | Why the providers work the way they do — read before touching an adapter |
 
@@ -183,7 +177,7 @@ none. That is what keeps one rider's private routes off the other's head unit.
 
 | Phase | What | Status |
 |---|---|---|
-| 1 | Library, diff engine, CLI, API, web UI, pluggable sources | ✅ |
+| 1 | Library, diff engine, CLI, API, web UI | ✅ |
 | 2 | GPX → FIT course conversion, with inferred turn cues | ✅ |
 | 3 | Garmin push (unofficial Connect session) | ⬜ stub |
 | 4 | Wahoo push (Cloud API) | ⬜ stub, needs approved API access |

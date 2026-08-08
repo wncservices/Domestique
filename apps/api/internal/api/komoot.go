@@ -79,12 +79,6 @@ func (s *Server) handleKomootImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writable, ok := source.AsWritable(s.Source)
-	if !ok {
-		s.readOnly(w)
-		return
-	}
-
 	var body struct {
 		TourIDs []string `json:"tourIds"`
 	}
@@ -133,7 +127,7 @@ func (s *Server) handleKomootImport(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		if _, err := writable.Create(source.CreateRequest{
+		if _, err := s.Source.Create(source.CreateRequest{
 			Filename:   tour.Name + ".gpx",
 			Name:       tour.Name,
 			Descript:   fmt.Sprintf("Imported from Komoot (tour %s)", id),

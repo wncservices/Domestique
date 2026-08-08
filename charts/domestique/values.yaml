@@ -17,9 +17,8 @@ fullnameOverride: ""
 # Credentials come from `envFrom` and `env` below instead.
 config:
   source:
-    # db is the default. For PostgreSQL, leave the DSN out of this file and set
+    # For PostgreSQL, leave the DSN out of this file and set
     # DOMESTIQUE_SOURCE_DSN from a Secret — see `envFrom` below.
-    kind: db
     dsn: /app/data/domestique.db
 
   # domestique authenticates nobody itself. Behind Traefik with an Authelia
@@ -41,13 +40,9 @@ config:
   komoot:
     enabled: false
 
-  accounts: []
-  # - id: garmin:rider-one
-  #   provider: garmin
-  #   rider: rider-one
-  #   label: First rider's Garmin
-
-  default_targets: []
+  # Head units are not configured here. Riders link their own Garmin or Wahoo
+  # from the web UI and it is stored in the database, so there is no second
+  # place where somebody's devices are written down.
 
 # Secrets reach the pod as environment variables. Create the Secret separately
 # — with an ExternalSecret from Vault, for instance — and name it here.

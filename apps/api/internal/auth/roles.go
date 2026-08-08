@@ -10,8 +10,8 @@ import (
 //
 //	viewer  read routes, download GPX, see what would be pushed
 //	rider   + upload, import from Komoot, edit and delete their own routes,
-//	          push routes to the head units
-//	admin   + edit and delete anyone's routes
+//	          link their own head units, push routes to them
+//	admin   + edit and delete anyone's routes, and anyone's linked accounts
 //
 // Roles come from Authelia groups, mapped in domestique.yaml. Authelia is the
 // source of truth for who is in which group; this only translates.
@@ -60,16 +60,20 @@ const (
 	PermEditAny     Permission = "routes:edit-any"
 	PermPush        Permission = "sync:push"
 	PermKomootSync  Permission = "komoot:import"
+	// PermManageAccounts is linking and unlinking head units. A rider manages
+	// their own; touching somebody else's additionally needs PermEditAny.
+	PermManageAccounts Permission = "accounts:manage"
 )
 
 // minimumRole is the least privileged role that holds each permission.
 var minimumRole = map[Permission]Role{
-	PermReadRoutes:  RoleViewer,
-	PermUploadRoute: RoleRider,
-	PermEditOwn:     RoleRider,
-	PermPush:        RoleRider,
-	PermKomootSync:  RoleRider,
-	PermEditAny:     RoleAdmin,
+	PermReadRoutes:     RoleViewer,
+	PermUploadRoute:    RoleRider,
+	PermEditOwn:        RoleRider,
+	PermPush:           RoleRider,
+	PermKomootSync:     RoleRider,
+	PermManageAccounts: RoleRider,
+	PermEditAny:        RoleAdmin,
 }
 
 // Can reports whether a role holds a permission.
@@ -87,7 +91,8 @@ func (r Role) Can(p Permission) bool {
 func (r Role) Permissions() []Permission {
 	var out []Permission
 	for _, p := range []Permission{
-		PermReadRoutes, PermUploadRoute, PermEditOwn, PermEditAny, PermPush, PermKomootSync,
+		PermReadRoutes, PermUploadRoute, PermEditOwn, PermEditAny, PermPush,
+		PermKomootSync, PermManageAccounts,
 	} {
 		if r.Can(p) {
 			out = append(out, p)
@@ -96,7 +101,8 @@ func (r Role) Permissions() []Permission {
 	return out
 }
 
-// CanEditRoute reports whether this identity may change or delete a route.
+// CanEditRoute reports whether this identity may change or delete something
+// owned by `owner` — a route, or a linked account.
 // Riders may touch what they uploaded; admins may touch anything.
 //
 // An unowned route (uploaded before ownership was recorded, or imported by the

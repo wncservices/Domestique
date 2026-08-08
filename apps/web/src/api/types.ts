@@ -2,13 +2,24 @@
 
 export type SyncStatusKind = 'synced' | 'pending' | 'stale'
 
+export type Provider = 'garmin' | 'wahoo'
+
 export interface Account {
   id: string
-  provider: 'garmin' | 'wahoo'
+  provider: Provider
   rider: string
   label: string
-  /** False while the provider adapter is still a stub (Phases 3 and 4). */
+  /** False while the provider adapter is still a stub. */
   implemented: boolean
+  /** Whether the viewer may unlink this one — their own, or they're an admin. */
+  mine: boolean
+}
+
+export interface LinkAccountRequest {
+  provider: Provider
+  label?: string
+  /** Admins only: link on somebody else's behalf. */
+  rider?: string
 }
 
 export interface SyncStatus {
@@ -27,6 +38,7 @@ export type Permission =
   | 'routes:edit-any'
   | 'sync:push'
   | 'komoot:import'
+  | 'accounts:manage'
 
 export interface Me {
   /** False when the app runs without authentication (everyone is admin). */

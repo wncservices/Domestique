@@ -4,27 +4,19 @@
 # credential comes from the environment (in a cluster: Vault -> ExternalSecret
 # -> envFrom).
 
-# Where routes come from.
+# Where the route library lives.
+#
+# Routes are rows in a database, with the GPX as a blob. The DSN picks the
+# engine:
+#   a postgres:// URL  -> PostgreSQL, which is what a deployment uses
+#   anything else      -> a SQLite file, right for a laptop
 source:
-  # db: routes as rows, the GPX as a blob, uploaded through the web UI. The
-  #     default, and the right choice unless you specifically want routes
-  #     under git.
-  #
-  # The DSN picks the engine:
-  #   a postgres:// URL  -> PostgreSQL, which is what a deployed instance uses
-  #   anything else      -> a SQLite file, right for a laptop
-  kind: db
   dsn: data/domestique.db
   # dsn: postgres://domestique:PASSWORD@postgres-cluster-rw.postgres-cluster:5432/domestique
   #
   # The DSN carries a password, so in a cluster it comes from the environment
   # rather than this file — DOMESTIQUE_SOURCE_DSN overrides what is written
   # here. See the deployment notes in docs/plan.md.
-
-  # fs: a directory of GPX routes, typically a checkout of a separate, private
-  #     routes repo. Read-only — routes are added by committing them.
-  # kind: fs
-  # path: ../routes
 
 # Who may use the app, and what they may do.
 #
@@ -75,19 +67,11 @@ komoot:
   # Also import rides you have recorded, not just routes you have plotted.
   # include_recorded: false
 
-# The riders' accounts. IDs are "<provider>:<rider>".
-accounts:
-  - id: garmin:wilant
-    provider: garmin
-    rider: wilant
-    label: Wilant's Garmin Edge
-
-  - id: wahoo:friend
-    provider: wahoo
-    rider: friend
-    label: Friend's Wahoo ELEMNT
-
-# Where a route goes when it does not name targets itself.
-default_targets:
-  - garmin:wilant
-  - wahoo:friend
+# Head units are not configured here.
+#
+# Riders link their own Garmin or Wahoo from the web UI, and the link is stored
+# in the database next to the routes. The rider is taken from the Authelia
+# session at link time, so there is no second place where somebody's name and
+# devices are written down, and no way for the two to disagree.
+#
+# A route with no `targets` of its own goes to every linked head unit.

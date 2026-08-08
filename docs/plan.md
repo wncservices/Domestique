@@ -10,35 +10,25 @@ constraints it found still govern everything. The plan itself has moved on.
 
 ## Where routes live
 
-**A database, by default.** Routes are rows; the GPX itself is a blob in the
-row. Riders upload through the web UI or import from Komoot, and nothing needs
-a git checkout.
-
-Two engines are supported, for two different jobs:
+**In a database.** Routes are rows; the GPX itself is a blob in the row.
 
 | Engine | For |
 |---|---|
-| **PostgreSQL** | The deployed instance. The cluster already runs a CNPG PostgreSQL, so this is one more database rather than a volume |
-| **SQLite** | A laptop, or a single container with a volume. A file, no server |
+| **PostgreSQL** | A deployment. The cluster already runs a CNPG PostgreSQL, so this is one more database rather than a volume |
+| **SQLite** | A laptop. A file, no server |
 
 The DSN chooses: a `postgres://` URL (or a `host=… dbname=…` string) means
-PostgreSQL, anything else is a SQLite file path. `internal/source/dialect.go`
-holds the handful of places they disagree — placeholders, the boolean column,
-the blob type — and every query is written once against both.
+PostgreSQL, anything else is a SQLite file path. `internal/dbx` holds the
+handful of places they disagree — placeholders, the boolean column, the blob
+type — and every query is written once against both.
 
-**A directory of GPX files is still supported**, and is not deprecated. Point
-the `fs` source at a checkout of a separate, private routes repo and routes
-arrive by commit, with review and history for free. It is deliberately
-read-only: in a git-backed library, adding a route *is* the commit.
+Routes get in by upload, by Komoot import, or by `domestique import --from
+<dir>` for a folder of files that already exist. That last one is a one-off
+copy, not a storage mode.
 
-This started as the git-first design. It changed because the friction was in
-the wrong place — asking someone to clone a repo and commit a file to add a
-route they just plotted on their phone is a worse trade than losing git
-history. `domestique import --from <dir>` moves an existing directory library
-into a database one.
-
-Whichever source is in use, **this repository holds no route data**. A GPX
-usually starts at somebody's front door.
+Everything the app knows lives in that one database: routes, the head units
+riders have linked, and the sync state. **A deployment needs a database and
+nothing else** — no volume, no config file full of names.
 
 ## How the sync works
 
@@ -59,10 +49,21 @@ A content hash decides what changed. It ignores sub-metre coordinate jitter and
 timestamps — otherwise re-exporting the same route from a different planner
 churns everything — but includes the name, because the providers display it.
 
-**Sync state lives in the database**, in a `sync_state` table beside the routes.
-A deployment therefore needs a database and nothing else — no volume, no file.
-The JSON file store still exists for a directory-backed library, which has no
-database to borrow.
+**Sync state lives in the database**, in a `sync_state` table beside the routes,
+on the same connection.
+
+## Users, riders and accounts
+
+Users come from Authelia and are never stored. An **account** is different: a
+connection to a head unit, which Authelia knows nothing about. Riders link
+their own Garmin or Wahoo from the UI and it lands in the `accounts` table,
+keyed to their Authelia username.
+
+Nothing about people or devices is configured. `domestique.yaml` holds where
+the database is and how to recognise a user, and that is all.
+
+A route with no targets goes to every linked head unit; naming targets is what
+keeps a private route off somebody else's device.
 
 ## Who can do what
 
@@ -91,7 +92,7 @@ Failures are contained: the endpoint returns 502 and the rest of the app carries
 on. Imported routes carry a `komoot:<id>` tag so re-imports are skipped rather
 than silently duplicated.
 
-**A git repo**, via the `fs` source, as above.
+**A folder of files**, once, with `domestique import --from <dir>`.
 
 ## Getting routes out
 
@@ -114,9 +115,11 @@ the conversion: no test can establish that a real head unit accepts the file.
 
 | Phase | What | Status |
 |---|---|---|
-| 1 | Library, diff engine, CLI, API, web UI, pluggable sources | ✅ |
-| 1b | Database sources (PostgreSQL and SQLite), uploads, Authelia login with roles, Komoot import | ✅ |
+| 1 | Library, diff engine, CLI, API, web UI | ✅ |
+| 1b | Database library (PostgreSQL and SQLite), uploads, Authelia login with roles, Komoot import | ✅ |
 | 1c | Sync state in the database, so a deployment needs no volume | ✅ |
+| 1d | Head units linked through the UI, stored in the database, keyed to the Authelia user | ✅ |
+| 1e | One storage model: the filesystem library removed | ✅ |
 | 2 | GPX → FIT course conversion, with inferred turn cues | ✅ |
 | 3 | Garmin push | ⬜ stub |
 | 4 | Wahoo push | ⬜ stub, **blocked** on API access |
@@ -156,7 +159,7 @@ Specifics this app needs:
 
 - **PostgreSQL** from the existing CNPG cluster: a `Database` CRD in the app's
   `templates/` with `namespace: postgres-cluster`, per the house rule about
-  cross-namespace resources.
+  cross-namespace resources. There is nothing else to persist — no volume.
 - **Credentials from Vault** at `kv2_tooling/domestique/env`: the Komoot login,
   and later the Garmin and Wahoo credentials. Refreshed OAuth tokens must be
   written back with a `PushSecret`, or a pod restart breaks the refresh chain.

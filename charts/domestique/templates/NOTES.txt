@@ -29,14 +29,16 @@ anything, put it behind Authelia and set:
         trusted_proxies: [<your pod CIDR>]
 {{- end }}
 
-{{ if not .Values.persistence.enabled -}}
-WARNING: persistence is off. Sync state lives in the pod's filesystem and is
-lost on every restart, after which every route is pushed to every device
-again. Set persistence.enabled=true for anything long-lived.
+{{ if and (not .Values.persistence.enabled) (not (hasPrefix "postgres" (dig "source" "dsn" "" .Values.config))) (not .Values.envFrom) -}}
+WARNING: persistence is off and the library is a SQLite file in the pod, so
+every route is lost on restart. Either turn persistence on, or point
+DOMESTIQUE_SOURCE_DSN at PostgreSQL.
 {{- end }}
 
-{{ if and (eq (default "" .Values.config.source.kind) "db") (not .Values.envFrom) (not (hasPrefix "postgres" (default "" .Values.config.source.dsn))) -}}
-Using a SQLite route library at {{ .Values.config.source.dsn }}.
-For PostgreSQL, set DOMESTIQUE_SOURCE_DSN from a Secret via envFrom rather
-than writing the password into values.
+{{ if and (not .Values.envFrom) (not (hasPrefix "postgres" (dig "source" "dsn" "" .Values.config))) -}}
+Using a SQLite library at {{ .Values.config.source.dsn }}.
+
+For PostgreSQL, set DOMESTIQUE_SOURCE_DSN from a Secret via envFrom rather than
+writing a password into values — and then turn persistence off, because nothing
+is kept on disk.
 {{- end }}

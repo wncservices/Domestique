@@ -3,6 +3,7 @@ import type {
   AppConfig,
   KomootImportResult,
   KomootTour,
+  LinkAccountRequest,
   Me,
   LibraryResponse,
   PlanResponse,
@@ -53,6 +54,14 @@ export const api = {
     }),
 
   accounts: () => request<Account[]>('/api/accounts'),
+  linkAccount: (req: LinkAccountRequest) =>
+    request<Account>('/api/accounts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+    }),
+  unlinkAccount: (id: string) =>
+    request<void>(`/api/accounts/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   routes: () => request<LibraryResponse>('/api/routes'),
   plan: () => request<PlanResponse>('/api/plan'),
   track: (slug: string) => request<TrackResponse>(`/api/tracks/${encodeSlug(slug)}`),

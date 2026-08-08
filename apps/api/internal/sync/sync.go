@@ -11,15 +11,19 @@ import (
 	"github.com/wncservices/domestique/apps/api/internal/targets"
 )
 
-// BuildPlan compares the routes on offer against recorded remote state, per account.
+// BuildPlan compares the routes on offer against recorded remote state, for
+// each linked account.
+//
+// The accounts are passed in rather than read from config: they are linked by
+// riders through the UI and live in the database, so the caller fetches them.
 //
 // It returns an error rather than treating unreadable state as empty: an empty
 // plan reads as "nothing to do", but empty *state* means "push everything
 // again", and the two must never be confused.
-func BuildPlan(routes []model.Route, cfg *config.Config, store state.Store) (model.Plan, error) {
+func BuildPlan(routes []model.Route, linked []model.Account, store state.Store) (model.Plan, error) {
 	var plan model.Plan
 
-	for _, account := range cfg.Accounts {
+	for _, account := range linked {
 		recorded, err := store.ForAccount(account.ID)
 		if err != nil {
 			return model.Plan{}, fmt.Errorf("read state for %s: %w", account.ID, err)
@@ -27,7 +31,7 @@ func BuildPlan(routes []model.Route, cfg *config.Config, store state.Store) (mod
 
 		desired := map[string]model.Route{}
 		for _, route := range routes {
-			for _, target := range cfg.TargetsFor(route) {
+			for _, target := range config.TargetsFor(route, linked) {
 				if target == account.ID {
 					desired[route.Slug] = route
 				}

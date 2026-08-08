@@ -34,6 +34,8 @@ func TestPermissionsPerRole(t *testing.T) {
 		{RoleRider, PermPush, true},
 		{RoleRider, PermEditOwn, true},
 		{RoleRider, PermEditAny, false},
+		{RoleRider, PermManageAccounts, true},
+		{RoleViewer, PermManageAccounts, false},
 
 		{RoleAdmin, PermEditAny, true},
 		{RoleAdmin, PermPush, true},
@@ -170,7 +172,7 @@ func TestPermissionsListing(t *testing.T) {
 		t.Errorf("viewer permissions = %v, want just read", RoleViewer.Permissions())
 	}
 	admin := RoleAdmin.Permissions()
-	if len(admin) != 6 {
-		t.Errorf("admin permissions = %v, want all six", admin)
+	if len(admin) != 7 {
+		t.Errorf("admin permissions = %v, want all seven", admin)
 	}
 }

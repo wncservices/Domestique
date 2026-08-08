@@ -350,6 +350,19 @@ func analyse(raw []byte) ([]gpx.Point, model.RouteStats, error) {
 	return points, gpx.ComputeStats(points), nil
 }
 
+// Titleize turns a filename stem into a display name:
+// "kemmelberg-loop" -> "Kemmelberg Loop".
+func Titleize(slug string) string {
+	words := strings.Split(strings.ReplaceAll(slug, "_", "-"), "-")
+	for i, w := range words {
+		if w == "" {
+			continue
+		}
+		words[i] = strings.ToUpper(w[:1]) + w[1:]
+	}
+	return strings.Join(words, " ")
+}
+
 var nonSlug = regexp.MustCompile(`[^a-z0-9]+`)
 
 // Slugify turns a display name into a URL-safe slug.

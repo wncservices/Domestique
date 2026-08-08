@@ -13,13 +13,10 @@ install:
 api *ARGS:
     go run ./apps/api/cmd/domestique serve {{ARGS}}
 
-# Run the API against the bundled example routes — no config needed.
+# A local SQLite library with the example route loaded, for a look around.
 demo:
-    go run ./apps/api/cmd/domestique serve --source fs --library examples/routes
-
-# Run the API against a local SQLite library, with uploads enabled.
-demo-db:
-    go run ./apps/api/cmd/domestique serve --source db --db ./data/domestique.db
+    go run ./apps/api/cmd/domestique import --db ./data/demo.db --from examples/routes
+    go run ./apps/api/cmd/domestique serve --db ./data/demo.db
 
 # Run the Vue dev server with hot reload, proxying /api to the API on :8080.
 web:
@@ -44,9 +41,9 @@ komoot *ARGS:
 fit SLUG *ARGS:
     go run ./apps/api/cmd/domestique fit {{SLUG}} {{ARGS}}
 
-# Copy a directory of GPX routes into a database library.
+# Load a folder of .gpx files into the database. A one-off, not a storage mode.
 import FROM:
-    go run ./apps/api/cmd/domestique import --source db --db ./data/domestique.db --from {{FROM}}
+    go run ./apps/api/cmd/domestique import --db ./data/domestique.db --from {{FROM}}
 
 # --- quality ---
 

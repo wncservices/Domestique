@@ -5,8 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wncservices/domestique/apps/api/internal/config"
-
 	"github.com/wncservices/domestique/apps/api/internal/model"
 	"github.com/wncservices/domestique/apps/api/internal/state"
 	"github.com/wncservices/domestique/apps/api/internal/targets"
@@ -53,9 +51,9 @@ func forAccount(t *testing.T, store state.Store, accountID string) map[string]st
 }
 
 // mustPlan is the same idea for BuildPlan.
-func mustPlan(t *testing.T, routes []model.Route, cfg *config.Config, store state.Store) model.Plan {
+func mustPlan(t *testing.T, routes []model.Route, linked []model.Account, store state.Store) model.Plan {
 	t.Helper()
-	plan, err := BuildPlan(routes, cfg, store)
+	plan, err := BuildPlan(routes, linked, store)
 	if err != nil {
 		t.Fatalf("BuildPlan: %v", err)
 	}
@@ -73,11 +71,11 @@ func route(slug, hash string) model.Route {
 func TestApplyCreatesAndRecordsState(t *testing.T) {
 	store, target := newStore(t), &fakeTarget{}
 	plan := model.Plan{Items: []model.PlanItem{{
-		Op: model.OpCreate, AccountID: "garmin:wilant", Slug: "loop",
+		Op: model.OpCreate, AccountID: "garmin:one", Slug: "loop",
 		Route: &model.Route{RouteMeta: model.RouteMeta{Name: "Loop"}, Slug: "loop", ContentHash: "v1"},
 	}}}
 
-	if failures := Apply(plan, store, map[string]targets.Target{"garmin:wilant": target}); len(failures) != 0 {
+	if failures := Apply(plan, store, map[string]targets.Target{"garmin:one": target}); len(failures) != 0 {
 		t.Fatalf("failures: %v", failures)
 	}
 
@@ -85,7 +83,7 @@ func TestApplyCreatesAndRecordsState(t *testing.T) {
 		t.Errorf("adapter saw %v, want one create", target.creates)
 	}
 
-	entry, ok := forAccount(t, store, "garmin:wilant")["loop"]
+	entry, ok := forAccount(t, store, "garmin:one")["loop"]
 	if !ok {
 		t.Fatal("nothing recorded; the next run would create it again")
 	}
@@ -97,16 +95,16 @@ func TestApplyCreatesAndRecordsState(t *testing.T) {
 func TestApplyUpdateKeepsRemoteID(t *testing.T) {
 	store, target := newStore(t), &fakeTarget{}
 	plan := model.Plan{Items: []model.PlanItem{{
-		Op: model.OpUpdate, AccountID: "garmin:wilant", Slug: "loop",
+		Op: model.OpUpdate, AccountID: "garmin:one", Slug: "loop",
 		RemoteID: "remote-abc",
 		Route:    &model.Route{RouteMeta: model.RouteMeta{Name: "Loop"}, Slug: "loop", ContentHash: "v2"},
 	}}}
 
-	if failures := Apply(plan, store, map[string]targets.Target{"garmin:wilant": target}); len(failures) != 0 {
+	if failures := Apply(plan, store, map[string]targets.Target{"garmin:one": target}); len(failures) != 0 {
 		t.Fatalf("failures: %v", failures)
 	}
 
-	entry := forAccount(t, store, "garmin:wilant")["loop"]
+	entry := forAccount(t, store, "garmin:one")["loop"]
 	if entry.RemoteID != "remote-abc" {
 		t.Errorf("remote id = %q, want it preserved across an update", entry.RemoteID)
 	}
@@ -118,22 +116,22 @@ func TestApplyUpdateKeepsRemoteID(t *testing.T) {
 func TestApplyDeleteForgetsState(t *testing.T) {
 	store, target := newStore(t), &fakeTarget{}
 	if err := store.Record(state.Entry{
-		AccountID: "garmin:wilant", Slug: "loop", RemoteID: "remote-abc", ContentHash: "v1",
+		AccountID: "garmin:one", Slug: "loop", RemoteID: "remote-abc", ContentHash: "v1",
 	}); err != nil {
 		t.Fatal(err)
 	}
 
 	plan := model.Plan{Items: []model.PlanItem{{
-		Op: model.OpDelete, AccountID: "garmin:wilant", Slug: "loop", RemoteID: "remote-abc",
+		Op: model.OpDelete, AccountID: "garmin:one", Slug: "loop", RemoteID: "remote-abc",
 	}}}
 
-	if failures := Apply(plan, store, map[string]targets.Target{"garmin:wilant": target}); len(failures) != 0 {
+	if failures := Apply(plan, store, map[string]targets.Target{"garmin:one": target}); len(failures) != 0 {
 		t.Fatalf("failures: %v", failures)
 	}
 	if len(target.deletes) != 1 {
 		t.Errorf("adapter saw %v, want one delete", target.deletes)
 	}
-	if len(forAccount(t, store, "garmin:wilant")) != 0 {
+	if len(forAccount(t, store, "garmin:one")) != 0 {
 		t.Error("state kept after a delete; the route would be deleted again forever")
 	}
 }
@@ -145,25 +143,25 @@ func TestApplyIsolatesFailures(t *testing.T) {
 	broken := &fakeTarget{err: errors.New("provider exploded")}
 
 	plan := model.Plan{Items: []model.PlanItem{
-		{Op: model.OpCreate, AccountID: "garmin:wilant", Slug: "loop", Route: ptr(route("loop", "v1"))},
-		{Op: model.OpCreate, AccountID: "wahoo:friend", Slug: "loop", Route: ptr(route("loop", "v1"))},
+		{Op: model.OpCreate, AccountID: "garmin:one", Slug: "loop", Route: ptr(route("loop", "v1"))},
+		{Op: model.OpCreate, AccountID: "wahoo:two", Slug: "loop", Route: ptr(route("loop", "v1"))},
 	}}
 
 	failures := Apply(plan, store, map[string]targets.Target{
-		"garmin:wilant": healthy,
-		"wahoo:friend":  broken,
+		"garmin:one": healthy,
+		"wahoo:two":  broken,
 	})
 
 	if len(failures) != 1 {
 		t.Fatalf("failures = %v, want exactly one", failures)
 	}
-	if !strings.Contains(failures[0].Error(), "wahoo:friend") {
+	if !strings.Contains(failures[0].Error(), "wahoo:two") {
 		t.Errorf("failure does not name the account: %v", failures[0])
 	}
 	if len(healthy.creates) != 1 {
 		t.Error("the healthy account was skipped because the other failed")
 	}
-	if len(forAccount(t, store, "wahoo:friend")) != 0 {
+	if len(forAccount(t, store, "wahoo:two")) != 0 {
 		t.Error("failed push was recorded as success; it would never be retried")
 	}
 }
@@ -183,10 +181,10 @@ func TestApplyReportsMissingAdapter(t *testing.T) {
 func TestApplySkipsNoops(t *testing.T) {
 	store, target := newStore(t), &fakeTarget{}
 	plan := model.Plan{Items: []model.PlanItem{{
-		Op: model.OpNoop, AccountID: "garmin:wilant", Slug: "loop", Route: ptr(route("loop", "v1")),
+		Op: model.OpNoop, AccountID: "garmin:one", Slug: "loop", Route: ptr(route("loop", "v1")),
 	}}}
 
-	if failures := Apply(plan, store, map[string]targets.Target{"garmin:wilant": target}); len(failures) != 0 {
+	if failures := Apply(plan, store, map[string]targets.Target{"garmin:one": target}); len(failures) != 0 {
 		t.Fatalf("failures: %v", failures)
 	}
 	if len(target.creates)+len(target.updates)+len(target.deletes) != 0 {

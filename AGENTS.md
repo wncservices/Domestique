@@ -22,6 +22,34 @@ route data**:
 Go module: `github.com/wncservices/domestique/apps/api`, wired through the root `go.work`.
 npm workspace: `@domestique/web`, wired through the root `package.json`.
 
+## Users, riders and accounts
+
+Three words that are easy to confuse, and the distinction is the whole design:
+
+- A **user** is a person who logs in. Users come from Authelia and are **never
+  stored** — no table, no config. `Remote-User` says who, `Remote-Groups` says
+  what they may do.
+- A **rider** is that user's name as it appears on things they own. It is
+  simply the Authelia username, copied at the moment they act.
+- An **account** is a *connection to a head unit* — a Garmin Connect or Wahoo
+  account, with a label and (once the adapters exist) a credential. Authelia
+  knows nothing about anyone's Garmin login, so these cannot come from there.
+
+Accounts live in the `accounts` table and are created by **riders linking their
+own** through the UI. Nothing in the config file names them. Two rules hold
+this together:
+
+- **The rider comes from the session, never the request body.** Letting the
+  body decide would let someone plant an account on another rider, or create
+  one they cannot then unlink. An admin may link on someone's behalf, and only
+  an admin.
+- **One account per rider per provider**, which is what makes `provider:rider`
+  a safe primary key. A duplicate would mean two rows claiming one device.
+
+A route with no `targets` of its own goes to **every linked account** — the
+useful default for a library two people share. Naming targets is what keeps a
+private route off the other rider's head unit.
+
 ## Authentication and roles
 
 The app authenticates nobody. It sits behind Traefik with an Authelia
@@ -116,27 +144,26 @@ something the app rejects. CI catches that by rendering every example under
 `ci/` and running the real binary's `validate` against the result — keep that
 step working when adding a value.
 
-## The source split — the thing to not undo
+## The route library
 
-The app is public; routes are personal location data. They are kept apart by
-`internal/source`, and that separation is load-bearing:
+`internal/source` is the library: routes as rows, the GPX as a blob, on
+PostgreSQL or SQLite. One implementation, deliberately.
 
-- **`source.DB`** is the default: routes as rows, the GPX as a blob, uploads through the UI.
-  It speaks **PostgreSQL and SQLite** — PostgreSQL is what the cluster runs, SQLite is for a
-  laptop or a single container. `dialect.go` holds every place they differ (placeholders, the
-  boolean column, the blob type); queries are written once with `?` and rebound per engine.
-  Anything touching SQL must keep working on both, and `TestEachEngine` is what enforces that.
-- **`source.FS`** reads a directory of GPX files — typically a checkout of a *separate, private*
-  routes repo. It is deliberately **read-only**: in a git-backed library, adding a route is a
-  commit, which is where review and history come from. Do not add write methods to it.
+An earlier version could also read a directory of GPX files kept under git.
+It read well on paper — review and history for free — but it was a second
+storage model that could not do half of what the database one could: no
+uploads, no Komoot import, nowhere to link a head unit, nowhere to keep sync
+state. Every feature ended up asking which kind of library it was talking to,
+and the answer decided whether the feature existed at all. Removing it deleted
+more code than it added.
 
-`source.AsWritable` is the only thing that decides whether write endpoints do anything. The
-write routes are **always registered**, and answer 405 with an explanation on a read-only
-source — leaving them unregistered let the SPA fallback answer `200` with HTML, which no client
-can interpret. There is a test for this; keep it passing.
+`domestique import --from <dir>` still loads a folder of `.gpx` files. That is a
+one-off copy into the database, not a storage mode: nothing keeps reading the
+folder afterwards.
 
-Never commit real routes to this repo, and never widen `examples/routes/` into a library. The
-`.gitignore` blocks `/routes/` and `data/` for that reason.
+**Never commit real routes to this repo.** GPX files are personal location
+data. `examples/routes/` holds one synthetic route for the demo, and the
+`.gitignore` blocks `/routes/` and `data/`.
 
 ## Security guardrails
 
@@ -163,11 +190,10 @@ just install      # npm install + seed domestique.yaml (Go deps come from go.wor
 just check        # typecheck + vet + go test — run before pushing
 just test         # go test ./apps/api/...
 just build        # frontend then binary
-just demo         # serve the bundled example routes, read-only
-just demo-db      # serve a local SQLite library, uploads enabled
+just demo         # serve a local SQLite library with the example route loaded
 just api          # run the API on :8080, serving apps/web/dist if built
 just web          # Vite dev server on :5173, proxying /api to :8080
-just import DIR   # copy a directory library into the database
+just import DIR   # load a folder of .gpx files into the database
 just komoot ARGS  # list or import Komoot routes (needs KOMOOT_* env vars)
 just fit SLUG     # write a route out as a FIT course for a real device
 ```
@@ -187,12 +213,15 @@ state file ──────Open────> state.Store ───┘
 
 - `internal/gpx` — parses GPX with the stdlib `encoding/xml` (no dependency), derives
   distance/ascent/start point, computes the content hash.
-- `internal/config` — `domestique.yaml`: accounts, default targets, which source to use. Separate
-  from the routes on purpose, since a DB source has no config file of its own.
+- `internal/accounts` — the linked head units. See above.
+- `internal/config` — `domestique.yaml`, deliberately small: where the database
+  is, and how to recognise a user. No accounts, no targets.
 - `internal/auth` — identity, roles and permissions. See above.
 - `internal/fitcourse` — GPX to FIT course conversion. See above.
 - `internal/komoot` — the undocumented Komoot client.
-- `internal/source` — where routes come from. See the split above.
+- `internal/source` — the route library. **PostgreSQL and SQLite**: `dbx` holds
+  every place they differ, queries are written once with `?` and rebound per
+  engine, and `TestEachEngine` is what stops one engine silently rotting.
 - `internal/dbx` — which engine a DSN means, and the few places SQLite and
   PostgreSQL differ. Shared by the route source and the state store.
 - `internal/state` — sync state, in a database table when the source is a
@@ -203,8 +232,7 @@ state file ──────Open────> state.Store ───┘
 - `internal/targets` — one adapter per provider. Adapters are dumb; the engine decides what to do.
 - `internal/api` — JSON API plus the built SPA.
 
-`model.Route` carries **no file paths**: a route may be a directory or a database row, and only
-its source knows which. Fetch the track through the source.
+`model.Route` carries **no file paths**. A route is a row; fetch its track through the library.
 
 Four rules the code already follows, worth keeping:
 
@@ -213,10 +241,8 @@ Four rules the code already follows, worth keeping:
 2. **The content hash ignores noise but not renames.** Sub-metre jitter and timestamps are not
    changes — otherwise re-exporting from a different planner churns every route — but the name
    feeds the hash, because the providers display it.
-3. **The source is re-read on every request.** A git pull can change it at any moment, so caching
-   would mostly buy stale answers.
-4. **Slugs come from URLs.** The FS source rejects anything that escapes the library root. There
-   is a test; keep it passing.
+3. **The library is re-read on every request.** Another replica or an import
+   can change it at any moment, so caching would mostly buy stale answers.
 
 ## Tests
 
@@ -233,10 +259,11 @@ Two things make the suite worth trusting, and both are easy to lose:
 1. **`Server.TargetFactory`** exists so acceptance tests can substitute fake adapters. The real
    ones are stubs that always error, so without it no successful push is reachable and the entire
    create/update/delete path would be untested. Do not inline `targets.Build` back into `handlePush`.
-2. **Traversal tests must plant a real file outside the library root.** The FS source appends
-   `route.gpx` to a slug, so `../../etc/passwd` never names an existing file and 404s *even with
-   the guard removed* — a test written that way passes for the wrong reason. `TestFSRefusesPathTraversal`
-   creates a readable `secret/route.gpx` beside the library precisely so the guard is what fails it.
+2. **`TestEachEngine` runs the behavioural suites against SQLite *and* PostgreSQL.**
+   They differ in placeholders, the boolean column, the blob type and the upsert,
+   so passing on one says nothing about the other — and PostgreSQL is what a
+   deployment uses. CI runs a service container and fails if those tests *skip*,
+   because a silently skipped engine reads green while covering nothing.
 
 When you add behaviour, check the test fails without it. Several tests here were written after
 confirming that deleting the code they cover turns them red.

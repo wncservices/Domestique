@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { api } from '@/api/client'
 import type { Account, AppConfig, Me, Permission, PlanResponse, Route } from '@/api/types'
+import AccountsPanel from '@/components/AccountsPanel.vue'
 import KomootPanel from '@/components/KomootPanel.vue'
 import PlanPanel from '@/components/PlanPanel.vue'
 import RouteCard from '@/components/RouteCard.vue'
@@ -29,6 +30,7 @@ function can(permission: Permission): boolean {
 const canUpload = computed(() => can('routes:upload') && (config.value?.writable ?? false))
 const canImportKomoot = computed(() => can('komoot:import') && (config.value?.writable ?? false))
 const canPush = computed(() => can('sync:push'))
+const canManageAccounts = computed(() => can('accounts:manage'))
 
 const roleColor = computed(() => {
   switch (me.value?.role) {
@@ -134,7 +136,7 @@ onMounted(refresh)
               </dd>
             </div>
             <div>
-              <dt class="text-[0.7rem] uppercase tracking-wide text-dimmed">Accounts</dt>
+              <dt class="text-[0.7rem] uppercase tracking-wide text-dimmed">Head units</dt>
               <dd class="text-xl tabular-nums text-highlighted">{{ accounts.length }}</dd>
             </div>
           </dl>
@@ -169,7 +171,14 @@ onMounted(refresh)
         @refresh="refresh"
       />
 
-      <UploadPanel v-if="canUpload" :accounts="accounts" :me="me" @uploaded="refresh" />
+      <AccountsPanel
+      :accounts="accounts"
+      :me="me"
+      :can-manage="canManageAccounts"
+      @changed="refresh"
+    />
+
+    <UploadPanel v-if="canUpload" :accounts="accounts" :me="me" @uploaded="refresh" />
 
       <KomootPanel v-if="canImportKomoot" @imported="refresh" />
 

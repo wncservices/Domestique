@@ -1,15 +1,15 @@
-// Package config holds the app's own configuration: which accounts exist and
-// where routes come from.
+// Package config holds what a process needs before it can reach anything:
+// where the database is, and how to recognise a user.
 //
-// This is deliberately separate from the route library. The app is generic and
-// open source; the routes are personal data that lives somewhere else — a
-// private git repo, or a database. Nothing here is a secret: account ids and
-// labels only. Credentials come from the environment.
+// Nothing else. Routes live in the database, head units are linked through the
+// UI, and every credential comes from the environment. If something belongs to
+// a person or a device, it does not belong here.
 package config
 
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -17,23 +17,11 @@ import (
 	"github.com/wncservices/domestique/apps/api/internal/model"
 )
 
-// SourceKind selects where routes are read from.
-type SourceKind string
-
-const (
-	// SourceFS reads a directory of GPX files — typically a checkout of a
-	// separate, private routes repo.
-	SourceFS SourceKind = "fs"
-	// SourceDB stores GPX blobs in a database and accepts uploads.
-	SourceDB SourceKind = "db"
-)
-
-// SourceConfig describes where routes live.
+// SourceConfig is where the route library lives.
+//
+// One field, because there is one kind of library: a database. A postgres://
+// URL means PostgreSQL, anything else is a SQLite file path.
 type SourceConfig struct {
-	Kind SourceKind `yaml:"kind"`
-	// Path is the library directory when Kind is fs.
-	Path string `yaml:"path,omitempty"`
-	// DSN is the database connection string when Kind is db.
 	DSN string `yaml:"dsn,omitempty"`
 }
 
@@ -50,12 +38,16 @@ type KomootConfig struct {
 }
 
 // Config is domestique.yaml.
+//
+// Deliberately small. Accounts are not here: they are linked by riders through
+// the UI and live in the database, so there is no second place where somebody's
+// devices are written down and no way for the two to disagree. What is left is
+// what a process needs before it can reach anything — where the database is,
+// and how to recognise a user.
 type Config struct {
-	Accounts       []model.Account `yaml:"accounts"`
-	DefaultTargets []string        `yaml:"default_targets"`
-	Source         SourceConfig    `yaml:"source"`
-	Auth           auth.Config     `yaml:"auth"`
-	Komoot         KomootConfig    `yaml:"komoot"`
+	Source SourceConfig `yaml:"source"`
+	Auth   auth.Config  `yaml:"auth"`
+	Komoot KomootConfig `yaml:"komoot"`
 }
 
 // DefaultDSN is where a database library lives unless configured otherwise.
@@ -68,7 +60,7 @@ const EnvSourceDSN = "DOMESTIQUE_SOURCE_DSN"
 // Load reads a config file. A missing file is not an error: the defaults (a
 // database library, no accounts) are enough to start uploading routes.
 func Load(path string) (*Config, error) {
-	cfg := &Config{Source: SourceConfig{Kind: SourceDB, DSN: DefaultDSN}}
+	cfg := &Config{Source: SourceConfig{DSN: DefaultDSN}}
 
 	// #nosec G304 -- the config path is operator configuration, not user input.
 	raw, err := os.ReadFile(path)
@@ -95,49 +87,22 @@ func Load(path string) (*Config, error) {
 // successful read, which meant DOMESTIQUE_SOURCE_DSN was ignored in a
 // container with no config file — precisely the case it is for.
 func (c *Config) applyDefaults() {
-	if c.Source.Kind == "" {
-		c.Source.Kind = SourceDB
-	}
-
 	// A PostgreSQL DSN carries a password, so a deployment supplies it through
 	// the environment rather than writing it into a config file that wants to
 	// be readable. Same Vault -> envFrom path as every other credential.
 	if dsn := os.Getenv(EnvSourceDSN); dsn != "" {
-		c.Source.Kind = SourceDB
 		c.Source.DSN = dsn
 	}
-
-	if c.Source.Kind == SourceFS && c.Source.Path == "" {
-		c.Source.Path = "routes"
-	}
-	if c.Source.Kind == SourceDB && c.Source.DSN == "" {
+	if c.Source.DSN == "" {
 		c.Source.DSN = DefaultDSN
 	}
 }
 
 // Validate checks a config for self-consistency. It is exported because CLI
-// flags can rewrite the source after Load, and an unchecked override would
-// otherwise silently fall back to a filesystem source.
+// flags can rewrite the source after Load.
 func (c *Config) Validate() error {
-	seen := map[string]bool{}
-	for _, a := range c.Accounts {
-		if a.ID == "" || a.Rider == "" {
-			return fmt.Errorf("account %q: id and rider are both required", a.ID)
-		}
-		if seen[a.ID] {
-			return fmt.Errorf("duplicate account id %q", a.ID)
-		}
-		seen[a.ID] = true
-	}
-	for _, target := range c.DefaultTargets {
-		if !seen[target] {
-			return fmt.Errorf("default_targets names unknown account %q", target)
-		}
-	}
-	switch c.Source.Kind {
-	case SourceFS, SourceDB:
-	default:
-		return fmt.Errorf("unknown source kind %q (want fs or db)", c.Source.Kind)
+	if strings.TrimSpace(c.Source.DSN) == "" {
+		return fmt.Errorf("source.dsn is empty: nowhere to keep routes")
 	}
 
 	// Surfaces a bad auth config at startup rather than on the first request.
@@ -147,31 +112,39 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// Account looks up a configured account by id.
-func (c *Config) Account(id string) (model.Account, bool) {
-	for _, a := range c.Accounts {
-		if a.ID == id {
-			return a, true
-		}
-	}
-	return model.Account{}, false
-}
-
-// TargetsFor returns the accounts a route should be pushed to. A route that
-// does not name targets inherits the library default.
-func (c *Config) TargetsFor(r model.Route) []string {
+// TargetsFor returns the accounts a route should be pushed to.
+//
+// A route that names targets goes exactly there — that is what keeps one
+// rider's private routes off the other's head unit. A route that names none
+// goes to every linked account, which is the useful default for a library two
+// people share.
+func TargetsFor(r model.Route, linked []model.Account) []string {
 	if r.Targets != nil {
 		return *r.Targets
 	}
-	return c.DefaultTargets
+
+	out := make([]string, 0, len(linked))
+	for _, a := range linked {
+		out = append(out, a.ID)
+	}
+	return out
 }
 
-// UnknownTargets reports targets that name accounts which do not exist, so the
-// UI can surface a typo instead of silently never syncing a route.
-func (c *Config) UnknownTargets(r model.Route) []string {
+// UnknownTargets reports targets naming accounts that are not linked, so the
+// UI can show a route that will never sync rather than leaving it silent.
+func UnknownTargets(r model.Route, linked []model.Account) []string {
+	if r.Targets == nil {
+		return nil
+	}
+
+	known := make(map[string]bool, len(linked))
+	for _, a := range linked {
+		known[a.ID] = true
+	}
+
 	var unknown []string
-	for _, target := range c.TargetsFor(r) {
-		if _, ok := c.Account(target); !ok {
+	for _, target := range *r.Targets {
+		if !known[target] {
 			unknown = append(unknown, target)
 		}
 	}
