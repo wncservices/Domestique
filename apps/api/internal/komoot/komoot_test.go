@@ -10,6 +10,16 @@ import (
 	"github.com/wncservices/domestique/apps/api/internal/gpx"
 )
 
+// Fixture credentials. They are invented, but a secret scanner cannot know
+// that, so they are marked explicitly rather than excluding test files from
+// scanning altogether — real secrets in tests are worth catching.
+const (
+	testEmail    = "rider@example.invalid"
+	testPassword = "fixture-not-a-real-password" // gitleaks:allow
+	testUserID   = "user-123"
+	testToken    = "fixture-not-a-real-token" // gitleaks:allow
+)
+
 // fakeKomoot stands in for the undocumented API. Because that API can change
 // without notice, these tests pin the shapes we depend on: if Komoot moves,
 // the client fails loudly here rather than silently importing nothing.
@@ -20,20 +30,20 @@ func fakeKomoot(t *testing.T) (*Client, *httptest.Server) {
 
 	mux.HandleFunc("/v006/account/email/", func(w http.ResponseWriter, r *http.Request) {
 		user, pass, ok := r.BasicAuth()
-		if !ok || user != "rider@example.com" || pass != "hunter2" {
+		if !ok || user != testEmail || pass != testPassword {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"username": "user-123",
-			"password": "token-abc",
+			"username": testUserID,
+			"password": testToken,
 			"user":     map[string]string{"displayname": "Wilant"},
 		})
 	})
 
 	mux.HandleFunc("/v007/users/user-123/tours/", func(w http.ResponseWriter, r *http.Request) {
 		user, pass, _ := r.BasicAuth()
-		if user != "user-123" || pass != "token-abc" {
+		if user != testUserID || pass != testToken {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
@@ -113,10 +123,10 @@ func fakeKomoot(t *testing.T) (*Client, *httptest.Server) {
 func TestLoginExchangesPasswordForToken(t *testing.T) {
 	c, _ := fakeKomoot(t)
 
-	if err := c.Login("rider@example.com", "hunter2"); err != nil {
+	if err := c.Login(testEmail, testPassword); err != nil {
 		t.Fatalf("Login: %v", err)
 	}
-	if c.userID != "user-123" || c.token != "token-abc" {
+	if c.userID != testUserID || c.token != testToken {
 		t.Errorf("credentials not stored: %q / %q", c.userID, c.token)
 	}
 	if c.DisplayName() != "Wilant" {
@@ -127,7 +137,7 @@ func TestLoginExchangesPasswordForToken(t *testing.T) {
 func TestLoginRejectsBadCredentials(t *testing.T) {
 	c, _ := fakeKomoot(t)
 
-	err := c.Login("rider@example.com", "wrong")
+	err := c.Login(testEmail, "wrong")
 	if err == nil {
 		t.Fatal("bad password accepted")
 	}
@@ -139,17 +149,17 @@ func TestLoginRejectsBadCredentials(t *testing.T) {
 
 func TestLoginRequiresBothFields(t *testing.T) {
 	c, _ := fakeKomoot(t)
-	if err := c.Login("", "hunter2"); err == nil {
+	if err := c.Login("", testPassword); err == nil {
 		t.Error("empty email accepted")
 	}
-	if err := c.Login("rider@example.com", ""); err == nil {
+	if err := c.Login(testEmail, ""); err == nil {
 		t.Error("empty password accepted")
 	}
 }
 
 func TestToursFiltersRecordedRides(t *testing.T) {
 	c, _ := fakeKomoot(t)
-	if err := c.Login("rider@example.com", "hunter2"); err != nil {
+	if err := c.Login(testEmail, testPassword); err != nil {
 		t.Fatal(err)
 	}
 
@@ -180,7 +190,7 @@ func TestToursFiltersRecordedRides(t *testing.T) {
 
 func TestToursCanIncludeRecordedRides(t *testing.T) {
 	c, _ := fakeKomoot(t)
-	if err := c.Login("rider@example.com", "hunter2"); err != nil {
+	if err := c.Login(testEmail, testPassword); err != nil {
 		t.Fatal(err)
 	}
 
@@ -204,7 +214,7 @@ func TestToursRequiresLogin(t *testing.T) {
 // uses — otherwise an import lands routes nothing else can read.
 func TestGPXIsParsableByOurOwnReader(t *testing.T) {
 	c, _ := fakeKomoot(t)
-	if err := c.Login("rider@example.com", "hunter2"); err != nil {
+	if err := c.Login(testEmail, testPassword); err != nil {
 		t.Fatal(err)
 	}
 
@@ -235,7 +245,7 @@ func TestGPXIsParsableByOurOwnReader(t *testing.T) {
 
 func TestGPXRejectsEmptyTour(t *testing.T) {
 	c, _ := fakeKomoot(t)
-	if err := c.Login("rider@example.com", "hunter2"); err != nil {
+	if err := c.Login(testEmail, testPassword); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := c.GPX("empty"); err == nil {
@@ -247,7 +257,7 @@ func TestGPXRejectsEmptyTour(t *testing.T) {
 // failing with a JSON decode error nobody can act on.
 func TestMovedEndpointGivesAReadableError(t *testing.T) {
 	c, _ := fakeKomoot(t)
-	if err := c.Login("rider@example.com", "hunter2"); err != nil {
+	if err := c.Login(testEmail, testPassword); err != nil {
 		t.Fatal(err)
 	}
 
