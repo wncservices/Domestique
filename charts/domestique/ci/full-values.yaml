@@ -1,0 +1,60 @@
+# A complete deployment: PostgreSQL, a reverse proxy doing authentication,
+# Traefik ingress, credentials from a Secret. Everything here is a placeholder
+# — substitute your own hosts, groups and accounts.
+#
+# Also rendered by CI, so it stays valid.
+config:
+  source:
+    kind: db
+    # No dsn: DOMESTIQUE_SOURCE_DSN comes from the Secret below, so the
+    # password never lands in a ConfigMap.
+
+  auth:
+    mode: proxy
+    trusted_proxies:
+      - 10.0.0.0/8            # your pod CIDR
+    roles:
+      admin:
+        - route-admins
+      rider:
+        - riders
+      viewer:
+        - guests
+    default_role: viewer
+
+  komoot:
+    enabled: true
+
+  accounts:
+    - id: garmin:rider-one
+      provider: garmin
+      rider: rider-one
+      label: First rider's Garmin
+    - id: wahoo:rider-two
+      provider: wahoo
+      rider: rider-two
+      label: Second rider's Wahoo
+
+  default_targets:
+    - garmin:rider-one
+    - wahoo:rider-two
+
+# Create this Secret yourself — an ExternalSecret from a secret manager, for
+# instance. It must carry DOMESTIQUE_SOURCE_DSN, and KOMOOT_EMAIL /
+# KOMOOT_PASSWORD when Komoot import is on.
+envFrom:
+  - secretRef:
+      name: domestique
+
+# With PostgreSQL there is nothing left to keep on disk.
+persistence:
+  enabled: false
+
+ingressRoute:
+  enabled: true
+  match: Host(`domestique.example.com`)
+  middlewares:
+    - name: internal
+      namespace: traefik
+  tls:
+    certResolver: letsencrypt

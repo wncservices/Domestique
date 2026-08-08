@@ -31,10 +31,10 @@ config:
     mode: none
     # mode: proxy
     # trusted_proxies:
-    #   - 10.42.0.0/16
+    #   - 10.0.0.0/8
     # roles:
-    #   admin: [domestique-admins]
-    #   rider: [cyclists]
+    #   admin: [route-admins]
+    #   rider: [riders]
     #   viewer: [guests]
     # default_role: viewer
 
@@ -42,10 +42,10 @@ config:
     enabled: false
 
   accounts: []
-  # - id: garmin:wilant
+  # - id: garmin:rider-one
   #   provider: garmin
-  #   rider: wilant
-  #   label: Wilant's Garmin Edge
+  #   rider: rider-one
+  #   label: First rider's Garmin
 
   default_targets: []
 
@@ -118,12 +118,29 @@ serviceAccount:
   name: ""
   annotations: {}
 
-# One replica, deliberately. Two would race on the state file and on the remote
+# One replica, deliberately. Two would race on the sync state and on the remote
 # ids it records, and a route library is not a workload that needs scaling.
 replicaCount: 1
 
 strategy:
   type: Recreate
+
+revisionHistoryLimit: 3
+
+# maxUnavailable, not minAvailable: with one replica, `minAvailable: 1` blocks
+# node drains forever because the node can never evict the only pod.
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+  # minAvailable: 1
+
+# The app authenticates to Vault with this ServiceAccount's token, so it needs
+# to be mounted. Turn off only if nothing in-cluster authenticates as the app.
+automountServiceAccountToken: true
+
+terminationGracePeriodSeconds: 30
+priorityClassName: ""
+topologySpreadConstraints: []
 
 resources:
   requests:

@@ -39,10 +39,10 @@ config:
   auth:
     mode: proxy
     trusted_proxies:
-      - 10.42.0.0/16          # your pod CIDR
+      - 10.0.0.0/8          # your pod CIDR
     roles:
-      admin: [domestique-admins]
-      rider: [cyclists]
+      admin: [route-admins]
+      rider: [riders]
       viewer: [guests]
 ```
 
@@ -94,9 +94,13 @@ With PostgreSQL the volume holds only the state file, so it can be small.
 | `ingressRoute.enabled` | `false` | Traefik `IngressRoute` |
 | `ingress.enabled` | `false` | Plain `Ingress`, as an alternative |
 | `serviceAccount.name` | release name | Vault's Kubernetes auth binds to this |
+| `podDisruptionBudget.enabled` | `true` | `maxUnavailable: 1`, so node drains still work with one replica |
+| `automountServiceAccountToken` | `true` | Needed if the app authenticates to Vault |
+| `revisionHistoryLimit` | `3` | |
 
-`ci/homelab-values.yaml` is a complete worked example: PostgreSQL, Authelia,
-Traefik, Vault-backed credentials.
+`ci/full-values.yaml` is a complete worked example: PostgreSQL, a proxy doing
+authentication, Traefik ingress and Secret-backed credentials. The values in it
+are placeholders.
 
 ## What this chart does not do
 

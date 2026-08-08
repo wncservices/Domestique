@@ -85,10 +85,10 @@ forwardAuth middleware and it reads the identity Authelia passes down.
 ```yaml
 auth:
   mode: proxy
-  trusted_proxies: [10.42.0.0/16]
+  trusted_proxies: [10.0.0.0/8]
   roles:
-    admin: [domestique-admins]
-    rider: [cyclists]
+    admin: [route-admins]
+    rider: [riders]
     viewer: [guests]
 ```
 
@@ -158,7 +158,7 @@ and put it behind Authelia before exposing it. For PostgreSQL, supply
 values.
 
 [`charts/domestique/README.md`](charts/domestique/README.md) has the detail,
-and `charts/domestique/ci/homelab-values.yaml` is a complete worked example.
+and `charts/domestique/ci/full-values.yaml` is a complete worked example.
 
 ## Configuration
 
