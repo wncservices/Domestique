@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "domestique.fullname" . }}
+  labels:
+    {{- include "domestique.labels" . | nindent 4 }}
+data:
+  # Mounted at /app/domestique.yaml. Never put a credential here: a ConfigMap
+  # is readable by anyone with access to the namespace. Use envFrom instead.
+  domestique.yaml: |
+    {{- toYaml .Values.config | nindent 4 }}

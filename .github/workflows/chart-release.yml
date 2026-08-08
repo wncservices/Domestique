@@ -1,0 +1,68 @@
+name: Chart release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "charts/**"
+  # Publishing a chart is worth being able to trigger by hand, for instance
+  # after fixing the Pages setup.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chart-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Package and publish
+    runs-on: ubuntu-latest
+    permissions:
+      # chart-releaser pushes the packaged chart to a GitHub Release and the
+      # index to the gh-pages branch.
+      contents: write
+      # And the same chart goes to GHCR as an OCI artifact.
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - uses: azure/setup-helm@v4
+
+      # Publishes to the Helm repository at
+      # https://wncservices.github.io/domestique — the form ArgoCD and
+      # `helm repo add` expect. Skips silently when the chart version has not
+      # changed, so pushing a docs edit does not republish.
+      - name: Release to the Helm repository
+        uses: helm/chart-releaser-action@v1
+        with:
+          charts_dir: charts
+          skip_existing: true
+        env:
+          CR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # The same chart as an OCI artifact, which is how newer setups consume
+      # charts and needs no Pages at all.
+      - name: Publish to GHCR
+        run: |
+          version="$(helm show chart charts/domestique | awk '/^version:/ {print $2}')"
+          if helm show chart "oci://ghcr.io/${{ github.repository_owner }}/charts/domestique" \
+               --version "$version" >/dev/null 2>&1; then
+            echo "chart $version is already in GHCR; nothing to push"
+            exit 0
+          fi
+
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+            helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+          helm package charts/domestique --destination /tmp/charts
+          helm push "/tmp/charts/domestique-${version}.tgz" \
+            "oci://ghcr.io/${{ github.repository_owner }}/charts"
