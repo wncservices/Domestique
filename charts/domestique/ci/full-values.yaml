@@ -4,10 +4,9 @@
 #
 # Also rendered by CI, so it stays valid.
 config:
-  source:
-    kind: db
-    # No dsn: DOMESTIQUE_SOURCE_DSN comes from the Secret below, so the
-    # password never lands in a ConfigMap.
+  # No source.dsn: DOMESTIQUE_SOURCE_DSN comes from the Secret below, so the
+  # password never lands in a ConfigMap.
+  source: {}
 
   auth:
     mode: proxy

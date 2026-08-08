@@ -37,7 +37,7 @@ type harness struct {
 	client *http.Client
 	base   string
 	store  state.Store
-	source source.Source
+	source *source.DB
 	// pushed records what the fake adapters were asked to do.
 	pushed *fakeLedger
 }
@@ -80,16 +80,8 @@ func (f *fakeTarget) Delete(string) error {
 }
 
 // seedAccounts links two head units the way riders would through the UI.
-//
-// A directory-backed source has no database and therefore no accounts, which
-// is why the fs harness pushes to nothing.
-func seedAccounts(t *testing.T, src source.Source) *accounts.Store {
+func seedAccounts(t *testing.T, db *source.DB) *accounts.Store {
 	t.Helper()
-
-	db, ok := src.(*source.DB)
-	if !ok {
-		return nil
-	}
 
 	store, err := accounts.UseDB(db.Conn(), db.DSN())
 	if err != nil {
@@ -109,28 +101,15 @@ func seedAccounts(t *testing.T, src source.Source) *accounts.Store {
 	return store
 }
 
-// newHarness starts a server over real HTTP. Pass "fs" or "db".
-func newHarness(t *testing.T, kind string) *harness {
+// newHarness starts a server over real HTTP against a fresh database.
+func newHarness(t *testing.T) *harness {
 	t.Helper()
 
-	var src source.Source
-	switch kind {
-	case "fs":
-		fsSrc, err := source.NewFS(filepath.Join("testdata", "library"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		src = fsSrc
-	case "db":
-		db, err := source.OpenDB(filepath.Join(t.TempDir(), "routes.db"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { db.Close() })
-		src = db
-	default:
-		t.Fatalf("unknown source kind %q", kind)
+	src, err := source.OpenDB(filepath.Join(t.TempDir(), "routes.db"))
+	if err != nil {
+		t.Fatal(err)
 	}
+	t.Cleanup(func() { src.Close() })
 
 	store, err := state.Open(filepath.Join(t.TempDir(), "state.json"))
 	if err != nil {
@@ -230,7 +209,7 @@ func (h *harness) upload(fields map[string]string, gpx []byte, filename string) 
 // because a directory library has no database to link against.
 func syncHarness(t *testing.T) (*harness, routeDTO) {
 	t.Helper()
-	h := newHarness(t, "db")
+	h := newHarness(t)
 	return h, h.uploadExample("Kemmelberg Loop")
 }
 
@@ -245,7 +224,7 @@ func (h *harness) uploadExample(name string) routeDTO {
 
 func exampleGPX(t *testing.T) []byte {
 	t.Helper()
-	raw, err := os.ReadFile(filepath.Join("testdata", "library", "kemmelberg-loop", "route.gpx"))
+	raw, err := os.ReadFile(filepath.Join("testdata", "kemmelberg-loop.gpx"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -304,7 +283,7 @@ type pushDTO struct {
 // ---------- read endpoints ----------
 
 func TestHealth(t *testing.T) {
-	h := newHarness(t, "fs")
+	h := newHarness(t)
 	resp := h.get("/api/health")
 	h.expectStatus(resp, http.StatusOK)
 
@@ -316,39 +295,28 @@ func TestHealth(t *testing.T) {
 }
 
 func TestConfigEndpoint(t *testing.T) {
-	for _, tc := range []struct {
-		kind         string
-		wantWritable bool
-		wantSource   string
-	}{
-		{"fs", false, "directory"},
-		// A database source names its engine, so the UI and the logs say
-		// which one is in use — sqlite on a laptop, postgres in the cluster.
-		{"db", true, "sqlite database"},
-	} {
-		t.Run(tc.kind, func(t *testing.T) {
-			h := newHarness(t, tc.kind)
-			resp := h.get("/api/config")
-			h.expectStatus(resp, http.StatusOK)
+	h := newHarness(t)
+	resp := h.get("/api/config")
+	h.expectStatus(resp, http.StatusOK)
 
-			var body struct {
-				Source   string `json:"source"`
-				Writable bool   `json:"writable"`
-			}
-			h.decode(resp, &body)
+	var body struct {
+		Source   string `json:"source"`
+		Writable bool   `json:"writable"`
+	}
+	h.decode(resp, &body)
 
-			if body.Writable != tc.wantWritable {
-				t.Errorf("writable = %v, want %v", body.Writable, tc.wantWritable)
-			}
-			if !strings.HasPrefix(body.Source, tc.wantSource) {
-				t.Errorf("source = %q, want it to start with %q", body.Source, tc.wantSource)
-			}
-		})
+	// The library names its engine, so the UI and the logs say which one is in
+	// use — sqlite on a laptop, postgres in the cluster.
+	if !strings.HasPrefix(body.Source, "sqlite database") {
+		t.Errorf("source = %q, want it to name the engine", body.Source)
+	}
+	if !body.Writable {
+		t.Error("writable = false; the library is always a database")
 	}
 }
 
 func TestAccountsEndpoint(t *testing.T) {
-	h := newHarness(t, "db")
+	h := newHarness(t)
 	resp := h.get("/api/accounts")
 	h.expectStatus(resp, http.StatusOK)
 
@@ -376,7 +344,7 @@ func TestAccountsEndpoint(t *testing.T) {
 }
 
 func TestRoutesEndpointOnEmptyDatabase(t *testing.T) {
-	h := newHarness(t, "db")
+	h := newHarness(t)
 	resp := h.get("/api/routes")
 	h.expectStatus(resp, http.StatusOK)
 
@@ -426,7 +394,7 @@ func TestRoutesEndpointReportsStatsAndTargets(t *testing.T) {
 }
 
 func TestTrackEndpoint(t *testing.T) {
-	h := newHarness(t, "fs")
+	h, _ := syncHarness(t)
 	resp := h.get("/api/tracks/kemmelberg-loop")
 	h.expectStatus(resp, http.StatusOK)
 
@@ -448,12 +416,12 @@ func TestTrackEndpoint(t *testing.T) {
 }
 
 func TestTrackEndpointMissingRoute(t *testing.T) {
-	h := newHarness(t, "fs")
+	h := newHarness(t)
 	h.expectStatus(h.get("/api/tracks/no-such-route"), http.StatusNotFound)
 }
 
 func TestGPXDownload(t *testing.T) {
-	h := newHarness(t, "fs")
+	h, _ := syncHarness(t)
 	resp := h.get("/api/gpx/kemmelberg-loop")
 	h.expectStatus(resp, http.StatusOK)
 
@@ -471,7 +439,7 @@ func TestGPXDownload(t *testing.T) {
 }
 
 func TestGPXDownloadMissingRoute(t *testing.T) {
-	h := newHarness(t, "fs")
+	h := newHarness(t)
 	h.expectStatus(h.get("/api/gpx/no-such-route"), http.StatusNotFound)
 }
 
@@ -565,7 +533,7 @@ func TestPushReportsPerAccountFailures(t *testing.T) {
 }
 
 func TestPushWithNothingToDo(t *testing.T) {
-	h := newHarness(t, "db") // empty library
+	h := newHarness(t) // empty library
 
 	resp := h.do(http.MethodPost, "/api/push", nil, "")
 	h.expectStatus(resp, http.StatusOK)
@@ -580,7 +548,7 @@ func TestPushWithNothingToDo(t *testing.T) {
 // ---------- uploads ----------
 
 func TestUploadLifecycle(t *testing.T) {
-	h := newHarness(t, "db")
+	h := newHarness(t)
 
 	resp := h.upload(map[string]string{
 		"name":        "Kemmelberg Loop",
@@ -631,7 +599,7 @@ func TestUploadLifecycle(t *testing.T) {
 }
 
 func TestUploadDerivesNameFromFilename(t *testing.T) {
-	h := newHarness(t, "db")
+	h := newHarness(t)
 
 	resp := h.upload(nil, exampleGPX(t), "mont-ventoux.gpx")
 	h.expectStatus(resp, http.StatusCreated)
@@ -647,7 +615,7 @@ func TestUploadDerivesNameFromFilename(t *testing.T) {
 }
 
 func TestUploadRejectsBadInput(t *testing.T) {
-	h := newHarness(t, "db")
+	h := newHarness(t)
 
 	t.Run("no file", func(t *testing.T) {
 		h.expectStatus(h.upload(map[string]string{"name": "x"}, nil, ""), http.StatusBadRequest)
@@ -678,7 +646,7 @@ func TestUploadRejectsBadInput(t *testing.T) {
 }
 
 func TestUploadDisambiguatesSlugs(t *testing.T) {
-	h := newHarness(t, "db")
+	h := newHarness(t)
 
 	first := h.uploadExample("Kemmelberg Loop")
 	second := h.uploadExample("Kemmelberg Loop")
@@ -694,7 +662,7 @@ func TestUploadDisambiguatesSlugs(t *testing.T) {
 // ---------- edits ----------
 
 func TestPatchRenameMakesRouteStale(t *testing.T) {
-	h := newHarness(t, "db")
+	h := newHarness(t)
 	route := h.uploadExample("Before")
 
 	// Get it synced first.
@@ -727,7 +695,7 @@ func TestPatchRenameMakesRouteStale(t *testing.T) {
 }
 
 func TestPatchDisablingRouteQueuesDeletes(t *testing.T) {
-	h := newHarness(t, "db")
+	h := newHarness(t)
 	route := h.uploadExample("Temporary")
 	h.do(http.MethodPost, "/api/push", nil, "")
 
@@ -754,7 +722,7 @@ func TestPatchDisablingRouteQueuesDeletes(t *testing.T) {
 }
 
 func TestPatchRetargetsRoute(t *testing.T) {
-	h := newHarness(t, "db")
+	h := newHarness(t)
 	route := h.uploadExample("Shared")
 
 	resp := h.do(http.MethodPatch, "/api/routes/"+route.Slug,
@@ -771,14 +739,14 @@ func TestPatchRetargetsRoute(t *testing.T) {
 }
 
 func TestPatchMissingRoute(t *testing.T) {
-	h := newHarness(t, "db")
+	h := newHarness(t)
 	resp := h.do(http.MethodPatch, "/api/routes/nope",
 		strings.NewReader(`{"name":"x"}`), "application/json")
 	h.expectStatus(resp, http.StatusNotFound)
 }
 
 func TestPatchRejectsMalformedJSON(t *testing.T) {
-	h := newHarness(t, "db")
+	h := newHarness(t)
 	route := h.uploadExample("Fine")
 	resp := h.do(http.MethodPatch, "/api/routes/"+route.Slug,
 		strings.NewReader(`{not json`), "application/json")
@@ -788,7 +756,7 @@ func TestPatchRejectsMalformedJSON(t *testing.T) {
 // ---------- deletes ----------
 
 func TestDeleteRemovesRouteAndQueuesRemoteDeletes(t *testing.T) {
-	h := newHarness(t, "db")
+	h := newHarness(t)
 	route := h.uploadExample("Doomed")
 	h.do(http.MethodPost, "/api/push", nil, "")
 
@@ -824,44 +792,14 @@ func TestDeleteRemovesRouteAndQueuesRemoteDeletes(t *testing.T) {
 }
 
 func TestDeleteMissingRoute(t *testing.T) {
-	h := newHarness(t, "db")
+	h := newHarness(t)
 	h.expectStatus(h.do(http.MethodDelete, "/api/routes/nope", nil, ""), http.StatusNotFound)
-}
-
-// ---------- read-only source ----------
-
-func TestReadOnlySourceRejectsEveryWrite(t *testing.T) {
-	h := newHarness(t, "fs")
-
-	for _, tc := range []struct {
-		method, path string
-	}{
-		{http.MethodPost, "/api/routes"},
-		{http.MethodPatch, "/api/routes/kemmelberg-loop"},
-		{http.MethodDelete, "/api/routes/kemmelberg-loop"},
-	} {
-		resp := h.do(tc.method, tc.path, strings.NewReader("{}"), "application/json")
-		h.expectStatus(resp, http.StatusMethodNotAllowed)
-
-		var body map[string]string
-		h.decode(resp, &body)
-		if !strings.Contains(body["error"], "read-only") {
-			t.Errorf("%s %s: error = %q, want it to explain why", tc.method, tc.path, body["error"])
-		}
-	}
-
-	// And nothing changed.
-	var library libraryDTO
-	h.decode(h.get("/api/routes"), &library)
-	if len(library.Routes) != 1 {
-		t.Errorf("library changed under a read-only source: %+v", library.Routes)
-	}
 }
 
 // ---------- routing and safety ----------
 
 func TestUnknownAPIPathReturnsJSON404(t *testing.T) {
-	h := newHarness(t, "fs")
+	h := newHarness(t)
 	resp := h.get("/api/does-not-exist")
 	h.expectStatus(resp, http.StatusNotFound)
 
@@ -871,7 +809,7 @@ func TestUnknownAPIPathReturnsJSON404(t *testing.T) {
 }
 
 func TestSPAFallbackServesTheApp(t *testing.T) {
-	h := newHarness(t, "fs")
+	h := newHarness(t)
 
 	for _, path := range []string{"/", "/some/client/route"} {
 		resp := h.get(path)
@@ -885,7 +823,7 @@ func TestSPAFallbackServesTheApp(t *testing.T) {
 
 // Slugs arrive from the URL, so traversal must not escape the library root.
 func TestPathTraversalIsRefused(t *testing.T) {
-	h := newHarness(t, "fs")
+	h := newHarness(t)
 
 	for _, path := range []string{
 		"/api/gpx/%2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd",
@@ -904,7 +842,7 @@ func TestPathTraversalIsRefused(t *testing.T) {
 }
 
 func TestUnknownTargetsAreSurfaced(t *testing.T) {
-	h := newHarness(t, "db")
+	h := newHarness(t)
 
 	resp := h.upload(map[string]string{
 		"name":    "Typo",

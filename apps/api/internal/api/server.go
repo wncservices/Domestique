@@ -1,9 +1,5 @@
 // Package api serves the JSON API behind the web UI, and the built frontend
 // alongside it.
-//
-// What the API allows depends on the route source. A filesystem library is
-// read-only — routes are added by committing them to the routes repo. A
-// database library accepts uploads, and then the write endpoints appear.
 package api
 
 import (
@@ -37,7 +33,7 @@ const maxUploadBytes = 20 << 20 // 20 MiB
 
 // Server holds the request-scoped dependencies.
 type Server struct {
-	Source   source.Source
+	Source   source.Library
 	Config   *config.Config
 	Store    state.Store
 	Accounts *accounts.Store
@@ -70,15 +66,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/plan", s.handlePlan)
 	mux.HandleFunc("POST /api/push", s.handlePush)
 
-	// Slugs contain slashes in a filesystem library, so the wildcard has to be
-	// last — hence /api/tracks/<slug> rather than /api/routes/<slug>/track.
+	// The wildcard has to be last in a Go mux pattern, hence /api/tracks/<slug>
+	// rather than /api/routes/<slug>/track.
 	mux.HandleFunc("GET /api/tracks/{slug...}", s.handleTrack)
 	mux.HandleFunc("GET /api/gpx/{slug...}", s.handleDownload)
 	mux.HandleFunc("GET /api/fit/{slug...}", s.handleDownloadFIT)
 
-	// Write endpoints are always registered, even against a read-only source:
-	// they answer 405 with an explanation. Leaving them unregistered would let
-	// the SPA fallback answer 200 with HTML, which no client can interpret.
 	mux.HandleFunc("POST /api/routes", s.handleUpload)
 	mux.HandleFunc("PATCH /api/routes/{slug...}", s.handleUpdate)
 	mux.HandleFunc("DELETE /api/routes/{slug...}", s.handleDelete)
@@ -166,8 +159,8 @@ func roleLabel(r auth.Role) string {
 
 type configDTO struct {
 	Source string `json:"source"`
-	// Writable tells the UI whether to offer uploads, or to explain that
-	// routes arrive by commit.
+	// Writable is always true now that the library is always a database. Kept
+	// so the frontend contract does not churn; drop both together.
 	Writable bool `json:"writable"`
 }
 
@@ -239,8 +232,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request) {
-	_, writable := source.AsWritable(s.Source)
-	writeJSON(w, http.StatusOK, configDTO{Source: s.Source.Describe(), Writable: writable})
+	writeJSON(w, http.StatusOK, configDTO{Source: s.Source.Describe(), Writable: true})
 }
 
 type meDTO struct {
@@ -304,9 +296,6 @@ func (s *Server) handleLinkAccount(w http.ResponseWriter, r *http.Request) {
 	if !s.require(w, r, auth.PermManageAccounts) {
 		return
 	}
-	if !s.accountsWritable(w) {
-		return
-	}
 
 	var body struct {
 		Provider string `json:"provider"`
@@ -358,9 +347,6 @@ func (s *Server) handleUnlinkAccount(w http.ResponseWriter, r *http.Request) {
 	if !s.require(w, r, auth.PermManageAccounts) {
 		return
 	}
-	if !s.accountsWritable(w) {
-		return
-	}
 
 	id := cleanSlug(r.PathValue("id"))
 	account, err := s.Accounts.Get(id)
@@ -386,18 +372,6 @@ func (s *Server) handleUnlinkAccount(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// accountsWritable reports whether accounts can be linked at all.
-func (s *Server) accountsWritable(w http.ResponseWriter) bool {
-	if s.Accounts != nil {
-		return true
-	}
-	writeJSON(w, http.StatusNotImplemented, map[string]string{
-		"error": "this library has no database, so head units cannot be linked — " +
-			"use a database source",
-	})
-	return false
-}
-
 func (s *Server) failAccount(w http.ResponseWriter, err error) {
 	if errors.Is(err, accounts.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
@@ -408,11 +382,6 @@ func (s *Server) failAccount(w http.ResponseWriter, err error) {
 
 // linkedAccounts reads the accounts, or writes the error and reports false.
 func (s *Server) linkedAccounts(w http.ResponseWriter) ([]model.Account, bool) {
-	if s.Accounts == nil {
-		// A directory-backed library has no database to link against.
-		return nil, true
-	}
-
 	linked, err := s.Accounts.List()
 	if err != nil {
 		s.fail(w, err)
@@ -636,12 +605,6 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writable, ok := source.AsWritable(s.Source)
-	if !ok {
-		s.readOnly(w)
-		return
-	}
-
 	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
 	// #nosec G120 -- the body is bounded by MaxBytesReader on the line above.
 	if err := r.ParseMultipartForm(maxUploadBytes); err != nil {
@@ -687,7 +650,7 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		req.Targets = &list
 	}
 
-	route, err := writable.Create(req)
+	route, err := s.Source.Create(req)
 	if err != nil {
 		// A bad GPX is the caller's problem, not a server fault.
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -708,12 +671,6 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writable, ok := source.AsWritable(s.Source)
-	if !ok {
-		s.readOnly(w)
-		return
-	}
-
 	slug := cleanSlug(r.PathValue("slug"))
 	if !s.mayEdit(w, r, slug) {
 		return
@@ -731,7 +688,7 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	route, err := writable.Update(slug, source.UpdateRequest{
+	route, err := s.Source.Update(slug, source.UpdateRequest{
 		Name:     body.Name,
 		Descript: body.Description,
 		Tags:     body.Tags,
@@ -758,17 +715,11 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writable, ok := source.AsWritable(s.Source)
-	if !ok {
-		s.readOnly(w)
-		return
-	}
-
 	slug := cleanSlug(r.PathValue("slug"))
 	if !s.mayEdit(w, r, slug) {
 		return
 	}
-	if err := writable.Delete(slug); err != nil {
+	if err := s.Source.Delete(slug); err != nil {
 		s.failLookup(w, err)
 		return
 	}
@@ -858,12 +809,6 @@ func (s *Server) failLookup(w http.ResponseWriter, err error) {
 		return
 	}
 	s.fail(w, err)
-}
-
-func (s *Server) readOnly(w http.ResponseWriter) {
-	writeJSON(w, http.StatusMethodNotAllowed, map[string]string{
-		"error": "this library is read-only — add routes by committing them to the routes repo",
-	})
 }
 
 // spaHandler serves the built frontend, falling back to index.html so client

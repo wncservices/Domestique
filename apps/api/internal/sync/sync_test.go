@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/wncservices/domestique/apps/api/internal/model"
-	"github.com/wncservices/domestique/apps/api/internal/source"
 	"github.com/wncservices/domestique/apps/api/internal/state"
 )
 
@@ -17,23 +16,16 @@ func testAccounts() []model.Account {
 	}
 }
 
+// testRoutes is a route as the library hands one over. The diff engine only
+// reads the slug, the targets and the content hash, so there is no need to go
+// near a real library here.
 func testRoutes(t *testing.T) []model.Route {
 	t.Helper()
-	src, err := source.NewFS(filepath.Join("testdata", "routes"))
-	if err != nil {
-		t.Fatalf("open source: %v", err)
-	}
-	routes, problems, err := src.List()
-	if err != nil {
-		t.Fatalf("list routes: %v", err)
-	}
-	if len(problems) > 0 {
-		t.Fatalf("example library has problems: %v", problems)
-	}
-	if len(routes) == 0 {
-		t.Fatal("no routes in testdata")
-	}
-	return routes
+	return []model.Route{{
+		RouteMeta:   model.RouteMeta{Name: "Kemmelberg Loop"},
+		Slug:        "kemmelberg-loop",
+		ContentHash: "hash-v1",
+	}}
 }
 
 func newStore(t *testing.T) state.Store {

@@ -1,19 +1,21 @@
 // Command domestique reconciles a library of cycling routes into each rider's
 // Garmin Connect and Wahoo account.
 //
-// Routes come from a source: a directory of GPX files (typically a checkout of
-// a separate, private routes repo) or a database that accepts uploads. The app
-// itself holds no route data.
+// The library is a database — PostgreSQL for a deployment, SQLite for a
+// laptop. Routes get in by upload, by Komoot import, or by `domestique import`
+// from a directory of files. The app itself holds no route data.
 package main
 
 import (
 	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -37,11 +39,11 @@ const usage = `domestique — fetch-and-carry for cycling routes
 usage: domestique <command> [flags]
 
 commands:
-  validate   read the route source and report problems
+  validate   read the library and report problems
   plan       show what would change on each account
   push       apply the plan (use --dry-run to preview)
   state      list what each account is recorded as holding
-  import     copy a directory of GPX routes into a database source
+  import     load a directory of .gpx files into the database
   komoot     list or import routes from a Komoot account
   fit        export a route as a Garmin FIT course
   serve      run the HTTP API and the web UI
@@ -49,19 +51,18 @@ commands:
 
 common flags:
   --config PATH    app config (default domestique.yaml)
-  --state PATH     sync state file (default .domestique-state.json)
 
-source flags (override the config file):
-  --source KIND    fs or db
-  --library PATH   route directory when --source=fs
-  --db DSN         SQLite file when --source=db
+database:
+  --db DSN         PostgreSQL URL, or a SQLite file path
+                   (also DOMESTIQUE_SOURCE_DSN, which is how a deployment
+                   supplies a password without writing it to a file)
 
 serve flags:
   --addr ADDR      listen address (default :8080)
   --web-dir PATH   built frontend to serve (default apps/web/dist)
 
 import flags:
-  --from PATH      directory of GPX routes to import into the database
+  --from PATH      directory of .gpx files to load into the database
 
 fit:
   domestique fit <slug> [--out FILE] [--cues]
@@ -96,10 +97,7 @@ func run(args []string) error {
 	cmd, rest := args[0], args[1:]
 	fs := flag.NewFlagSet(cmd, flag.ExitOnError)
 	configPath := fs.String("config", "domestique.yaml", "app config file")
-	statePath := fs.String("state", ".domestique-state.json", "sync state file")
-	sourceKind := fs.String("source", "", "route source: fs or db")
-	libPath := fs.String("library", "", "route directory when --source=fs")
-	dsn := fs.String("db", "", "SQLite file when --source=db")
+	dsn := fs.String("db", "", "PostgreSQL URL or SQLite file path")
 	dryRun := fs.Bool("dry-run", false, "print what push would do without doing it")
 	addr := fs.String("addr", ":8080", "listen address for serve")
 	webDir := fs.String("web-dir", filepath.Join("apps", "web", "dist"), "built frontend to serve")
@@ -133,7 +131,7 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	applyOverrides(cfg, *sourceKind, *libPath, *dsn)
+	applyOverrides(cfg, *dsn)
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
@@ -142,11 +140,9 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	if closer, ok := src.(interface{ Close() error }); ok {
-		defer func() { _ = closer.Close() }()
-	}
+	defer func() { _ = src.Close() }()
 
-	store, err := openState(src, *statePath)
+	store, err := openState(src)
 	if err != nil {
 		return err
 	}
@@ -155,10 +151,6 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	if closer, ok := store.(interface{ Close() error }); ok {
-		defer func() { _ = closer.Close() }()
-	}
-
 	switch cmd {
 	case "validate":
 		return runValidate(src, linkedAccounts)
@@ -184,7 +176,7 @@ func run(args []string) error {
 //
 // This is how the conversion gets proven: copy the file onto a real head unit
 // and see whether it navigates. Nothing in a test suite can establish that.
-func runFIT(src source.Source, args []string, out string, cues bool) error {
+func runFIT(src *source.DB, args []string, out string, cues bool) error {
 	if len(args) == 0 {
 		return errors.New("fit needs a route slug (see: domestique validate)")
 	}
@@ -254,7 +246,7 @@ func komootClient() (*komoot.Client, error) {
 	return client, nil
 }
 
-func runKomoot(dst source.Source, cfg *config.Config, args []string) error {
+func runKomoot(dst *source.DB, cfg *config.Config, args []string) error {
 	sub := "list"
 	if len(args) > 0 {
 		sub = args[0]
@@ -284,12 +276,6 @@ func runKomoot(dst source.Source, cfg *config.Config, args []string) error {
 		return nil
 
 	case "import":
-		writable, ok := source.AsWritable(dst)
-		if !ok {
-			return fmt.Errorf("%s is read-only; Komoot import needs a database source",
-				dst.Describe())
-		}
-
 		wanted := map[string]bool{}
 		for _, id := range args {
 			wanted[id] = true
@@ -307,7 +293,7 @@ func runKomoot(dst source.Source, cfg *config.Config, args []string) error {
 				problems = append(problems, fmt.Sprintf("%s (%s): %v", tour.Name, tour.ID, err))
 				continue
 			}
-			if _, err := writable.Create(source.CreateRequest{
+			if _, err := dst.Create(source.CreateRequest{
 				Filename: tour.Name + ".gpx",
 				Name:     tour.Name,
 				Descript: fmt.Sprintf("Imported from Komoot (tour %s)", tour.ID),
@@ -348,33 +334,17 @@ func parseInterleaved(fs *flag.FlagSet, args []string) ([]string, error) {
 	return positional, nil
 }
 
-func applyOverrides(cfg *config.Config, kind, libPath, dsn string) {
-	if kind != "" {
-		cfg.Source.Kind = config.SourceKind(kind)
-	}
-	if libPath != "" {
-		cfg.Source.Kind = config.SourceFS
-		cfg.Source.Path = libPath
-	}
+func applyOverrides(cfg *config.Config, dsn string) {
 	if dsn != "" {
-		cfg.Source.Kind = config.SourceDB
 		cfg.Source.DSN = dsn
 	}
 }
 
-func openSource(cfg *config.Config) (source.Source, error) {
-	switch cfg.Source.Kind {
-	case config.SourceDB:
-		if cfg.Source.DSN == "" {
-			return nil, errors.New("source kind db needs a --db path (or source.dsn in the config)")
-		}
-		return source.OpenDB(cfg.Source.DSN)
-	case config.SourceFS:
-		return source.NewFS(cfg.Source.Path)
-	default:
-		// Unreachable via Validate, but never silently pick a source.
-		return nil, fmt.Errorf("unknown source kind %q", cfg.Source.Kind)
+func openSource(cfg *config.Config) (*source.DB, error) {
+	if cfg.Source.DSN == "" {
+		return nil, errors.New("no database configured: set --db, source.dsn, or DOMESTIQUE_SOURCE_DSN")
 	}
+	return source.OpenDB(cfg.Source.DSN)
 }
 
 // openAccounts reads the linked head units.
@@ -383,9 +353,9 @@ func openSource(cfg *config.Config) (source.Source, error) {
 // UI. A directory-backed library has no database, so there is nothing to link
 // against and the CLI reports none — plan and push then have nothing to do,
 // which is the honest answer.
-func openAccounts(src source.Source) ([]model.Account, error) {
+func openAccounts(src *source.DB) ([]model.Account, error) {
 	store, err := accountStoreFor(src)
-	if err != nil || store == nil {
+	if err != nil {
 		return nil, err
 	}
 	return store.List()
@@ -395,12 +365,8 @@ func openAccounts(src source.Source) ([]model.Account, error) {
 //
 // Linking needs somewhere to write, so it needs a database. A directory-backed
 // library has none, and the API says so rather than pretending.
-func accountStoreFor(src source.Source) (*accounts.Store, error) {
-	db, ok := src.(*source.DB)
-	if !ok {
-		return nil, nil
-	}
-	return accounts.UseDB(db.Conn(), db.DSN())
+func accountStoreFor(src *source.DB) (*accounts.Store, error) {
+	return accounts.UseDB(src.Conn(), src.DSN())
 }
 
 // openState decides where sync state lives.
@@ -408,14 +374,11 @@ func accountStoreFor(src source.Source) (*accounts.Store, error) {
 // With a database source it goes in that same database, which is the whole
 // point: a deployment then needs one database and no volume. A directory
 // source has no database to borrow, so it falls back to the JSON file.
-func openState(src source.Source, path string) (state.Store, error) {
-	if db, ok := src.(*source.DB); ok {
-		return state.UseDB(db.Conn(), db.DSN())
-	}
-	return state.Open(path)
+func openState(src *source.DB) (state.Store, error) {
+	return state.UseDB(src.Conn(), src.DSN())
 }
 
-func runValidate(src source.Source, linked []model.Account) error {
+func runValidate(src *source.DB, linked []model.Account) error {
 	routes, problems, err := src.List()
 	if err != nil {
 		return err
@@ -438,7 +401,7 @@ func runValidate(src source.Source, linked []model.Account) error {
 	return reportProblems(problems)
 }
 
-func runPlan(src source.Source, linked []model.Account, store state.Store) error {
+func runPlan(src *source.DB, linked []model.Account, store state.Store) error {
 	routes, problems, err := src.List()
 	if err != nil {
 		return err
@@ -453,7 +416,7 @@ func runPlan(src source.Source, linked []model.Account, store state.Store) error
 	return reportProblems(problems)
 }
 
-func runPush(src source.Source, linked []model.Account, store state.Store, dryRun bool) error {
+func runPush(src *source.DB, linked []model.Account, store state.Store, dryRun bool) error {
 	routes, problems, err := src.List()
 	if err != nil {
 		return err
@@ -498,59 +461,78 @@ func runPush(src source.Source, linked []model.Account, store state.Store, dryRu
 	return nil
 }
 
-// runImport moves an existing directory library into a database one — the
-// migration path for "we started with a repo, now we want uploads".
-func runImport(dst source.Source, from string) error {
-	writable, ok := source.AsWritable(dst)
-	if !ok {
-		return fmt.Errorf("%s is read-only; import needs --source=db", dst.Describe())
+// importName picks the name a file should land under.
+//
+// Usually the filename. But a tree of `<route-name>/route.gpx` is a common
+// export shape — and was this app's own layout once — where every file is
+// called the same thing. Falling back to the directory keeps those from all
+// importing as "Route".
+func importName(path string) string {
+	stem := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+
+	switch strings.ToLower(stem) {
+	case "route", "track", "gpx", "index":
+		if parent := filepath.Base(filepath.Dir(path)); parent != "." && parent != string(filepath.Separator) {
+			return parent + filepath.Ext(path)
+		}
 	}
+	return filepath.Base(path)
+}
+
+// runImport loads a directory of .gpx files into the database.
+//
+// A one-off, for routes that already exist as files somewhere. It is not a
+// storage mode: nothing keeps reading that directory afterwards.
+func runImport(dst *source.DB, from string) error {
 	if from == "" {
 		return errors.New("import needs --from <directory>")
 	}
 
-	src, err := source.NewFS(from)
+	var files []string
+	// #nosec G703 -- --from is an operator-supplied directory, the same as any
+	// argument to cp; nothing here comes from a user of the running service.
+	err := filepath.WalkDir(from, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() && strings.EqualFold(filepath.Ext(path), ".gpx") {
+			files = append(files, path)
+		}
+		return nil
+	})
 	if err != nil {
 		return err
 	}
-	routes, problems, err := src.List()
-	if err != nil {
-		return err
-	}
+	sort.Strings(files)
 
 	var imported int
-	for _, route := range routes {
-		raw, err := src.GPX(route.Slug)
-		if err != nil {
-			problems = append(problems, fmt.Sprintf("%s: %v", route.Slug, err))
+	var problems []string
+	for _, path := range files {
+		// #nosec G304 -- the directory is an operator-supplied argument.
+		raw, readErr := os.ReadFile(path)
+		if readErr != nil {
+			problems = append(problems, fmt.Sprintf("%s: %v", path, readErr))
 			continue
 		}
-		created, err := writable.Create(source.CreateRequest{
-			Filename: route.Slug,
-			Name:     route.Name,
-			Descript: route.Description,
-			Tags:     route.Tags,
-			Targets:  route.Targets,
+
+		created, createErr := dst.Create(source.CreateRequest{
+			Filename: importName(path),
 			GPX:      raw,
 		})
-		if err != nil {
-			problems = append(problems, fmt.Sprintf("%s: %v", route.Slug, err))
+		if createErr != nil {
+			// One unreadable file must not abandon the rest of the batch.
+			problems = append(problems, fmt.Sprintf("%s: %v", path, createErr))
 			continue
 		}
+
 		imported++
-		fmt.Printf("imported %s -> %s\n", route.Slug, created.Slug)
+		fmt.Printf("imported %s -> %s\n", filepath.Base(path), created.Slug)
 	}
 
-	fmt.Printf("\n%d of %d route(s) imported into %s\n", imported, len(routes), dst.Describe())
+	fmt.Printf("\n%d of %d file(s) imported into %s\n", imported, len(files), dst.Describe())
 	return reportProblems(problems)
 }
 
-// runState prints what each account is recorded as holding.
-//
-// It reads through the same store the rest of the app uses, so it shows the
-// truth whether that is a database table or a file. It used to open the file
-// directly, which quietly reported "nothing pushed yet" once state moved into
-// the database.
 func runState(store state.Store) error {
 	fmt.Println(describeStore(store))
 
@@ -571,7 +553,7 @@ func runState(store state.Store) error {
 	return w.Flush()
 }
 
-func runServe(src source.Source, cfg *config.Config, store state.Store, addr, webDir string) error {
+func runServe(src *source.DB, cfg *config.Config, store state.Store, addr, webDir string) error {
 	if _, problems, err := src.List(); err != nil {
 		return err
 	} else if len(problems) > 0 {
@@ -627,15 +609,14 @@ func runServe(src source.Source, cfg *config.Config, store state.Store, addr, we
 			"hint", "run `just build-web`")
 	}
 
-	_, writable := source.AsWritable(src)
 	httpSrv := &http.Server{
 		Addr:              addr,
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	log.Info("listening", "addr", addr, "source", src.Describe(),
-		"uploads", writable, "auth", authenticator.Mode(), "state", describeStore(store))
+	log.Info("listening", "addr", addr, "library", src.Describe(),
+		"auth", authenticator.Mode())
 	if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}

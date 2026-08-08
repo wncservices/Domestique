@@ -31,7 +31,7 @@ type authHarness struct {
 	t      *testing.T
 	client *http.Client
 	base   string
-	src    source.Writable
+	src    *source.DB
 }
 
 func newAuthHarness(t *testing.T, komootClient api.KomootImporter) *authHarness {

@@ -3,7 +3,6 @@ package config
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/wncservices/domestique/apps/api/internal/model"
@@ -26,9 +25,6 @@ func TestLoadMissingFileUsesDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("missing config should not be an error: %v", err)
 	}
-	if cfg.Source.Kind != SourceDB {
-		t.Errorf("kind = %q, want db", cfg.Source.Kind)
-	}
 	if cfg.Source.DSN != DefaultDSN {
 		t.Errorf("dsn = %q, want %q", cfg.Source.DSN, DefaultDSN)
 	}
@@ -38,28 +34,16 @@ func TestLoadMissingFileUsesDefaults(t *testing.T) {
 	}
 }
 
-// An fs source still defaults its path, for anyone who sets only the kind.
-func TestFSSourceDefaultsItsPath(t *testing.T) {
-	cfg, err := Load(writeConfig(t, "source:\n  kind: fs\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.Source.Path != "routes" {
-		t.Errorf("path = %q, want routes", cfg.Source.Path)
-	}
-}
-
 func TestLoadParsesSource(t *testing.T) {
 	cfg, err := Load(writeConfig(t, `
 source:
-  kind: db
   dsn: ./data/routes.db
 `))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if cfg.Source.Kind != SourceDB || cfg.Source.DSN != "./data/routes.db" {
+	if cfg.Source.DSN != "./data/routes.db" {
 		t.Errorf("source = %+v", cfg.Source)
 	}
 }
@@ -67,10 +51,6 @@ source:
 func TestLoadRejectsBadConfigs(t *testing.T) {
 	for name, body := range map[string]string{
 		"invalid yaml": "source: [oops",
-		"unknown source kind": `
-source:
-  kind: carrier-pigeon
-`,
 		"required group with no auth": `
 auth:
   mode: none
@@ -95,7 +75,6 @@ accounts:
     rider: someone
 default_targets: [garmin:someone]
 source:
-  kind: db
   dsn: x.db
 `))
 	if err != nil {
@@ -108,20 +87,16 @@ source:
 }
 
 // CLI flags rewrite the source after Load, so Validate has to be callable
-// again — an unchecked override used to fall back to a filesystem source.
-func TestValidateCatchesOverriddenSource(t *testing.T) {
-	cfg := &Config{Source: SourceConfig{Kind: SourceFS, Path: "routes"}}
+// again.
+func TestValidateRejectsAnEmptyDSN(t *testing.T) {
+	cfg := &Config{Source: SourceConfig{DSN: "data/domestique.db"}}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("valid config rejected: %v", err)
 	}
 
-	cfg.Source.Kind = "carrier-pigeon"
-	err := cfg.Validate()
-	if err == nil {
-		t.Fatal("unknown source kind accepted")
-	}
-	if !strings.Contains(err.Error(), "carrier-pigeon") {
-		t.Errorf("error does not name the bad kind: %v", err)
+	cfg.Source.DSN = "   "
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("an empty DSN was accepted; there would be nowhere to keep routes")
 	}
 }
 

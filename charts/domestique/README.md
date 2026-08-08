@@ -57,14 +57,12 @@ itself, and losing it means re-pushing every route to every device.
 
 ## PostgreSQL
 
-The route library runs on PostgreSQL or SQLite. A DSN carries a password, so it
+The route library is a database — PostgreSQL or SQLite. A DSN carries a password, so it
 comes from a Secret rather than values:
 
 ```yaml
 config:
-  source:
-    kind: db
-    # no dsn here
+  source: {}          # no dsn here
 envFrom:
   - secretRef:
       name: domestique      # must contain DOMESTIQUE_SOURCE_DSN

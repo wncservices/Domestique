@@ -15,8 +15,7 @@ import (
 
 const testConfig = `
 source:
-  kind: fs
-  path: ./routes
+  dsn: ./data/domestique.db
 `
 
 const exampleGPX = `<?xml version="1.0" encoding="UTF-8"?>
@@ -28,19 +27,20 @@ const exampleGPX = `<?xml version="1.0" encoding="UTF-8"?>
   </trkseg></trk>
 </gpx>`
 
-// workspace builds a temp directory with a config and one route, and makes it
-// the working directory so the CLI's relative defaults apply.
+// workspace builds a temp directory with a config and a folder of .gpx files
+// to import, and makes it the working directory so the CLI's relative defaults
+// apply. The library itself is the database the config points at.
 func workspace(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 
 	write(t, filepath.Join(dir, "domestique.yaml"), testConfig)
-	routeDir := filepath.Join(dir, "routes", "kemmelberg-loop")
-	if err := os.MkdirAll(routeDir, 0o755); err != nil {
+
+	incoming := filepath.Join(dir, "incoming")
+	if err := os.MkdirAll(incoming, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	write(t, filepath.Join(routeDir, "route.gpx"), exampleGPX)
-	write(t, filepath.Join(routeDir, "route.yaml"), "name: Kemmelberg Loop\n")
+	write(t, filepath.Join(incoming, "kemmelberg-loop.gpx"), exampleGPX)
 
 	t.Chdir(dir)
 	return dir
@@ -134,6 +134,7 @@ func TestCLIUnknownCommand(t *testing.T) {
 
 func TestCLIValidate(t *testing.T) {
 	workspace(t)
+	mustRun(t, "import", "--from", "./incoming")
 
 	out := mustRun(t, "validate")
 	for _, want := range []string{"kemmelberg-loop", "Kemmelberg Loop", "1 route(s)"} {
@@ -143,29 +144,27 @@ func TestCLIValidate(t *testing.T) {
 	}
 }
 
-// A broken route must be reported without stopping the others.
-func TestCLIValidateReportsBrokenRoutes(t *testing.T) {
+// A broken file must be reported without stopping the rest of the import.
+func TestCLIImportReportsBrokenFiles(t *testing.T) {
 	dir := workspace(t)
+	write(t, filepath.Join(dir, "incoming", "broken.gpx"), "this is not xml")
 
-	broken := filepath.Join(dir, "routes", "broken")
-	if err := os.MkdirAll(broken, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	write(t, filepath.Join(broken, "route.gpx"), "this is not xml")
-
-	out, err := capture(t, "validate")
+	out, err := capture(t, "import", "--from", "./incoming")
 	if err == nil {
-		t.Error("expected a non-zero exit when a route is broken")
+		t.Error("expected a non-zero exit when a file is broken")
 	}
 	if !strings.Contains(out, "kemmelberg-loop") {
-		t.Errorf("the healthy route was dropped:\n%s", out)
+		t.Errorf("the healthy file was dropped:\n%s", out)
+	}
+	if !strings.Contains(out, "1 of 2 file(s) imported") {
+		t.Errorf("summary missing:\n%s", out)
 	}
 }
 
-func TestCLIValidateWithMissingLibrary(t *testing.T) {
-	t.Chdir(t.TempDir())
-	if _, err := capture(t, "validate", "--source", "fs", "--library", "./nope"); err == nil {
-		t.Fatal("expected an error when the library directory does not exist")
+func TestCLIImportFromAMissingDirectory(t *testing.T) {
+	workspace(t)
+	if _, err := capture(t, "import", "--from", "./nope"); err == nil {
+		t.Fatal("expected an error when the directory does not exist")
 	}
 }
 
@@ -181,17 +180,18 @@ func TestCLIValidateWithNoConfigCreatesDatabase(t *testing.T) {
 		t.Fatalf("validate on a fresh directory failed: %v\n%s", err, out)
 	}
 	if !strings.Contains(out, "database") {
-		t.Errorf("expected a database source, got:\n%s", out)
+		t.Errorf("expected a database library, got:\n%s", out)
 	}
 	if _, statErr := os.Stat(filepath.Join(dir, "data", "domestique.db")); statErr != nil {
 		t.Errorf("database not created: %v", statErr)
 	}
 }
 
-// A directory library has no database, so nothing can be linked and there is
-// nowhere to push. Plan says so by having nothing to do.
+// Nothing linked means nowhere to push, and plan says so by having nothing
+// to do.
 func TestCLIPlanWithNothingLinked(t *testing.T) {
 	workspace(t)
+	mustRun(t, "import", "--from", "./incoming")
 
 	out := mustRun(t, "plan")
 	if !strings.Contains(out, "up to date") && !strings.Contains(out, "0 change") {
@@ -199,15 +199,15 @@ func TestCLIPlanWithNothingLinked(t *testing.T) {
 	}
 }
 
-// With a database and a linked head unit, the same route does produce a plan.
+// With a linked head unit, the same route does produce a plan.
 func TestCLIPlanWithALinkedAccount(t *testing.T) {
 	dir := workspace(t)
 	db := filepath.Join(dir, "data", "routes.db")
 
-	mustRun(t, "import", "--source", "db", "--db", db, "--from", "./routes")
+	mustRun(t, "import", "--db", db, "--from", "./incoming")
 	linkAccount(t, db, "garmin", "one")
 
-	out := mustRun(t, "plan", "--source", "db", "--db", db)
+	out := mustRun(t, "plan", "--db", db)
 	if !strings.Contains(out, "create") || !strings.Contains(out, "garmin:one") {
 		t.Errorf("plan does not target the linked account:\n%s", out)
 	}
@@ -216,16 +216,16 @@ func TestCLIPlanWithALinkedAccount(t *testing.T) {
 func TestCLIPushDryRunChangesNothing(t *testing.T) {
 	dir := workspace(t)
 	db := filepath.Join(dir, "data", "routes.db")
-	mustRun(t, "import", "--source", "db", "--db", db, "--from", "./routes")
+	mustRun(t, "import", "--db", db, "--from", "./incoming")
 	linkAccount(t, db, "garmin", "one")
 
-	out := mustRun(t, "push", "--source", "db", "--db", db, "--dry-run")
+	out := mustRun(t, "push", "--db", db, "--dry-run")
 	if !strings.Contains(out, "dry run") {
 		t.Errorf("dry run not announced:\n%s", out)
 	}
 
 	// And the plan is unchanged afterwards.
-	if out := mustRun(t, "plan", "--source", "db", "--db", db); !strings.Contains(out, "1 change(s)") {
+	if out := mustRun(t, "plan", "--db", db); !strings.Contains(out, "1 change(s)") {
 		t.Errorf("dry run changed the plan:\n%s", out)
 	}
 }
@@ -235,10 +235,10 @@ func TestCLIPushDryRunChangesNothing(t *testing.T) {
 func TestCLIPushFailsWhileAdaptersAreStubs(t *testing.T) {
 	dir := workspace(t)
 	db := filepath.Join(dir, "data", "routes.db")
-	mustRun(t, "import", "--source", "db", "--db", db, "--from", "./routes")
+	mustRun(t, "import", "--db", db, "--from", "./incoming")
 	linkAccount(t, db, "garmin", "one")
 
-	_, err := capture(t, "push", "--source", "db", "--db", db)
+	_, err := capture(t, "push", "--db", db)
 	if err == nil {
 		t.Fatal("push reported success with stub adapters")
 	}
@@ -256,90 +256,28 @@ func TestCLIStateOnFreshWorkspace(t *testing.T) {
 	}
 }
 
-// state must work even when the source is unreachable — that is when you most
-// want to look at it.
-func TestCLIStateWithoutASource(t *testing.T) {
-	t.Chdir(t.TempDir())
-	if _, err := capture(t, "state"); err != nil {
-		t.Fatalf("state failed without a library: %v", err)
-	}
-}
-
 func TestCLIImportIntoDatabase(t *testing.T) {
 	dir := workspace(t)
 	db := filepath.Join(dir, "data", "routes.db")
 
-	out := mustRun(t, "import", "--source", "db", "--db", db, "--from", "./routes")
-	if !strings.Contains(out, "1 of 1 route(s) imported") {
+	out := mustRun(t, "import", "--db", db, "--from", "./incoming")
+	if !strings.Contains(out, "1 of 1 file(s) imported") {
 		t.Errorf("import summary missing:\n%s", out)
 	}
 
 	// The database is now a working library.
-	out = mustRun(t, "validate", "--source", "db", "--db", db)
+	out = mustRun(t, "validate", "--db", db)
 	if !strings.Contains(out, "Kemmelberg Loop") {
 		t.Errorf("imported route missing from the database:\n%s", out)
 	}
 	if !strings.Contains(out, "database") {
-		t.Errorf("validate did not report the database source:\n%s", out)
-	}
-}
-
-func TestCLIImportRequiresAWritableTarget(t *testing.T) {
-	workspace(t)
-
-	_, err := capture(t, "import", "--from", "./routes")
-	if err == nil {
-		t.Fatal("import into a read-only fs source succeeded")
-	}
-	if !strings.Contains(err.Error(), "read-only") {
-		t.Errorf("error does not explain why: %v", err)
+		t.Errorf("validate did not report the database library:\n%s", out)
 	}
 }
 
 func TestCLIImportRequiresFrom(t *testing.T) {
-	dir := workspace(t)
-	db := filepath.Join(dir, "data", "routes.db")
-
-	if _, err := capture(t, "import", "--source", "db", "--db", db); err == nil {
+	workspace(t)
+	if _, err := capture(t, "import"); err == nil {
 		t.Fatal("import without --from succeeded")
 	}
-}
-
-func TestCLIFlagsOverrideTheConfigFile(t *testing.T) {
-	dir := workspace(t)
-
-	other := filepath.Join(dir, "elsewhere", "big-day")
-	if err := os.MkdirAll(other, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	write(t, filepath.Join(other, "route.gpx"), exampleGPX)
-
-	out := mustRun(t, "validate", "--library", filepath.Join(dir, "elsewhere"))
-	if !strings.Contains(out, "big-day") {
-		t.Errorf("--library was ignored:\n%s", out)
-	}
-	if strings.Contains(out, "kemmelberg-loop") {
-		t.Errorf("--library did not replace the configured path:\n%s", out)
-	}
-}
-
-func TestCLIRejectsUnknownSourceKind(t *testing.T) {
-	workspace(t)
-	if _, err := capture(t, "validate", "--source", "carrier-pigeon"); err == nil {
-		t.Fatal("unknown source kind accepted")
-	}
-}
-
-// A route naming a target that does not exist would otherwise silently never
-// sync anywhere.
-func TestCLIValidateFlagsUnknownTargets(t *testing.T) {
-	dir := workspace(t)
-	write(t, filepath.Join(dir, "routes", "kemmelberg-loop", "route.yaml"),
-		"name: Kemmelberg Loop\ntargets:\n  - garmin:wilnat\n")
-
-	out, err := capture(t, "validate")
-	if err == nil {
-		t.Error("expected a non-zero exit for an unknown target")
-	}
-	_ = out
 }

@@ -1,15 +1,15 @@
-// Package config holds the app's own configuration: which accounts exist and
-// where routes come from.
+// Package config holds what a process needs before it can reach anything:
+// where the database is, and how to recognise a user.
 //
-// This is deliberately separate from the route library. The app is generic and
-// open source; the routes are personal data that lives somewhere else — a
-// private git repo, or a database. Nothing here is a secret: account ids and
-// labels only. Credentials come from the environment.
+// Nothing else. Routes live in the database, head units are linked through the
+// UI, and every credential comes from the environment. If something belongs to
+// a person or a device, it does not belong here.
 package config
 
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -17,23 +17,11 @@ import (
 	"github.com/wncservices/domestique/apps/api/internal/model"
 )
 
-// SourceKind selects where routes are read from.
-type SourceKind string
-
-const (
-	// SourceFS reads a directory of GPX files — typically a checkout of a
-	// separate, private routes repo.
-	SourceFS SourceKind = "fs"
-	// SourceDB stores GPX blobs in a database and accepts uploads.
-	SourceDB SourceKind = "db"
-)
-
-// SourceConfig describes where routes live.
+// SourceConfig is where the route library lives.
+//
+// One field, because there is one kind of library: a database. A postgres://
+// URL means PostgreSQL, anything else is a SQLite file path.
 type SourceConfig struct {
-	Kind SourceKind `yaml:"kind"`
-	// Path is the library directory when Kind is fs.
-	Path string `yaml:"path,omitempty"`
-	// DSN is the database connection string when Kind is db.
 	DSN string `yaml:"dsn,omitempty"`
 }
 
@@ -72,7 +60,7 @@ const EnvSourceDSN = "DOMESTIQUE_SOURCE_DSN"
 // Load reads a config file. A missing file is not an error: the defaults (a
 // database library, no accounts) are enough to start uploading routes.
 func Load(path string) (*Config, error) {
-	cfg := &Config{Source: SourceConfig{Kind: SourceDB, DSN: DefaultDSN}}
+	cfg := &Config{Source: SourceConfig{DSN: DefaultDSN}}
 
 	// #nosec G304 -- the config path is operator configuration, not user input.
 	raw, err := os.ReadFile(path)
@@ -99,34 +87,22 @@ func Load(path string) (*Config, error) {
 // successful read, which meant DOMESTIQUE_SOURCE_DSN was ignored in a
 // container with no config file — precisely the case it is for.
 func (c *Config) applyDefaults() {
-	if c.Source.Kind == "" {
-		c.Source.Kind = SourceDB
-	}
-
 	// A PostgreSQL DSN carries a password, so a deployment supplies it through
 	// the environment rather than writing it into a config file that wants to
 	// be readable. Same Vault -> envFrom path as every other credential.
 	if dsn := os.Getenv(EnvSourceDSN); dsn != "" {
-		c.Source.Kind = SourceDB
 		c.Source.DSN = dsn
 	}
-
-	if c.Source.Kind == SourceFS && c.Source.Path == "" {
-		c.Source.Path = "routes"
-	}
-	if c.Source.Kind == SourceDB && c.Source.DSN == "" {
+	if c.Source.DSN == "" {
 		c.Source.DSN = DefaultDSN
 	}
 }
 
 // Validate checks a config for self-consistency. It is exported because CLI
-// flags can rewrite the source after Load, and an unchecked override would
-// otherwise silently fall back to a filesystem source.
+// flags can rewrite the source after Load.
 func (c *Config) Validate() error {
-	switch c.Source.Kind {
-	case SourceFS, SourceDB:
-	default:
-		return fmt.Errorf("unknown source kind %q (want fs or db)", c.Source.Kind)
+	if strings.TrimSpace(c.Source.DSN) == "" {
+		return fmt.Errorf("source.dsn is empty: nowhere to keep routes")
 	}
 
 	// Surfaces a bad auth config at startup rather than on the first request.
