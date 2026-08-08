@@ -14,12 +14,15 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"text/tabwriter"
 	"time"
 
 	"github.com/wncservices/domestique/apps/api/internal/api"
 	"github.com/wncservices/domestique/apps/api/internal/auth"
 	"github.com/wncservices/domestique/apps/api/internal/config"
+	"github.com/wncservices/domestique/apps/api/internal/fitcourse"
+	"github.com/wncservices/domestique/apps/api/internal/gpx"
 	"github.com/wncservices/domestique/apps/api/internal/komoot"
 	"github.com/wncservices/domestique/apps/api/internal/model"
 	"github.com/wncservices/domestique/apps/api/internal/source"
@@ -39,6 +42,7 @@ commands:
   state      list what each account is recorded as holding
   import     copy a directory of GPX routes into a database source
   komoot     list or import routes from a Komoot account
+  fit        export a route as a Garmin FIT course
   serve      run the HTTP API and the web UI
   version    print the version
 
@@ -57,6 +61,13 @@ serve flags:
 
 import flags:
   --from PATH      directory of GPX routes to import into the database
+
+fit:
+  domestique fit <slug> [--out FILE] [--cues]
+
+  Writes a FIT course, which can be copied straight onto a device over USB.
+  --cues adds turn cues inferred from the track's shape; they are a heuristic,
+  so check them before trusting them on a ride.
 
 komoot:
   domestique komoot list             show the account's planned routes
@@ -92,10 +103,19 @@ func run(args []string) error {
 	addr := fs.String("addr", ":8080", "listen address for serve")
 	webDir := fs.String("web-dir", filepath.Join("apps", "web", "dist"), "built frontend to serve")
 	from := fs.String("from", "", "directory of GPX routes to import")
+	out := fs.String("out", "", "file to write (default <slug>.fit)")
+	cues := fs.Bool("cues", false, "add turn cues inferred from the track's shape")
+
+	var positional []string
 
 	switch cmd {
-	case "validate", "plan", "push", "state", "serve", "import", "komoot":
-		if err := fs.Parse(rest); err != nil {
+	case "validate", "plan", "push", "state", "serve", "import", "komoot", "fit":
+		// Go's flag package stops at the first positional argument, so
+		// `fit <slug> --cues` would silently ignore --cues. Parse in a loop,
+		// peeling off positionals, so flags and arguments can interleave in
+		// whatever order reads naturally.
+		var err error
+		if positional, err = parseInterleaved(fs, rest); err != nil {
 			return err
 		}
 	case "-h", "--help", "help":
@@ -143,8 +163,69 @@ func run(args []string) error {
 	case "serve":
 		return runServe(src, cfg, *statePath, *addr, *webDir)
 	case "komoot":
-		return runKomoot(src, cfg, fs.Args())
+		return runKomoot(src, cfg, positional)
+	case "fit":
+		return runFIT(src, positional, *out, *cues)
 	}
+	return nil
+}
+
+// runFIT writes a route out as a FIT course.
+//
+// This is how the conversion gets proven: copy the file onto a real head unit
+// and see whether it navigates. Nothing in a test suite can establish that.
+func runFIT(src source.Source, args []string, out string, cues bool) error {
+	if len(args) == 0 {
+		return errors.New("fit needs a route slug (see: domestique validate)")
+	}
+	slug := args[0]
+
+	raw, err := src.GPX(slug)
+	if err != nil {
+		return err
+	}
+	points, err := gpx.ParsePoints(raw)
+	if err != nil {
+		return err
+	}
+
+	name := slug
+	if routes, _, listErr := src.List(); listErr == nil {
+		for _, route := range routes {
+			if route.Slug == slug {
+				name = route.Name
+				break
+			}
+		}
+	}
+
+	fitBytes, err := fitcourse.Encode(points, fitcourse.Options{Name: name, TurnCues: cues})
+	if err != nil {
+		return err
+	}
+
+	if out == "" {
+		// Derive the filename from the slug, but never let a slug decide where
+		// on disk the file lands: flatten separators and take the base, so the
+		// result is always a plain name in the working directory.
+		out = filepath.Base(strings.NewReplacer("/", "-", `\`, "-").Replace(slug)) + ".fit"
+	}
+
+	// #nosec G703 -- --out is an operator-supplied path, the same as any
+	// shell redirect; a slug-derived name is flattened above.
+	if err := os.WriteFile(out, fitBytes, 0o600); err != nil {
+		return err
+	}
+
+	turns := 0
+	if cues {
+		turns = len(fitcourse.Turns(points))
+	}
+	fmt.Printf("wrote %s (%d bytes, %d points", out, len(fitBytes), len(points))
+	if cues {
+		fmt.Printf(", %d turn cue(s)", turns)
+	}
+	fmt.Println(")")
 	return nil
 }
 
@@ -236,6 +317,25 @@ func runKomoot(dst source.Source, cfg *config.Config, args []string) error {
 	default:
 		return fmt.Errorf("unknown komoot subcommand %q (want list or import)", sub)
 	}
+}
+
+// parseInterleaved parses flags that may appear before, after or between
+// positional arguments, and returns the positionals in order.
+func parseInterleaved(fs *flag.FlagSet, args []string) ([]string, error) {
+	var positional []string
+
+	for len(args) > 0 {
+		if err := fs.Parse(args); err != nil {
+			return nil, err
+		}
+		if fs.NArg() == 0 {
+			break
+		}
+		positional = append(positional, fs.Arg(0))
+		args = fs.Args()[1:]
+	}
+
+	return positional, nil
 }
 
 func applyOverrides(cfg *config.Config, kind, libPath, dsn string) {
