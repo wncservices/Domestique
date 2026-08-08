@@ -1,21 +1,77 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, h, onMounted, ref, resolveComponent } from 'vue'
+import type { TableColumn } from '@nuxt/ui'
+import { useToast } from '@nuxt/ui/composables'
 import { api } from '@/api/client'
 import type { KomootTour } from '@/api/types'
 
 const emit = defineEmits<{ imported: [] }>()
+
+const toast = useToast()
+const UBadge = resolveComponent('UBadge')
+const UCheckbox = resolveComponent('UCheckbox')
 
 const tours = ref<KomootTour[]>([])
 const selected = ref<string[]>([])
 const loading = ref(true)
 const importing = ref(false)
 const error = ref('')
-const notice = ref('')
 /** Komoot is optional; when it is not configured we hide rather than nag. */
 const available = ref(true)
 
 const importable = computed(() => tours.value.filter((t) => !t.imported))
 const canImport = computed(() => selected.value.length > 0 && !importing.value)
+const allSelected = computed(
+  () => importable.value.length > 0 && selected.value.length === importable.value.length,
+)
+
+function toggle(id: string, on: boolean) {
+  selected.value = on ? [...selected.value, id] : selected.value.filter((s) => s !== id)
+}
+
+function toggleAll(on: boolean) {
+  selected.value = on ? importable.value.map((t) => t.id) : []
+}
+
+const columns: TableColumn<KomootTour>[] = [
+  {
+    id: 'select',
+    header: () =>
+      h(UCheckbox, {
+        modelValue: allSelected.value,
+        disabled: importable.value.length === 0,
+        'onUpdate:modelValue': (v: boolean | 'indeterminate') => toggleAll(v === true),
+        'aria-label': 'Select all importable tours',
+      }),
+    cell: ({ row }) =>
+      h(UCheckbox, {
+        modelValue: selected.value.includes(row.original.id),
+        disabled: row.original.imported,
+        'onUpdate:modelValue': (v: boolean | 'indeterminate') => toggle(row.original.id, v === true),
+        'aria-label': `Select ${row.original.name}`,
+      }),
+  },
+  { accessorKey: 'name', header: 'Tour' },
+  {
+    accessorKey: 'distanceM',
+    header: 'Distance',
+    cell: ({ row }) => `${(row.original.distanceM / 1000).toFixed(1)} km`,
+  },
+  {
+    accessorKey: 'ascentM',
+    header: 'Ascent',
+    cell: ({ row }) => `${Math.round(row.original.ascentM)} m`,
+  },
+  { accessorKey: 'sport', header: 'Sport' },
+  {
+    id: 'status',
+    header: '',
+    cell: ({ row }) =>
+      row.original.imported
+        ? h(UBadge, { color: 'success', variant: 'subtle', size: 'sm' }, () => 'imported')
+        : null,
+  },
+]
 
 async function load() {
   loading.value = true
@@ -35,25 +91,24 @@ async function load() {
   }
 }
 
-function toggleAll() {
-  selected.value =
-    selected.value.length === importable.value.length ? [] : importable.value.map((t) => t.id)
-}
-
 async function runImport() {
   importing.value = true
   error.value = ''
-  notice.value = ''
   try {
     const result = await api.komootImport(selected.value)
     const skipped = Object.entries(result.skipped)
-    notice.value = `Imported ${result.imported.length} route${
-      result.imported.length === 1 ? '' : 's'
-    }${skipped.length ? `, skipped ${skipped.length}` : ''}.`
+
+    toast.add({
+      title: `Imported ${result.imported.length} route${result.imported.length === 1 ? '' : 's'}`,
+      description: skipped.length ? `${skipped.length} skipped.` : undefined,
+      icon: 'i-lucide-download',
+      color: result.imported.length ? 'success' : 'warning',
+    })
+    // Say *why* each was skipped; "skipped 3" alone is useless.
     if (skipped.length) {
-      // Say *why* each was skipped; "skipped 3" alone is useless.
       error.value = skipped.map(([id, reason]) => `${id}: ${reason}`).join(' · ')
     }
+
     selected.value = []
     await load()
     emit('imported')
@@ -68,173 +123,65 @@ onMounted(load)
 </script>
 
 <template>
-  <section v-if="available" class="panel">
-    <header>
-      <div>
-        <h2>Import from Komoot</h2>
-        <p class="summary">
-          <template v-if="loading">Loading tours…</template>
-          <template v-else-if="!tours.length">No planned routes in that account.</template>
-          <template v-else>
-            {{ importable.length }} of {{ tours.length }} not imported yet
-          </template>
-        </p>
+  <UCard v-if="available" variant="outline">
+    <template #header>
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 class="flex items-center gap-2 font-medium text-highlighted">
+            <UIcon name="i-lucide-mountain-snow" />
+            Import from Komoot
+          </h2>
+          <p class="text-sm text-muted">
+            <template v-if="loading">Loading tours…</template>
+            <template v-else-if="!tours.length">No planned routes in that account.</template>
+            <template v-else>
+              {{ importable.length }} of {{ tours.length }} not imported yet
+            </template>
+          </p>
+        </div>
+        <div class="flex gap-2">
+          <UButton
+            icon="i-lucide-refresh-cw"
+            color="neutral"
+            variant="ghost"
+            :loading="loading"
+            @click="load"
+          >
+            Refresh
+          </UButton>
+          <UButton
+            icon="i-lucide-download"
+            :loading="importing"
+            :disabled="!canImport"
+            @click="runImport"
+          >
+            Import{{ selected.length ? ` ${selected.length}` : '' }}
+          </UButton>
+        </div>
       </div>
-      <div class="actions">
-        <button type="button" class="ghost" :disabled="loading" @click="load">Refresh</button>
-        <button
-          v-if="importable.length"
-          type="button"
-          class="ghost"
-          @click="toggleAll"
-        >
-          {{ selected.length === importable.length ? 'Select none' : 'Select all' }}
-        </button>
-        <button type="button" class="primary" :disabled="!canImport" @click="runImport">
-          {{ importing ? 'Importing…' : `Import ${selected.length || ''}`.trim() }}
-        </button>
-      </div>
-    </header>
+    </template>
 
-    <p v-if="notice" class="notice">{{ notice }}</p>
-    <p v-if="error" class="error">{{ error }}</p>
+    <UAlert
+      v-if="error"
+      color="error"
+      variant="subtle"
+      icon="i-lucide-triangle-alert"
+      :description="error"
+      class="mb-4"
+    />
 
-    <ul v-if="tours.length" class="tours">
-      <li v-for="tour in tours" :key="tour.id" :class="{ done: tour.imported }">
-        <label>
-          <input
-            v-model="selected"
-            type="checkbox"
-            :value="tour.id"
-            :disabled="tour.imported"
-          />
-          <span class="name">{{ tour.name }}</span>
-        </label>
-        <span class="meta">
-          {{ (tour.distanceM / 1000).toFixed(1) }} km · {{ Math.round(tour.ascentM) }} m
-          <span v-if="tour.sport"> · {{ tour.sport }}</span>
-        </span>
-        <span v-if="tour.imported" class="tag">imported</span>
-      </li>
-    </ul>
-  </section>
+    <UTable
+      v-if="tours.length || loading"
+      :data="tours"
+      :columns="columns"
+      :loading="loading"
+      :ui="{ td: 'text-sm' }"
+    />
+    <UEmpty
+      v-else
+      icon="i-lucide-mountain-snow"
+      title="Nothing to import"
+      description="Plan a route in Komoot and refresh."
+    />
+  </UCard>
 </template>
-
-<style scoped>
-.panel {
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--surface);
-  padding: 1rem 1.15rem 1.15rem;
-}
-
-header {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem;
-  align-items: center;
-  justify-content: space-between;
-}
-
-h2 {
-  margin: 0;
-  font-size: 1rem;
-}
-
-.summary {
-  margin: 0.2rem 0 0;
-  font-size: 0.85rem;
-  color: var(--text-muted);
-}
-
-.actions {
-  display: flex;
-  gap: 0.5rem;
-}
-
-button {
-  font: inherit;
-  font-size: 0.85rem;
-  padding: 0.4rem 0.85rem;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  background: var(--surface-sunken);
-  color: var(--text);
-  cursor: pointer;
-}
-
-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-button.primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--on-accent);
-}
-
-.tours {
-  list-style: none;
-  margin: 0.9rem 0 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.1rem;
-}
-
-.tours li {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  padding: 0.4rem 0.2rem;
-  border-top: 1px solid var(--border);
-  font-size: 0.88rem;
-}
-
-.tours li.done {
-  color: var(--text-muted);
-}
-
-label {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  flex: 1;
-  min-width: 0;
-  cursor: pointer;
-}
-
-.name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.meta {
-  font-size: 0.78rem;
-  color: var(--text-muted);
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
-}
-
-.tag {
-  font-size: 0.7rem;
-  padding: 0.1rem 0.4rem;
-  border-radius: 4px;
-  background: var(--surface-sunken);
-  color: var(--ok);
-}
-
-.notice {
-  margin: 0.8rem 0 0;
-  font-size: 0.85rem;
-  color: var(--ok);
-}
-
-.error {
-  margin: 0.5rem 0 0;
-  font-size: 0.83rem;
-  color: var(--danger);
-}
-</style>

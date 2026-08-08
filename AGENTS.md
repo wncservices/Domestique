@@ -205,10 +205,24 @@ conversion navigates as a breadcrumb line with no turn cues. See `docs/plan.md`.
   something genuinely hard, like FIT encoding.
 - `gofmt` is the formatter; `go vet` must be clean.
 - Vue: `<script setup lang="ts">`, no state-management library — the app is one screen and
-  `ref`/`computed` cover it. No CSS framework; theme tokens are CSS custom properties in
-  `src/styles.css` and the UI follows the OS light/dark preference.
+  `ref`/`computed` cover it.
+- **UI is [Nuxt UI](https://ui.nuxt.com) (MIT), used standalone in Vite.** Its components are
+  auto-imported by the Vite plugin, so `UCard`/`UButton`/`UTable` need no import statement.
+  Reach for a Nuxt UI component before hand-rolling one; the point of adopting it was to stop
+  hand-rolling buttons and dialogs.
+  - PrimeVue is **not** an option: from v5 it needs a licence key with annual renewal, and v4 is
+    frozen at the last MIT release.
+  - Theme tokens live in `src/styles.css` (`--color-primary-*`). Use Nuxt UI's semantic classes
+    (`text-muted`, `text-highlighted`, `bg-elevated`) rather than raw Tailwind colours, so light
+    and dark both work without a second thought.
+  - `src/color-mode.ts` puts the `dark` class on `<html>` from the OS preference. Outside Nuxt
+    nothing does this for you, and without it the app is permanently light.
+  - `App.vue` must stay wrapped in `<UApp>` — toasts, tooltips and modals need it.
+  - `vue-router` is a dependency only because Nuxt UI's link components import it
+    unconditionally. The app is still one screen; do not build routing on it without a reason.
 - The frontend has no map library on purpose: route previews are inline SVG drawn from the
-  coordinates the API returns, so nothing calls out to a tile server.
+  coordinates the API returns, so nothing calls out to a tile server with somebody's home
+  address in the request.
 - DTOs in `apps/api/internal/api/server.go` and `apps/web/src/api/types.ts` mirror each other by
   hand. Change them together.
 - Comments explain *why*. The code already says what.
