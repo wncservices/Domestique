@@ -1,0 +1,333 @@
+// Package fitcourse turns a GPX track into a Garmin FIT course file.
+//
+// Two reasons this exists:
+//
+//   - Wahoo's Cloud API will not accept a GPX at all. POST /v1/routes takes a
+//     base64-encoded FIT file, so without this there is no Wahoo support.
+//   - A FIT course can carry turn cues. A head unit following a bare GPX gets
+//     a breadcrumb line and says nothing at junctions; following a FIT course
+//     with course points, it announces the turns.
+//
+// A course file is a small, fixed shape:
+//
+//	file_id       type=course, so the device files it under Courses
+//	course        the name shown in the device's menu
+//	lap           start/end position and total distance, which some devices
+//	              use for the summary screen before you start
+//	record × N    the track itself
+//	course_point  optional turn cues
+//
+// The encoding itself is delegated to github.com/muktihari/fit. Hand-rolling a
+// FIT encoder is possible but it is a binary format with definition messages,
+// scaled fields and a CRC — exactly the kind of thing worth taking a
+// dependency for.
+package fitcourse
+
+import (
+	"bytes"
+	"fmt"
+	"math"
+	"time"
+
+	"github.com/muktihari/fit/encoder"
+	"github.com/muktihari/fit/profile/filedef"
+	"github.com/muktihari/fit/profile/mesgdef"
+	"github.com/muktihari/fit/profile/typedef"
+
+	"github.com/wncservices/domestique/apps/api/internal/gpx"
+)
+
+// manufacturerDevelopment is the id Garmin reserves for non-commercial and
+// in-house software. Claiming a real manufacturer's id would be a lie the
+// device might act on.
+const manufacturerDevelopment = typedef.ManufacturerDevelopment
+
+// Options tunes the generated course.
+type Options struct {
+	// Name shown in the device's course list. Devices truncate this; keep it
+	// short enough to read on a bike computer.
+	Name string
+	// Sport defaults to cycling.
+	Sport typedef.Sport
+	// TurnCues adds course_point messages derived from the track's geometry.
+	// Off by default: the cues are inferred, not authored, and a wrong cue at
+	// a junction is worse than no cue at all. See DeriveTurns.
+	TurnCues bool
+	// CreatedAt stamps the file. Zero uses the current time.
+	CreatedAt time.Time
+}
+
+// Encode renders a track as a FIT course file.
+func Encode(points []gpx.Point, opts Options) ([]byte, error) {
+	if len(points) < 2 {
+		return nil, fmt.Errorf("fitcourse: need at least 2 points, got %d", len(points))
+	}
+
+	sport := opts.Sport
+	if sport == 0 {
+		sport = typedef.SportCycling
+	}
+	created := opts.CreatedAt
+	if created.IsZero() {
+		created = time.Now().UTC()
+	}
+	name := opts.Name
+	if name == "" {
+		name = "Route"
+	}
+
+	// Courses have no real timestamps — nobody has ridden this yet. Devices
+	// still expect monotonic ones, so synthesise a timeline from the start.
+	timeAt := func(i int) time.Time { return created.Add(time.Duration(i) * time.Second) }
+
+	course := filedef.NewCourse()
+	course.FileId = *mesgdef.NewFileId(nil).
+		SetType(typedef.FileCourse).
+		SetManufacturer(manufacturerDevelopment).
+		SetProduct(0).
+		SetTimeCreated(created).
+		SetSerialNumber(0)
+
+	course.Course = mesgdef.NewCourse(nil).
+		SetName(name).
+		SetSport(sport)
+
+	// Cumulative distance per point: the lap summary and every course point
+	// are expressed as a distance along the track, not a coordinate.
+	distances := cumulativeDistances(points)
+	total := distances[len(distances)-1]
+
+	first, last := points[0], points[len(points)-1]
+	course.Lap = mesgdef.NewLap(nil).
+		SetStartTime(timeAt(0)).
+		SetTimestamp(timeAt(len(points) - 1)).
+		SetStartPositionLatDegrees(first.Lat).
+		SetStartPositionLongDegrees(first.Lon).
+		SetEndPositionLatDegrees(last.Lat).
+		SetEndPositionLongDegrees(last.Lon).
+		SetTotalDistanceScaled(total).
+		SetTotalElapsedTimeScaled(float64(len(points))).
+		SetTotalTimerTimeScaled(float64(len(points)))
+
+	for i, p := range points {
+		record := mesgdef.NewRecord(nil).
+			SetTimestamp(timeAt(i)).
+			SetPositionLatDegrees(p.Lat).
+			SetPositionLongDegrees(p.Lon).
+			SetDistanceScaled(distances[i])
+		if p.HasEle {
+			record.SetAltitudeScaled(p.Ele)
+		}
+		course.Records = append(course.Records, record)
+	}
+
+	if opts.TurnCues {
+		for _, turn := range DeriveTurns(points, distances) {
+			course.CoursePoints = append(course.CoursePoints,
+				mesgdef.NewCoursePoint(nil).
+					SetTimestamp(timeAt(turn.Index)).
+					SetPositionLatDegrees(points[turn.Index].Lat).
+					SetPositionLongDegrees(points[turn.Index].Lon).
+					SetDistanceScaled(distances[turn.Index]).
+					SetType(turn.Type).
+					SetName(turn.Name))
+		}
+	}
+
+	fitFile := course.ToFIT(nil)
+
+	var buf bytes.Buffer
+	if err := encoder.New(&buf).Encode(&fitFile); err != nil {
+		return nil, fmt.Errorf("fitcourse: encode: %w", err)
+	}
+	return buf.Bytes(), nil
+}
+
+// Turns infers turn cues for a track, computing the distances itself.
+//
+// Prefer this over DeriveTurns unless the distances are already to hand:
+// DeriveTurns indexes the slice it is given, so passing a short or nil one
+// panics.
+func Turns(points []gpx.Point) []Turn {
+	if len(points) < 3 {
+		return nil
+	}
+	return DeriveTurns(points, cumulativeDistances(points))
+}
+
+// Turn is a derived course point.
+type Turn struct {
+	Index int
+	Type  typedef.CoursePoint
+	Name  string
+	// Degrees is the heading change, signed: negative left, positive right.
+	Degrees float64
+}
+
+// Turn detection thresholds, in degrees of heading change.
+const (
+	minTurnDegrees   = 40.0
+	sharpTurnDegrees = 95.0
+	// lookaheadM is how far either side of a point the heading is measured
+	// over. Measuring between adjacent points makes every GPS wobble look
+	// like a turn; ~25 m smooths that out while still catching a junction.
+	lookaheadM = 25.0
+	// minTurnSpacingM stops a single junction producing a burst of cues.
+	minTurnSpacingM = 60.0
+)
+
+// DeriveTurns infers turn cues from the shape of the track.
+//
+// This is a heuristic, and it is worth being honest about what that means: it
+// knows nothing about roads or junctions, only about the line bending. A
+// hairpin on an open road produces a cue nobody needs, and a turn taken as a
+// gentle curve produces none where one would help. It is off by default for
+// that reason.
+//
+// A route planner that knows the road network (Komoot, RideWithGPS) produces
+// better cues, and when a route comes from one of those its own cues should be
+// preferred over these.
+func DeriveTurns(points []gpx.Point, distances []float64) []Turn {
+	if len(points) < 3 || len(distances) != len(points) {
+		return nil
+	}
+
+	// Heading change at every interior point.
+	deltas := make([]float64, len(points))
+	candidate := make([]bool, len(points))
+	for i := 1; i < len(points)-1; i++ {
+		before, okBefore := headingBefore(points, distances, i)
+		after, okAfter := headingAfter(points, distances, i)
+		if !okBefore || !okAfter {
+			continue
+		}
+		deltas[i] = normaliseDegrees(after - before)
+		candidate[i] = math.Abs(deltas[i]) >= minTurnDegrees
+	}
+
+	// Take the apex of each bend, not the first point over the threshold.
+	//
+	// This matters more than it sounds. The heading is measured over a window,
+	// so on the approach to a corner that window already spans part of the
+	// bend and reports roughly half the real angle. Firing there would put the
+	// cue short of the junction and, worse, classify a hairpin as an ordinary
+	// turn. Scanning to the local maximum puts the cue on the corner with the
+	// true angle.
+	var turns []Turn
+	lastAt := math.Inf(-1)
+
+	for i := 1; i < len(points)-1; i++ {
+		if !candidate[i] {
+			continue
+		}
+
+		apex := i
+		for j := i; j < len(points)-1 && candidate[j]; j++ {
+			if math.Abs(deltas[j]) > math.Abs(deltas[apex]) {
+				apex = j
+			}
+			i = j
+		}
+
+		// One cue per junction, not one per point through the bend.
+		if distances[apex]-lastAt < minTurnSpacingM {
+			continue
+		}
+
+		delta := deltas[apex]
+		magnitude := math.Abs(delta)
+		turns = append(turns, Turn{
+			Index:   apex,
+			Type:    turnType(delta, magnitude),
+			Name:    turnName(delta, magnitude),
+			Degrees: delta,
+		})
+		lastAt = distances[apex]
+	}
+
+	return turns
+}
+
+func turnType(delta, magnitude float64) typedef.CoursePoint {
+	switch {
+	case magnitude >= sharpTurnDegrees && delta < 0:
+		return typedef.CoursePointSharpLeft
+	case magnitude >= sharpTurnDegrees:
+		return typedef.CoursePointSharpRight
+	case delta < 0:
+		return typedef.CoursePointLeft
+	default:
+		return typedef.CoursePointRight
+	}
+}
+
+func turnName(delta, magnitude float64) string {
+	switch {
+	case magnitude >= sharpTurnDegrees && delta < 0:
+		return "Sharp left"
+	case magnitude >= sharpTurnDegrees:
+		return "Sharp right"
+	case delta < 0:
+		return "Left"
+	default:
+		return "Right"
+	}
+}
+
+// headingBefore is the bearing into point i, measured back ~lookaheadM.
+func headingBefore(points []gpx.Point, distances []float64, i int) (float64, bool) {
+	for j := i - 1; j >= 0; j-- {
+		if distances[i]-distances[j] >= lookaheadM || j == 0 {
+			if distances[i]-distances[j] < 1 {
+				return 0, false
+			}
+			return bearing(points[j], points[i]), true
+		}
+	}
+	return 0, false
+}
+
+// headingAfter is the bearing out of point i, measured forward ~lookaheadM.
+func headingAfter(points []gpx.Point, distances []float64, i int) (float64, bool) {
+	last := len(points) - 1
+	for j := i + 1; j <= last; j++ {
+		if distances[j]-distances[i] >= lookaheadM || j == last {
+			if distances[j]-distances[i] < 1 {
+				return 0, false
+			}
+			return bearing(points[i], points[j]), true
+		}
+	}
+	return 0, false
+}
+
+// bearing is the initial compass bearing from a to b, in degrees.
+func bearing(a, b gpx.Point) float64 {
+	lat1 := a.Lat * math.Pi / 180
+	lat2 := b.Lat * math.Pi / 180
+	dLon := (b.Lon - a.Lon) * math.Pi / 180
+
+	y := math.Sin(dLon) * math.Cos(lat2)
+	x := math.Cos(lat1)*math.Sin(lat2) - math.Sin(lat1)*math.Cos(lat2)*math.Cos(dLon)
+	return math.Atan2(y, x) * 180 / math.Pi
+}
+
+// normaliseDegrees folds an angle into (-180, 180].
+func normaliseDegrees(d float64) float64 {
+	for d <= -180 {
+		d += 360
+	}
+	for d > 180 {
+		d -= 360
+	}
+	return d
+}
+
+// cumulativeDistances returns metres travelled at each point.
+func cumulativeDistances(points []gpx.Point) []float64 {
+	out := make([]float64, len(points))
+	for i := 1; i < len(points); i++ {
+		out[i] = out[i-1] + gpx.DistanceM(points[i-1], points[i])
+	}
+	return out
+}

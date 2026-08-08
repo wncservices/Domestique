@@ -67,6 +67,37 @@ never the config file. Imported routes carry a `komoot:<id>` tag, which is how
 re-imports are detected; without it a second import silently duplicates every
 route and the rider cannot tell which copy their device follows.
 
+## FIT courses
+
+`internal/fitcourse` turns a GPX track into a Garmin FIT course. It exists
+because **Wahoo's API will not accept GPX at all** — `POST /v1/routes` takes a
+base64 FIT — and because a FIT course can carry turn cues where a GPX gives the
+device only a breadcrumb line.
+
+Encoding is delegated to `github.com/muktihari/fit`. FIT is a binary format
+with definition messages, scaled fields and a CRC; this is the "genuinely hard"
+case the dependency budget is for.
+
+**Turn cues are inferred, and off by default.** `DeriveTurns` knows nothing
+about roads — only that the line bends. It reports a hairpin on an open road
+and stays quiet through a junction taken as a gentle curve. When a route comes
+from a planner that knows the road network (Komoot, RideWithGPS), that
+planner's own cues are better and should win. Two details that took a bug to
+find:
+
+- Cues are placed at the **apex** of a bend, not the first point over the
+  threshold. The heading is measured over a window, so on the approach that
+  window already spans part of the corner and reports roughly half the true
+  angle — which put the cue short of the junction and classified hairpins as
+  ordinary turns.
+- `DeriveTurns` indexes the distances slice it is handed. Use `Turns(points)`
+  unless the distances are already computed; passing a nil slice used to panic.
+
+Tests check the output two ways: a round trip through the library, and the
+header and CRC checked against the FIT spec with an independent implementation,
+so a bug in the library cannot pass unnoticed. **Neither proves a real device
+accepts the file** — `domestique fit <slug>` writes one out for exactly that.
+
 ## The source split — the thing to not undo
 
 The app is public; routes are personal location data. They are kept apart by
@@ -116,6 +147,7 @@ just api          # run the API on :8080, serving apps/web/dist if built
 just web          # Vite dev server on :5173, proxying /api to :8080
 just import DIR   # copy a directory library into the database
 just komoot ARGS  # list or import Komoot routes (needs KOMOOT_* env vars)
+just fit SLUG     # write a route out as a FIT course for a real device
 ```
 
 For UI work run `just api` and `just web` side by side and use :5173.
@@ -136,6 +168,7 @@ state file ──────Open────> state.Store ───┘
 - `internal/config` — `domestique.yaml`: accounts, default targets, which source to use. Separate
   from the routes on purpose, since a DB source has no config file of its own.
 - `internal/auth` — identity, roles and permissions. See above.
+- `internal/fitcourse` — GPX to FIT course conversion. See above.
 - `internal/komoot` — the undocumented Komoot client.
 - `internal/source` — where routes come from. See the split above.
 - `internal/state` — a JSON file behind a `Store` interface, the seam for SQLite or Postgres.

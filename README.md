@@ -14,9 +14,10 @@ use is not permitted. This is deliberately **not** an open source license.
 
 ## Status
 
-Early. The library, diff engine, CLI, HTTP API and web UI work end to end. **The provider
-adapters are stubs** — see [Roadmap](#roadmap). Today you can add routes, browse them, and see
-exactly what would be pushed where; you cannot yet actually push.
+Early. The library, diff engine, CLI, HTTP API and web UI work end to end, and routes convert to
+Garmin FIT courses. **The provider adapters are stubs** — see [Roadmap](#roadmap). Today you can
+add routes, browse them, see exactly what would be pushed where, and export a FIT to copy onto a
+device by hand; automatic pushing is not wired up yet.
 
 ## Where routes live
 
@@ -116,6 +117,22 @@ Komoot has **no public API**. This uses the same undocumented endpoints their
 apps do, so it will break from time to time — treat it as a convenience, not a
 dependency. Already-imported tours are skipped, so running it twice is safe.
 
+## Getting a route onto a device today
+
+The provider adapters are still stubs, but the conversion they will use works.
+Write a route out as a Garmin FIT course and copy it over USB:
+
+```bash
+just fit kemmelberg-loop
+just fit kemmelberg-loop --cues     # add inferred turn cues
+```
+
+Or download one from the running app: `GET /api/fit/<slug>` (add `?cues=1`).
+
+Turn cues are **inferred from the shape of the track**, not from a road map.
+They are off by default and worth checking before you rely on them at a
+junction — a route planner that knows the roads does this better.
+
 ## Configuration
 
 Copy `domestique.example.yaml` to `domestique.yaml`. It holds the route source and the riders'
@@ -139,7 +156,7 @@ none. That is what keeps one rider's private routes off the other's head unit.
 | Phase | What | Status |
 |---|---|---|
 | 1 | Library, diff engine, CLI, API, web UI, pluggable sources | ✅ |
-| 2 | GPX → FIT course conversion, ideally with turn cues | ⬜ blocks Phase 4 |
+| 2 | GPX → FIT course conversion, with inferred turn cues | ✅ |
 | 3 | Garmin push (unofficial Connect session) | ⬜ stub |
 | 4 | Wahoo push (Cloud API) | ⬜ stub, needs approved API access |
 | 5 | Deploy: container, scheduled reconcile, Vault-backed tokens | ⬜ |
@@ -152,4 +169,5 @@ Garmin has none at all, and Wahoo's is approval-gated and wants FIT rather than 
 ## Contributing
 
 `just check` runs the typecheck, vet and tests. Keep the Go side close to the standard library —
-the dependencies today are a YAML parser and a pure-Go SQLite driver, and that is the budget.
+the dependencies today are a YAML parser, a pure-Go SQLite driver and a FIT SDK, and that is the
+budget.

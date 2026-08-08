@@ -22,6 +22,8 @@ import (
 
 	"github.com/wncservices/domestique/apps/api/internal/auth"
 	"github.com/wncservices/domestique/apps/api/internal/config"
+	"github.com/wncservices/domestique/apps/api/internal/fitcourse"
+	"github.com/wncservices/domestique/apps/api/internal/gpx"
 	"github.com/wncservices/domestique/apps/api/internal/model"
 	"github.com/wncservices/domestique/apps/api/internal/source"
 	"github.com/wncservices/domestique/apps/api/internal/state"
@@ -68,6 +70,7 @@ func (s *Server) Handler() http.Handler {
 	// last — hence /api/tracks/<slug> rather than /api/routes/<slug>/track.
 	mux.HandleFunc("GET /api/tracks/{slug...}", s.handleTrack)
 	mux.HandleFunc("GET /api/gpx/{slug...}", s.handleDownload)
+	mux.HandleFunc("GET /api/fit/{slug...}", s.handleDownloadFIT)
 
 	// Write endpoints are always registered, even against a read-only source:
 	// they answer 405 with an explanation. Leaving them unregistered would let
@@ -333,6 +336,62 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	// #nosec G705 -- served as an attachment with a fixed content type, not HTML.
 	if _, err := w.Write(raw); err != nil {
 		s.logger().Error("write gpx", "err", err)
+	}
+}
+
+// handleDownloadFIT converts a route to a Garmin FIT course on the fly.
+//
+// Useful on its own — a FIT can be copied to a device over USB — and it is the
+// same conversion the Wahoo adapter will use, so being able to download one
+// and load it onto a real head unit is how the conversion gets proven.
+//
+// Turn cues are opt-in with ?cues=1, because they are inferred from the track's
+// geometry rather than authored: see fitcourse.DeriveTurns.
+func (s *Server) handleDownloadFIT(w http.ResponseWriter, r *http.Request) {
+	if !s.require(w, r, auth.PermReadRoutes) {
+		return
+	}
+
+	slug := cleanSlug(r.PathValue("slug"))
+	raw, err := s.Source.GPX(slug)
+	if err != nil {
+		s.failLookup(w, err)
+		return
+	}
+
+	points, err := gpx.ParsePoints(raw)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+
+	name := slug
+	if routes, _, listErr := s.Source.List(); listErr == nil {
+		for _, route := range routes {
+			if route.Slug == slug {
+				name = route.Name
+				break
+			}
+		}
+	}
+
+	fitBytes, err := fitcourse.Encode(points, fitcourse.Options{
+		Name:     name,
+		TurnCues: r.URL.Query().Get("cues") == "1",
+	})
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+
+	filename := strings.ReplaceAll(slug, "/", "-") + ".fit"
+	w.Header().Set("Content-Type", "application/vnd.ant.fit")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	// #nosec G705 -- binary FIT served as an attachment with a fixed content
+	// type and nosniff, never rendered as a page.
+	if _, err := w.Write(fitBytes); err != nil {
+		s.logger().Error("write fit", "err", err)
 	}
 }
 

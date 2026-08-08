@@ -157,6 +157,9 @@ func ContentHash(points []Point, name, description string) string {
 	return hex.EncodeToString(h.Sum(nil))[:32]
 }
 
+// DistanceM is the great-circle distance between two points, in metres.
+func DistanceM(a, b Point) float64 { return haversineM(a, b) }
+
 func haversineM(a, b Point) float64 {
 	p1, p2 := a.Lat*math.Pi/180, b.Lat*math.Pi/180
 	dp := p2 - p1

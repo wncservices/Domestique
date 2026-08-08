@@ -40,6 +40,10 @@ push *ARGS:
 komoot *ARGS:
     go run ./apps/api/cmd/domestique komoot {{ARGS}}
 
+# Write a route out as a FIT course, to copy onto a device over USB.
+fit SLUG *ARGS:
+    go run ./apps/api/cmd/domestique fit {{SLUG}} {{ARGS}}
+
 # Copy a directory of GPX routes into a database library.
 import FROM:
     go run ./apps/api/cmd/domestique import --source db --db ./data/domestique.db --from {{FROM}}
