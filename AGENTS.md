@@ -8,7 +8,7 @@ Single source of truth for agent behaviour in this repository. Tool-agnostic —
 service reconciles it into each rider's Garmin Connect and Wahoo account, so a route added once
 shows up on both a Garmin Edge and a Wahoo ELEMNT.
 
-It is a monorepo, source-available under PolyForm Noncommercial 1.0.0, and **it contains no
+It is a monorepo, free software under the GNU AGPL-3.0, and **it contains no
 route data**:
 
 | Path | What |

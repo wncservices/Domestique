@@ -1,44 +1,48 @@
 # Contributing
 
-Thanks for looking. This is a small personal project, so the bar is "does it keep
-working and stay understandable", not ceremony.
-
-## Getting set up
+## The short version
 
 ```bash
-just install
-just check      # typecheck + vet + tests — the same gate CI runs
-just demo       # serve the bundled example routes at :8080
+just up            # PostgreSQL + the app on :8080, only Docker needed
+just docker-check  # gofmt, vet, go test, web typecheck — what CI runs
 ```
 
-For frontend work, run `just api` and `just web` side by side and use the Vite
-server on :5173.
+Then open a pull request.
 
-## Before opening a PR
+## Licence
 
-- `just check` passes, and `golangci-lint run ./apps/api/...` is clean.
-- New behaviour has a test that **fails without the change**. Worth actually
-  checking: a couple of tests in this repo originally passed for the wrong
-  reason, and only deleting the code they covered revealed it.
-- Comments explain *why*. The code already says what.
+Domestique is under the [GNU AGPL-3.0](LICENSE).
 
-## Things that will get a PR sent back
+**Before a pull request can be merged you will be asked to confirm, in a
+comment, that you license your contribution for relicensing — including under
+commercial terms.** You keep the copyright in what you write, and your work
+stays available to everyone under the AGPL.
 
-- **A real GPX file.** Routes are personal location data and never belong in this
-  repository. `examples/routes/` holds one synthetic route and stays that way.
-- **A credential**, including a placeholder that looks real.
-- Making the filesystem source writable. It is read-only on purpose: in a
-  git-backed library, adding a route is a commit, which is where review and
-  history come from.
-- Flipping `targets.Implemented` for a provider whose adapter still returns
-  errors. That flag is what makes the UI honest about what works.
+There is no bot and no form; it is one sentence, asked once. The reason rather
+than a shrug: this may one day be offered as a hosted service with paid
+features, and that door closes permanently the first time a patch is merged
+without it, because relicensing would then need every past contributor's
+agreement. Asking now is far easier than finding people three years from now.
 
-`AGENTS.md` is the fuller version of all this, and is the file to read before
-changing anything structural.
+If you would rather not, open an issue describing the change instead — a good
+bug report is worth a great deal and needs no paperwork.
 
-## Dependencies
+## What the code expects of you
 
-The Go side is standard library plus a YAML parser and a pure-Go SQLite driver.
-That is the budget. Adding to it needs a reason that a reviewer would agree is
-genuinely hard to do by hand — FIT encoding would qualify; a helper library
-would not.
+The repository's conventions are in [AGENTS.md](AGENTS.md), which is worth
+skimming before a first change. The parts that come up most:
+
+- **Run against PostgreSQL, not just SQLite.** `just docker-test` does. The
+  two engines differ in placeholders, blob types and booleans, and a green
+  SQLite run says nothing about the one that ships.
+- **A skipped test reads exactly like a passing one.** If a test can silently
+  not run, make it fail instead.
+- **No secrets in the repository**, including things that look like
+  placeholders. Credentials come from the environment.
+- **Say why, not what.** The code says what it does; a comment earns its place
+  by explaining a decision, a constraint, or a bug that is easy to reintroduce.
+
+## Reporting a security issue
+
+Please do not open a public issue. Use GitHub's private vulnerability
+reporting on the repository's Security tab.
