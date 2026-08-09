@@ -144,9 +144,19 @@ async function runImport() {
       icon: 'i-lucide-download',
       color: result.imported.length ? 'success' : 'warning',
     })
-    // Say *why* each was skipped; "skipped 3" alone is useless.
+    // Say *why*; "skipped 30" alone is useless. Group identical reasons —
+    // when every tour fails it fails for one reason, and thirty copies of it
+    // buries the one line worth reading.
     if (skipped.length) {
-      error.value = skipped.map(([id, reason]) => `${id}: ${reason}`).join(' · ')
+      const byReason = new Map<string, string[]>()
+      for (const [id, reason] of skipped) {
+        byReason.set(reason, [...(byReason.get(reason) ?? []), id])
+      }
+      error.value = [...byReason.entries()]
+        .map(([reason, ids]) =>
+          ids.length > 3 ? `${ids.length} tours: ${reason}` : `${ids.join(', ')}: ${reason}`,
+        )
+        .join(' · ')
     }
 
     selected.value = []

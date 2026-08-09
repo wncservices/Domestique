@@ -18,8 +18,10 @@
 package komoot
 
 import (
+	"bytes"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -251,8 +253,7 @@ func (c *Client) GPX(tourID string) ([]byte, error) {
 		Name     string `json:"name"`
 		Embedded struct {
 			Coordinates struct {
-				// [lat, lng, alt, time-offset] per point.
-				Items [][]float64 `json:"items"`
+				Items []coordinate `json:"items"`
 			} `json:"coordinates"`
 		} `json:"_embedded"`
 	}
@@ -333,7 +334,56 @@ type gpxPoint struct {
 	Ele *float64 `xml:"ele,omitempty"`
 }
 
-func renderGPX(name string, coords [][]float64) ([]byte, error) {
+// coordinate is one track point.
+//
+// Komoot sends these two ways and `format=coordinate_array` — an undocumented
+// query parameter — decides which. It is not always honoured, and a client
+// that understands only one shape fails every tour with a decode error while
+// the account and the credentials are perfectly fine. So accept both:
+//
+//	[50.79, 2.81, 60.5, 0]              a coordinate array
+//	{"lat":50.79,"lng":2.81,"alt":60.5} an object
+type coordinate struct {
+	Lat float64
+	Lng float64
+	Alt *float64
+}
+
+func (c *coordinate) UnmarshalJSON(raw []byte) error {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return errors.New("komoot: empty coordinate")
+	}
+
+	if trimmed[0] == '[' {
+		var tuple []float64
+		if err := json.Unmarshal(trimmed, &tuple); err != nil {
+			return err
+		}
+		if len(tuple) < 2 {
+			return fmt.Errorf("komoot: coordinate has %d values, need at least 2", len(tuple))
+		}
+		c.Lat, c.Lng = tuple[0], tuple[1]
+		if len(tuple) >= 3 {
+			alt := tuple[2]
+			c.Alt = &alt
+		}
+		return nil
+	}
+
+	var object struct {
+		Lat float64  `json:"lat"`
+		Lng float64  `json:"lng"`
+		Alt *float64 `json:"alt"`
+	}
+	if err := json.Unmarshal(trimmed, &object); err != nil {
+		return err
+	}
+	c.Lat, c.Lng, c.Alt = object.Lat, object.Lng, object.Alt
+	return nil
+}
+
+func renderGPX(name string, coords []coordinate) ([]byte, error) {
 	var doc gpxDoc
 	doc.Version = "1.1"
 	doc.Creator = "Domestique"
@@ -341,12 +391,14 @@ func renderGPX(name string, coords [][]float64) ([]byte, error) {
 	doc.Trk.Name = name
 
 	for _, c := range coords {
-		if len(c) < 2 {
+		// 0,0 is in the Atlantic; it is what a missing field decodes to, not
+		// a place anybody rode.
+		if c.Lat == 0 && c.Lng == 0 {
 			continue
 		}
-		point := gpxPoint{Lat: c[0], Lon: c[1]}
-		if len(c) >= 3 {
-			ele := c[2]
+		point := gpxPoint{Lat: c.Lat, Lon: c.Lng}
+		if c.Alt != nil {
+			ele := *c.Alt
 			point.Ele = &ele
 		}
 		doc.Trk.Seg.Points = append(doc.Trk.Seg.Points, point)

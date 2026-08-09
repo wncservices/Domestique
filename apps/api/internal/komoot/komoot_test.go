@@ -382,3 +382,59 @@ func TestRequestsAcceptHAL(t *testing.T) {
 		}
 	}
 }
+
+// Komoot returns coordinates two ways depending on whether it honours the
+// undocumented `format=coordinate_array` parameter. Understanding only one
+// shape fails every tour with a decode error while the account is fine.
+func TestGPXAcceptsBothCoordinateShapes(t *testing.T) {
+	bodies := map[string]string{
+		"coordinate arrays": `{"name":"Ronde","_embedded":{"coordinates":{"items":[
+			[50.79,2.81,60.5,0],[50.80,2.82,72.0,1000]]}}}`,
+		"objects": `{"name":"Ronde","_embedded":{"coordinates":{"items":[
+			{"lat":50.79,"lng":2.81,"alt":60.5,"t":0},
+			{"lat":50.80,"lng":2.82,"alt":72.0,"t":1000}]}}}`,
+		"objects without altitude": `{"name":"Ronde","_embedded":{"coordinates":{"items":[
+			{"lat":50.79,"lng":2.81},{"lat":50.80,"lng":2.82}]}}}`,
+	}
+
+	for name, body := range bodies {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/hal+json")
+				_, _ = w.Write([]byte(body))
+			}))
+			defer server.Close()
+
+			c := New()
+			c.BaseV6, c.BaseV7 = server.URL, server.URL
+			c.LoginWithToken("user-1", "token-1")
+
+			raw, err := c.GPX("42")
+			if err != nil {
+				t.Fatalf("GPX failed: %v", err)
+			}
+			for _, want := range []string{`lat="50.79"`, `lon="2.82"`, "<name>Ronde</name>"} {
+				if !strings.Contains(string(raw), want) {
+					t.Errorf("GPX missing %s:\n%s", want, raw)
+				}
+			}
+		})
+	}
+}
+
+// A tour with no usable points must say so rather than produce an empty GPX
+// that fails later, somewhere less obvious.
+func TestGPXRejectsAnEmptyTrack(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"name":"Empty","_embedded":{"coordinates":{"items":[]}}}`))
+	}))
+	defer server.Close()
+
+	c := New()
+	c.BaseV6, c.BaseV7 = server.URL, server.URL
+	c.LoginWithToken("user-1", "token-1")
+
+	if _, err := c.GPX("42"); err == nil {
+		t.Error("an empty tour produced a GPX")
+	}
+}
