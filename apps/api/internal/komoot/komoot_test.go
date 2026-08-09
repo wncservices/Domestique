@@ -345,3 +345,40 @@ func TestTourPlannedHelper(t *testing.T) {
 		t.Error("recorded ride reported as planned")
 	}
 }
+
+// TestRequestsAcceptHAL guards a bug that only showed up against the real
+// API: the v007 endpoints are HAL, and a bare `application/json` gets 406 Not
+// Acceptable. The fake server here answers anything, so nothing else in this
+// file would ever notice.
+func TestRequestsAcceptHAL(t *testing.T) {
+	var accepts []string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		accepts = append(accepts, r.Header.Get("Accept"))
+		// Reject the way Komoot does, so a regression fails here rather than
+		// in production.
+		if !strings.Contains(r.Header.Get("Accept"), "application/hal+json") {
+			w.WriteHeader(http.StatusNotAcceptable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/hal+json")
+		_, _ = w.Write([]byte(`{"_embedded":{"tours":[]}}`))
+	}))
+	defer server.Close()
+
+	client := New()
+	client.BaseV6, client.BaseV7 = server.URL, server.URL
+	client.LoginWithToken("user-1", "token-1")
+
+	if _, err := client.Tours(false); err != nil {
+		t.Fatalf("Tours failed: %v", err)
+	}
+	if len(accepts) == 0 {
+		t.Fatal("no request was made")
+	}
+	for _, accept := range accepts {
+		if !strings.Contains(accept, "application/hal+json") {
+			t.Errorf("Accept = %q, want it to offer application/hal+json", accept)
+		}
+	}
+}

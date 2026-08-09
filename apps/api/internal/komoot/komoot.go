@@ -276,7 +276,12 @@ func (c *Client) do(req *http.Request, into any) error {
 		return err
 	}
 
-	req.Header.Set("Accept", "application/json")
+	// hal+json first, and it is not optional: the v007 endpoints are HAL —
+	// that is where the `_links.next.href` pagination comes from — and they
+	// answer 406 Not Acceptable to a bare application/json. Verified against
+	// the live API: json alone gives 406, hal+json reaches authentication.
+	// application/json stays as a fallback for the v006 endpoints.
+	req.Header.Set("Accept", "application/hal+json, application/json")
 	// Komoot's edge rejects requests without a browser-ish agent.
 	req.Header.Set("User-Agent", "domestique/1.0 (+https://github.com/wncservices/domestique)")
 
