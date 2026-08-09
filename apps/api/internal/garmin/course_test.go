@@ -167,3 +167,39 @@ func TestDeleteCourseNeedsAnId(t *testing.T) {
 		t.Error("an empty id was accepted")
 	}
 }
+
+// Every request carries a credential, so a host we were not configured for
+// must be refused before it is sent — not diagnosed from the access log of
+// whoever received the token.
+func TestRequestsToAnotherHostAreRefused(t *testing.T) {
+	c, _ := courseFake(t, http.StatusOK, `{"courseId":1}`)
+
+	// Not by reassigning a base — that would make the host configured, which
+	// is the whole point of the check. A URL that is simply somewhere else.
+	for _, elsewhere := range []string{
+		"https://evil.example.com/course-service/course/import",
+		"http://169.254.169.254/latest/meta-data/",
+		"https://sso.garmin.com.evil.example.com/sso/signin",
+	} {
+		_, _, err := c.do(http.MethodGet, elsewhere, nil, "")
+		if err == nil {
+			t.Errorf("%s was allowed", elsewhere)
+			continue
+		}
+		if !strings.Contains(err.Error(), "not a configured host") {
+			t.Errorf("%s gave %v, want the refusal", elsewhere, err)
+		}
+	}
+}
+
+func TestConfiguredHostsAreAllowed(t *testing.T) {
+	c, _ := courseFake(t, http.StatusOK, `{"courseId":1}`)
+	for _, base := range []string{c.SSOBase, c.APIBase, c.WebBase} {
+		if base == "" {
+			continue
+		}
+		if err := c.allowedHost(base + "/anything"); err != nil {
+			t.Errorf("configured base %q was refused: %v", base, err)
+		}
+	}
+}

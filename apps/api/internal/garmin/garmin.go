@@ -110,6 +110,13 @@ func New() *Client {
 		HTTP: &http.Client{
 			Timeout: defaultTimeout,
 			Jar:     jar,
+			// A redirect would carry the Authorization header to wherever it
+			// points, which is the same credential-disclosure problem
+			// allowedHost exists to prevent. The SSO flow is followed
+			// explicitly instead.
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
 		},
 		SSOBase: ssoBase,
 		APIBase: connectAPI,
@@ -321,8 +328,41 @@ func (c *Client) bearerToken() (string, error) {
 	return c.bearer, nil
 }
 
+// allowedHost reports whether a URL may be requested.
+//
+// Every call here carries a credential: the OAuth1 signature during sign-in,
+// the bearer afterwards. A request to a host we were not configured for would
+// hand that credential to whoever answers — so anything off the three
+// configured bases is refused before it is sent, not after.
+//
+// The same guard internal/komoot needed, for the same reason. There it was
+// pagination following a URL out of a response body; here the bases are
+// fields, and a field is exactly the sort of thing that later gets wired to
+// configuration by somebody who has not read this comment.
+func (c *Client) allowedHost(raw string) error {
+	target, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("garmin: unusable URL %q: %w", raw, err)
+	}
+
+	for _, base := range []string{c.SSOBase, c.APIBase, c.WebBase} {
+		known, err := url.Parse(base)
+		if err != nil || known.Host == "" {
+			continue
+		}
+		if target.Scheme == known.Scheme && strings.EqualFold(target.Host, known.Host) {
+			return nil
+		}
+	}
+	return fmt.Errorf("garmin: refusing to send credentials to %q, which is not a configured host", target.Host)
+}
+
 // do performs a request and reads a capped body.
 func (c *Client) do(method, endpoint string, body io.Reader, contentType string, extra ...header) ([]byte, int, error) {
+	if err := c.allowedHost(endpoint); err != nil {
+		return nil, 0, err
+	}
+
 	req, err := http.NewRequest(method, endpoint, body)
 	if err != nil {
 		return nil, 0, err
