@@ -16,10 +16,9 @@ fullnameOverride: ""
 #
 # Credentials come from `envFrom` and `env` below instead.
 config:
-  source:
-    # For PostgreSQL, leave the DSN out of this file and set
-    # DOMESTIQUE_SOURCE_DSN from a Secret — see `envFrom` below.
-    dsn: /app/data/domestique.db
+  # No `source` here on purpose. The DSN carries a password, so it comes from
+  # a Secret as DOMESTIQUE_SOURCE_DSN — see `postgresql` below — and this file
+  # is a ConfigMap that anyone with namespace access can read.
 
   # Domestique authenticates nobody itself. Behind Traefik with an Authelia
   # forwardAuth middleware it reads the identity Authelia passes down.
@@ -62,19 +61,35 @@ envFrom: []
 # Individual environment variables, for anything not in a Secret.
 env: []
 
-# Only needed for a SQLite route library.
+# PostgreSQL. Required — the chart will not render without one.
 #
-# Sync state — what each account is recorded as holding — lives in the database
-# alongside the routes, so with PostgreSQL there is nothing to keep on disk and
-# this can be turned off entirely.
-persistence:
-  enabled: true
-  size: 1Gi
-  # Leave empty to use the cluster default.
-  storageClass: ""
-  accessMode: ReadWriteOnce
-  # Mount an existing claim instead of creating one.
-  existingClaim: ""
+# Routes, sync state, linked head units and Komoot sign-ins are all rows in
+# one database, so the pod keeps nothing of its own. That is why there is no
+# volume here any more: with PostgreSQL there was nothing left to put on it,
+# and an empty PVC that silently did nothing was worse than none.
+#
+# SQLite still works for a laptop (`just up`, `domestique serve`). It is not
+# offered as a deployment: one replica pinned to one node, holding the only
+# copy of the library on a volume nothing backs up.
+postgresql:
+  # Name of a CloudNativePG Cluster in this namespace. The operator publishes
+  # a Secret called <cluster>-app containing a ready-made connection string,
+  # and this reads it — nothing to copy, and it follows a failover.
+  cluster: ""
+
+  # Or point at any Secret holding a PostgreSQL URL. Takes precedence over
+  # `cluster` when both are set.
+  existingSecret: ""
+  secretKey: uri
+
+# Encrypts Komoot sign-ins so riders can connect their own account from the
+# UI. Without it that form is not offered — a session is stored encrypted or
+# not at all — and everything else works as normal.
+#
+# `domestique keygen` prints one. Put it in a Secret; never in this file.
+encryptionKey:
+  existingSecret: ""
+  secretKey: DOMESTIQUE_ENCRYPTION_KEY
 
 service:
   type: ClusterIP

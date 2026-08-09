@@ -20,8 +20,9 @@ helm repo update
 helm install domestique domestique/domestique --namespace domestique --create-namespace
 ```
 
-With nothing else set you get a single pod, a SQLite route library on a 1 Gi
-volume, no ingress and **no authentication**. Port-forward to look at it:
+**PostgreSQL is required** — see below; the chart refuses to render without
+one. With nothing else set you get a single pod, no ingress and **no
+authentication**. Port-forward to look at it:
 
 ```bash
 kubectl -n domestique port-forward svc/domestique 8080:80
@@ -50,14 +51,64 @@ config:
 must not be reachable except through that proxy**. `trusted_proxies` narrows it
 further; leave it empty only for a ClusterIP-only Service.
 
-**Persistence is only for SQLite.** Sync state lives in the database beside the
-routes, so a PostgreSQL deployment needs no volume at all — set
-`persistence.enabled: false`. With SQLite the volume holds the database file
-itself, and losing it means re-pushing every route to every device.
+## PostgreSQL, and no volume
 
-## PostgreSQL
+Routes, sync state, linked head units and Komoot sign-ins are all rows in one
+database, so the pod keeps nothing of its own. There is no `persistence` block
+any more and no PVC: with PostgreSQL there was nothing left to put on a volume,
+and an empty one that silently did nothing was worse than none.
 
-The route library is a database — PostgreSQL or SQLite. A DSN carries a password, so it
+The usual case is a [CloudNativePG](https://cloudnative-pg.io) cluster in the
+same namespace:
+
+```yaml
+postgresql:
+  cluster: domestique-db
+```
+
+The operator publishes `Secret/domestique-db-app` holding a ready-made
+connection string that already points at the read-write service. The chart
+reads it directly, so there is no copy of the password anywhere and nothing to
+change when the operator rotates it or the cluster fails over.
+
+Any other PostgreSQL works too:
+
+```yaml
+postgresql:
+  existingSecret: domestique-db
+  secretKey: uri
+```
+
+**SQLite is not a deployment option.** It still runs a laptop (`just up`,
+`domestique serve`), but as a deployment it means one replica pinned to one
+node holding the only copy of the library on a disk nothing backs up. The
+chart used to offer it and defaulted to it, which is the wrong default to
+reach for by accident.
+
+## Komoot sign-in
+
+Riders connect their own Komoot account from the UI. The session is stored
+encrypted, so it needs a key:
+
+```bash
+domestique keygen
+```
+
+Put it in a Secret and name it:
+
+```yaml
+encryptionKey:
+  existingSecret: domestique
+  secretKey: DOMESTIQUE_ENCRYPTION_KEY
+```
+
+Without it the sign-in form is not offered and everything else works as
+normal. Replacing the key invalidates every stored sign-in; riders sign in
+again.
+
+## Other credentials
+
+A DSN carries a password, so it
 comes from a Secret rather than values:
 
 ```yaml
@@ -73,11 +124,11 @@ for instance. Keys the app reads:
 
 | Key | For |
 |---|---|
-| `DOMESTIQUE_SOURCE_DSN` | PostgreSQL connection string; overrides `config.source.dsn` |
-| `KOMOOT_EMAIL` | Komoot import, when `config.komoot.enabled` |
+| `KOMOOT_EMAIL` | one shared Komoot account, as an alternative to riders signing in themselves |
 | `KOMOOT_PASSWORD` | |
 
-With PostgreSQL nothing is kept on disk: turn `persistence.enabled` off.
+`DOMESTIQUE_SOURCE_DSN` and `DOMESTIQUE_ENCRYPTION_KEY` are set by the chart
+from the Secrets named above; they do not go in `envFrom`.
 
 ## Values
 
@@ -88,8 +139,10 @@ With PostgreSQL nothing is kept on disk: turn `persistence.enabled` off.
 | `replicaCount` | `1` | Leave at 1 — two replicas race on the state file |
 | `config` | see `values.yaml` | Rendered into a ConfigMap as the app's config file. **No secrets** |
 | `envFrom` | `[]` | Where credentials come from |
-| `persistence.enabled` | `true` | Only needed for SQLite; turn off with PostgreSQL |
-| `persistence.size` | `1Gi` | |
+| `postgresql.cluster` | `""` | CloudNativePG cluster in this namespace. **Required**, unless `existingSecret` |
+| `postgresql.existingSecret` | `""` | Any Secret holding a PostgreSQL URL; wins over `cluster` |
+| `postgresql.secretKey` | `uri` | Key within that Secret |
+| `encryptionKey.existingSecret` | `""` | Enables Komoot sign-in from the UI |
 | `ingressRoute.enabled` | `false` | Traefik `IngressRoute` |
 | `ingress.enabled` | `false` | Plain `Ingress`, as an alternative |
 | `serviceAccount.name` | release name | Vault's Kubernetes auth binds to this |

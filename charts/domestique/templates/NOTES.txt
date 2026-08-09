@@ -29,16 +29,22 @@ anything, put it behind Authelia and set:
         trusted_proxies: [<your pod CIDR>]
 {{- end }}
 
-{{ if and (not .Values.persistence.enabled) (not (hasPrefix "postgres" (dig "source" "dsn" "" .Values.config))) (not .Values.envFrom) -}}
-WARNING: persistence is off and the library is a SQLite file in the pod, so
-every route is lost on restart. Either turn persistence on, or point
-DOMESTIQUE_SOURCE_DSN at PostgreSQL.
+{{ if .Values.postgresql.existingSecret -}}
+The library is PostgreSQL, from Secret/{{ .Values.postgresql.existingSecret }}
+(key {{ .Values.postgresql.secretKey }}).
+{{- else -}}
+The library is PostgreSQL, from Secret/{{ .Values.postgresql.cluster }}-app —
+the connection string CloudNativePG publishes for cluster
+{{ .Values.postgresql.cluster }}. It follows a failover on its own.
 {{- end }}
 
-{{ if and (not .Values.envFrom) (not (hasPrefix "postgres" (dig "source" "dsn" "" .Values.config))) -}}
-Using a SQLite library at {{ .Values.config.source.dsn }}.
+Nothing is kept on disk: routes, sync state, linked head units and Komoot
+sign-ins are all rows. The pod has no volume and can be replaced freely.
 
-For PostgreSQL, set DOMESTIQUE_SOURCE_DSN from a Secret via envFrom rather than
-writing a password into values — and then turn persistence off, because nothing
-is kept on disk.
+{{ if not .Values.encryptionKey.existingSecret -}}
+Komoot sign-in from the UI is off: no encryption key, and a session would
+have to be stored unencrypted. To enable it, put a key in a Secret and set
+encryptionKey.existingSecret:
+
+    domestique keygen
 {{- end }}

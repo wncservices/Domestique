@@ -173,11 +173,15 @@ lowercased>/domestique` — so moving the mirror to a Docker Hub organisation is
 a variable change and nothing else. It is lowercased because an image reference
 may not contain uppercase and the variable is free text somebody typed.
 
-Both must be set. In a fork, neither is, and the job publishes to GHCR alone
-with a notice rather than failing. **In this repository the job fails instead**
-— after the GHCR push, so the image is not lost — because a skipped mirror is
-otherwise invisible: everything reports success and half the contract went
-unmet.
+**GHCR is the one that has to work.** It is public, it has no pull rate
+limit, the chart pulls from it and the attestation lives there. Docker Hub is
+a convenience.
+
+So: neither credential set means the mirror is off, which is a supported way
+to run — a notice, and the build passes. **One set and the other missing
+fails the build**, after the GHCR push so the image is not lost. That is
+somebody meaning to configure it and it not taking, and it is invisible
+otherwise: everything reports success while half the contract went unmet.
 
 Two ways for the credentials not to arrive, and the second is the one that bit:
 
