@@ -135,6 +135,27 @@ repository on GitHub Pages. **Bump `version` in `Chart.yaml` for any chart
 change**, or the release is skipped and the published chart silently lags the
 repository.
 
+### Two registries, one build
+
+`image.yml` pushes the same build to `ghcr.io/wncservices/domestique` and
+`docker.io/wilant/domestique` under identical tags. One `build-push-action`
+invocation with two entries in `images:` — never two builds, which would put
+two different digests behind the same tag.
+
+GHCR is canonical: it is what the chart pulls and where the provenance
+attestation is pushed. Docker Hub is a mirror and an **optional** one. It needs
+two repository secrets:
+
+| Secret | Value |
+|---|---|
+| `DOCKERHUB_USERNAME` | `wilant` |
+| `DOCKERHUB_TOKEN` | a Docker Hub access token with Read/Write |
+
+If `DOCKERHUB_TOKEN` is unset the job publishes to GHCR alone and says so in a
+notice, rather than failing. That keeps forks working. Note that `secrets` is
+not available to a step-level `if`, which is why the decision is computed into
+an output by the `registries` step.
+
 ### GHCR packages default to private
 
 A package published to GHCR for the first time is **private**, whatever the

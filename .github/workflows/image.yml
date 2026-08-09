@@ -36,20 +36,52 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
+      # Docker Hub is a mirror, and an optional one: the credentials live in
+      # repository secrets, and a fork or a repo that has not set them should
+      # still publish to GHCR rather than fail. `secrets` is not available to a
+      # step-level `if`, so the decision becomes an output here.
+      - id: registries
+        env:
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          # Hardcoded lowercase rather than ${{ github.repository }}: an image
+          # reference may not contain uppercase, and the repository is
+          # `wncservices/Domestique`. Deriving it would produce a name the
+          # registry rejects.
+          {
+            echo "images<<EOF"
+            echo "ghcr.io/wncservices/domestique"
+            if [ -n "$DOCKERHUB_TOKEN" ]; then
+              echo "docker.io/wilant/domestique"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ -n "$DOCKERHUB_TOKEN" ]; then
+            echo "mirror=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "mirror=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Docker Hub skipped::DOCKERHUB_TOKEN is not set, so the image was published to GHCR only."
+          fi
+
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - if: steps.registries.outputs.mirror == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          # Hardcoded lowercase rather than ${{ github.repository }}: an image
-          # reference may not contain uppercase, and the repository is
-          # `wncservices/Domestique`. Deriving it would produce a name the
-          # registry rejects.
-          images: ghcr.io/wncservices/domestique
+          # One build, pushed to both registries under the same tags, so the
+          # two can never drift apart.
+          images: ${{ steps.registries.outputs.images }}
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -76,6 +108,9 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # Attested against GHCR only. Both registries hold the same digest, so
+      # the attestation covers the Docker Hub copy too — but GHCR is where the
+      # referrers API is dependable, so that is where it is pushed.
       - uses: actions/attest-build-provenance@v3
         with:
           subject-name: ghcr.io/wncservices/domestique
@@ -85,17 +120,32 @@ jobs:
       # A private package pushes fine and only fails when something tries to
       # pull it — in the cluster, days later. GHCR has no API for visibility,
       # so this cannot be fixed here; a warning is the most CI can do.
-      - name: Warn if the package is not publicly pullable
+      - name: Warn if the image is not publicly pullable
+        env:
+          MIRROR: ${{ steps.registries.outputs.mirror }}
         run: |
-          token=$(curl -sf "https://ghcr.io/token?scope=repository:wncservices/domestique:pull&service=ghcr.io" \
+          ghcr_token=$(curl -sf "https://ghcr.io/token?scope=repository:wncservices/domestique:pull&service=ghcr.io" \
             | python3 -c 'import sys,json; print(json.load(sys.stdin).get("token",""))' 2>/dev/null || true)
           code=$(curl -s -o /dev/null -w '%{http_code}' \
-            -H "Authorization: Bearer ${token}" \
+            -H "Authorization: Bearer ${ghcr_token}" \
             https://ghcr.io/v2/wncservices/domestique/tags/list)
           if [ "$code" != "200" ]; then
-            echo "::warning title=Package is private::Anonymous pull returned ${code}. Set the package public under Package settings → Danger Zone → Change visibility, or deployments need an imagePullSecret."
+            echo "::warning title=GHCR package is private::Anonymous pull returned ${code}. Set the package public under Package settings → Danger Zone → Change visibility, or deployments need an imagePullSecret."
           else
-            echo "Anonymous pull works."
+            echo "GHCR: anonymous pull works."
+          fi
+
+          if [ "$MIRROR" = "true" ]; then
+            hub_token=$(curl -sf "https://auth.docker.io/token?scope=repository:wilant/domestique:pull&service=registry.docker.io" \
+              | python3 -c 'import sys,json; print(json.load(sys.stdin).get("token",""))' 2>/dev/null || true)
+            code=$(curl -s -o /dev/null -w '%{http_code}' \
+              -H "Authorization: Bearer ${hub_token}" \
+              https://registry-1.docker.io/v2/wilant/domestique/tags/list)
+            if [ "$code" != "200" ]; then
+              echo "::warning title=Docker Hub repository is private::Anonymous pull returned ${code}. Make wilant/domestique public in its Docker Hub settings."
+            else
+              echo "Docker Hub: anonymous pull works."
+            fi
           fi
 
       - name: Summary

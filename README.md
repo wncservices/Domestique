@@ -180,6 +180,15 @@ usually needs no chart edit.
 | Binaries | tag `v<x.y.z>` | a GitHub Release with tarballs |
 | Helm chart | any change under `charts/` on `main` | a chart release + `oci://ghcr.io/wncservices/charts/domestique` |
 
+Each image is pushed to **two registries from one build**, under the same tags:
+
+```
+ghcr.io/wncservices/domestique     # canonical — what the chart pulls
+docker.io/wilant/domestique        # mirror
+```
+
+Same digest either way, so they cannot drift apart.
+
 `:dev` moves under you. Pin `:sha-<short>` when you want to know exactly what is
 running. Every image is built for amd64 and arm64 and carries a provenance
 attestation.
