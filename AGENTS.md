@@ -148,7 +148,7 @@ an organisation-level variable and secret:
 | Kind | Name | Value |
 |---|---|---|
 | Variable | `DOCKERHUB_USERNAME` | the Docker Hub namespace, e.g. `wilant` |
-| Secret | `DOCKERHUB_PASSWORD` | a Docker Hub access token with Read/Write |
+| Secret | `DOCKERHUB_TOKEN` | a Docker Hub access token with Read/Write |
 
 The namespace is **derived from the variable**, not hardcoded — `docker.io/<var
 lowercased>/domestique` — so moving the mirror to a Docker Hub organisation is

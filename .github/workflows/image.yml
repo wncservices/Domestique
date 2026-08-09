@@ -42,15 +42,15 @@ jobs:
       # an output here.
       #
       # The namespace comes from the DOCKERHUB_USERNAME *variable* (org-level),
-      # the credential from the DOCKERHUB_PASSWORD *secret*. Both must be set:
+      # the credential from the DOCKERHUB_TOKEN *secret*. Both must be set:
       # a password with no namespace has nowhere to push.
       - id: registries
         env:
           DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
-          DOCKERHUB_PASSWORD: ${{ secrets.DOCKERHUB_PASSWORD }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
           hub_path=""
-          if [ -n "$DOCKERHUB_PASSWORD" ] && [ -n "$DOCKERHUB_USERNAME" ]; then
+          if [ -n "$DOCKERHUB_TOKEN" ] && [ -n "$DOCKERHUB_USERNAME" ]; then
             # An image reference may not contain uppercase, and the variable is
             # free text somebody typed.
             hub_path="$(printf '%s' "$DOCKERHUB_USERNAME" | tr '[:upper:]' '[:lower:]')/domestique"
@@ -75,8 +75,18 @@ jobs:
             echo "mirror=true" >> "$GITHUB_OUTPUT"
             echo "Mirroring to docker.io/${hub_path}"
           else
+            # Name which one is empty. "Credentials missing" sent us round the
+            # loop three times over a variable-versus-secret mix-up; the value
+            # is a secret, the fact of its absence is not.
+            missing=""
+            [ -z "$DOCKERHUB_USERNAME" ] && missing="the DOCKERHUB_USERNAME variable"
+            if [ -z "$DOCKERHUB_TOKEN" ]; then
+              [ -n "$missing" ] && missing="${missing} and "
+              missing="${missing}the DOCKERHUB_TOKEN secret"
+            fi
             echo "mirror=false" >> "$GITHUB_OUTPUT"
-            echo "::notice title=Docker Hub skipped::Set the DOCKERHUB_USERNAME variable and the DOCKERHUB_PASSWORD secret to mirror there. Published to GHCR only."
+            echo "missing=${missing}" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Docker Hub skipped::Empty: ${missing}. Published to GHCR only."
           fi
 
       - uses: docker/login-action@v3
@@ -89,7 +99,7 @@ jobs:
         uses: docker/login-action@v3
         with:
           username: ${{ vars.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_PASSWORD }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - id: meta
         uses: docker/metadata-action@v5
@@ -139,6 +149,7 @@ jobs:
         env:
           MIRROR: ${{ steps.registries.outputs.mirror }}
           HUB_PATH: ${{ steps.registries.outputs.hub_path }}
+          MISSING: ${{ steps.registries.outputs.missing }}
         run: |
           ghcr_token=$(curl -sf "https://ghcr.io/token?scope=repository:wncservices/domestique:pull&service=ghcr.io" \
             | python3 -c 'import sys,json; print(json.load(sys.stdin).get("token",""))' 2>/dev/null || true)
@@ -173,7 +184,7 @@ jobs:
           # Deliberately last, after the image and its attestation are safely
           # pushed: the failure is the report, not a reason to lose the build.
           if [ "$MIRROR" != "true" ] && [ "$GITHUB_REPOSITORY" = "wncservices/Domestique" ]; then
-            echo "::error title=Docker Hub mirror was skipped::The image reached GHCR but not Docker Hub. Check that the DOCKERHUB_USERNAME variable and DOCKERHUB_PASSWORD secret exist AND that their organisation-level Repository access includes this public repository."
+            echo "::error title=Docker Hub mirror was skipped::The image reached GHCR but not Docker Hub. Empty: ${MISSING}. Either it does not exist, or it is organisation-level and its Repository access excludes this public repository."
             exit 1
           fi
 
