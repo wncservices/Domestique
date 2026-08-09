@@ -22,10 +22,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       # chart-releaser pushes the packaged chart to a GitHub Release and the
-      # index to the gh-pages branch.
+      # index to the gh-pages branch. That is the whole job — the chart is
+      # published one way, as a Helm repository on Pages.
       contents: write
-      # And the same chart goes to GHCR as an OCI artifact.
-      packages: write
     steps:
       - uses: actions/checkout@v7
         with:
@@ -51,20 +50,3 @@ jobs:
           skip_existing: true
         env:
           CR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      # The same chart as an OCI artifact, which is how newer setups consume
-      # charts and needs no Pages at all.
-      - name: Publish to GHCR
-        run: |
-          version="$(helm show chart charts/domestique | awk '/^version:/ {print $2}')"
-          if helm show chart "oci://ghcr.io/${{ github.repository_owner }}/charts/domestique" \
-               --version "$version" >/dev/null 2>&1; then
-            echo "chart $version is already in GHCR; nothing to push"
-            exit 0
-          fi
-
-          echo "${{ secrets.GITHUB_TOKEN }}" | \
-            helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
-          helm package charts/domestique --destination /tmp/charts
-          helm push "/tmp/charts/domestique-${version}.tgz" \
-            "oci://ghcr.io/${{ github.repository_owner }}/charts"
