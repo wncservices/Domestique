@@ -2,10 +2,10 @@ import ui from '@nuxt/ui/vue-plugin'
 import { createApp } from 'vue'
 import { createRouter, createWebHistory } from 'vue-router'
 import App from './App.vue'
-import { followSystemColorScheme } from './color-mode'
+import { applyColorMode, initColorMode } from './color-mode'
 import './styles.css'
 
-// domestique is a single screen, but Nuxt UI's link components import
+// Domestique is a single screen, but Nuxt UI's link components import
 // vue-router unconditionally, so it needs a router to exist. One catch-all
 // route keeps a refresh on any path rendering the app rather than blanking.
 const router = createRouter({
@@ -13,6 +13,9 @@ const router = createRouter({
   routes: [{ path: '/:pathMatch(.*)*', component: App }],
 })
 
-followSystemColorScheme()
+initColorMode()
 
 createApp(App).use(router).use(ui).mount('#app')
+
+// Again, after mount: see applyColorMode.
+applyColorMode()

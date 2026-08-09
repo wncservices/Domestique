@@ -67,7 +67,7 @@ async function remove() {
 </script>
 
 <template>
-  <UCard variant="outline" class="flex flex-col" :ui="{ body: 'flex-1 flex flex-col gap-3' }">
+  <UCard variant="outline" class="app-card-interactive flex flex-col" :ui="{ body: 'flex-1 flex flex-col gap-3' }">
     <TrackPreview :slug="route.slug" />
 
     <div>

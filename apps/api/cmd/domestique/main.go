@@ -583,6 +583,8 @@ func runServe(src *source.DB, cfg *config.Config, store state.Store, addr, webDi
 		Log:      log,
 	}
 
+	srv.KomootEnabled = cfg.Komoot.Enabled
+
 	if cfg.Komoot.Enabled {
 		client, err := komootClient()
 		if err != nil {

@@ -5,6 +5,7 @@ import { useToast } from '@nuxt/ui/composables'
 import { api } from '@/api/client'
 import type { KomootTour } from '@/api/types'
 
+const props = defineProps<{ state: 'unconfigured' | 'ready' }>()
 const emit = defineEmits<{ imported: [] }>()
 
 const toast = useToast()
@@ -16,8 +17,8 @@ const selected = ref<string[]>([])
 const loading = ref(true)
 const importing = ref(false)
 const error = ref('')
-/** Komoot is optional; when it is not configured we hide rather than nag. */
-const available = ref(true)
+/** Whether the panel can actually do anything, as opposed to being shown. */
+const ready = computed(() => props.state === 'ready')
 
 const importable = computed(() => tours.value.filter((t) => !t.imported))
 const canImport = computed(() => selected.value.length > 0 && !importing.value)
@@ -79,13 +80,9 @@ async function load() {
   try {
     tours.value = await api.komootTours()
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    // 501 means "not configured" — that is not an error worth shouting about.
-    if (message.includes('not configured')) {
-      available.value = false
-    } else {
-      error.value = message
-    }
+    // Availability now comes from /api/config, so anything reaching here is a
+    // real failure rather than the feature being switched off.
+    error.value = err instanceof Error ? err.message : String(err)
   } finally {
     loading.value = false
   }
@@ -119,11 +116,14 @@ async function runImport() {
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  if (ready.value) load()
+  else loading.value = false
+})
 </script>
 
 <template>
-  <UCard v-if="available" variant="outline">
+  <UCard variant="outline">
     <template #header>
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
@@ -132,7 +132,8 @@ onMounted(load)
             Import from Komoot
           </h2>
           <p class="text-sm text-muted">
-            <template v-if="loading">Loading tours…</template>
+            <template v-if="!ready">Enabled, but not signed in</template>
+            <template v-else-if="loading">Loading tours…</template>
             <template v-else-if="!tours.length">No planned routes in that account.</template>
             <template v-else>
               {{ importable.length }} of {{ tours.length }} not imported yet
@@ -145,6 +146,7 @@ onMounted(load)
             color="neutral"
             variant="ghost"
             :loading="loading"
+            :disabled="!ready"
             @click="load"
           >
             Refresh
@@ -170,8 +172,19 @@ onMounted(load)
       class="mb-4"
     />
 
+    <!-- Enabled but not signed in. Saying so beats hiding the panel: the
+         feature was deliberately switched on, and the gap is two env vars. -->
+    <UAlert
+      v-if="!ready"
+      color="neutral"
+      variant="subtle"
+      icon="i-lucide-key-round"
+      title="Komoot is enabled but not signed in"
+      description="Set KOMOOT_EMAIL and KOMOOT_PASSWORD in the environment and restart. Running locally, put them in a .env file next to compose.yaml."
+    />
+
     <UTable
-      v-if="tours.length || loading"
+      v-else-if="tours.length || loading"
       :data="tours"
       :columns="columns"
       :loading="loading"

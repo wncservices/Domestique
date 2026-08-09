@@ -300,8 +300,8 @@ func TestConfigEndpoint(t *testing.T) {
 	h.expectStatus(resp, http.StatusOK)
 
 	var body struct {
-		Source   string `json:"source"`
-		Writable bool   `json:"writable"`
+		Source string `json:"source"`
+		Komoot string `json:"komoot"`
 	}
 	h.decode(resp, &body)
 
@@ -310,8 +310,10 @@ func TestConfigEndpoint(t *testing.T) {
 	if !strings.HasPrefix(body.Source, "sqlite database") {
 		t.Errorf("source = %q, want it to name the engine", body.Source)
 	}
-	if !body.Writable {
-		t.Error("writable = false; the library is always a database")
+	// The frontend decides whether to render the Komoot panel from this, so an
+	// empty string here hides a feature rather than merely losing a label.
+	if body.Komoot != "disabled" {
+		t.Errorf("komoot = %q, want disabled", body.Komoot)
 	}
 }
 

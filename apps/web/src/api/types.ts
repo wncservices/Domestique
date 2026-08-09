@@ -71,8 +71,13 @@ export interface KomootImportResult {
 export interface AppConfig {
   /** Human-readable description of the route source. */
   source: string
-  /** True when the source accepts uploads; false for a git-backed directory. */
-  writable: boolean
+  /**
+   * Komoot import: "disabled" when nobody asked for it, "unconfigured" when
+   * it is on but the credentials are missing, "ready" when it can be used.
+   * The middle state is the one worth surfacing — it looks identical to
+   * "disabled" unless the UI says otherwise.
+   */
+  komoot: 'disabled' | 'unconfigured' | 'ready'
 }
 
 export interface Route {

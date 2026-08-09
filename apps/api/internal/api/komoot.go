@@ -179,8 +179,13 @@ func parseKomootTag(tag string) (string, bool) {
 }
 
 func (s *Server) komootDisabled(w http.ResponseWriter) {
-	writeJSON(w, http.StatusNotImplemented, map[string]string{
-		"error": "Komoot import is not configured — set komoot.enabled and " +
-			"provide KOMOOT_EMAIL and KOMOOT_PASSWORD",
-	})
+	msg := "Komoot import is not configured — set komoot.enabled and " +
+		"provide KOMOOT_EMAIL and KOMOOT_PASSWORD"
+	if s.KomootEnabled {
+		// Enabled but no client: the credentials are what is missing, and
+		// saying so saves rereading the config that is already correct.
+		msg = "Komoot import is enabled but could not sign in — set " +
+			"KOMOOT_EMAIL and KOMOOT_PASSWORD in the environment"
+	}
+	writeJSON(w, http.StatusNotImplemented, map[string]string{"error": msg})
 }
