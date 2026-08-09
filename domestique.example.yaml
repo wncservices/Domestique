@@ -60,8 +60,16 @@ auth:
 # Import routes from a Komoot account.
 #
 # Komoot has no public API; this uses the same undocumented endpoints their
-# apps do, so expect it to break occasionally. Credentials come from
-# KOMOOT_EMAIL and KOMOOT_PASSWORD in the environment — never put them here.
+# apps do, so expect it to break occasionally.
+#
+# With this on, each rider signs in to their own Komoot from the web UI and
+# imports from their own account. That needs DOMESTIQUE_ENCRYPTION_KEY in the
+# environment (`domestique keygen` prints one); without it the sign-in form is
+# not offered, because the session would have to be stored unencrypted.
+#
+# KOMOOT_EMAIL and KOMOOT_PASSWORD still work as one shared account for the
+# whole deployment. A rider's own sign-in takes precedence over it. Either way
+# the credentials come from the environment — never put them here.
 komoot:
   enabled: false
   # Also import rides you have recorded, not just routes you have plotted.

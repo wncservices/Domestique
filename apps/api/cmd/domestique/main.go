@@ -27,7 +27,9 @@ import (
 	"github.com/wncservices/domestique/apps/api/internal/fitcourse"
 	"github.com/wncservices/domestique/apps/api/internal/gpx"
 	"github.com/wncservices/domestique/apps/api/internal/komoot"
+	"github.com/wncservices/domestique/apps/api/internal/komootlink"
 	"github.com/wncservices/domestique/apps/api/internal/model"
+	"github.com/wncservices/domestique/apps/api/internal/secrets"
 	"github.com/wncservices/domestique/apps/api/internal/source"
 	"github.com/wncservices/domestique/apps/api/internal/state"
 	"github.com/wncservices/domestique/apps/api/internal/sync"
@@ -47,6 +49,7 @@ commands:
   komoot     list or import routes from a Komoot account
   fit        export a route as a Garmin FIT course
   serve      run the HTTP API and the web UI
+  keygen     print a new DOMESTIQUE_ENCRYPTION_KEY
   version    print the version
 
 common flags:
@@ -108,7 +111,7 @@ func run(args []string) error {
 	var positional []string
 
 	switch cmd {
-	case "validate", "plan", "push", "state", "serve", "import", "komoot", "fit":
+	case "validate", "plan", "push", "state", "serve", "import", "komoot", "fit", "keygen":
 		// Go's flag package stops at the first positional argument, so
 		// `fit <slug> --cues` would silently ignore --cues. Parse in a loop,
 		// peeling off positionals, so flags and arguments can interleave in
@@ -125,6 +128,12 @@ func run(args []string) error {
 		return nil
 	default:
 		return fmt.Errorf("unknown command %q (try: domestique help)", cmd)
+	}
+
+	// Before the config and the database: generating a key is what you do
+	// *before* there is a deployment to point it at.
+	if cmd == "keygen" {
+		return runKeygen()
 	}
 
 	cfg, err := config.Load(*configPath)
@@ -169,6 +178,19 @@ func run(args []string) error {
 	case "fit":
 		return runFIT(src, positional, *out, *cues)
 	}
+	return nil
+}
+
+// runKeygen prints a fresh encryption key.
+//
+// To stdout on its own line, so it can be piped straight into a secret store
+// without a human copying it through a terminal scrollback.
+func runKeygen() error {
+	key, err := secrets.GenerateKey()
+	if err != nil {
+		return err
+	}
+	fmt.Println(key)
 	return nil
 }
 
@@ -584,6 +606,24 @@ func runServe(src *source.DB, cfg *config.Config, store state.Store, addr, webDi
 	}
 
 	srv.KomootEnabled = cfg.Komoot.Enabled
+	srv.Connector = api.LiveKomoot{}
+
+	// Riders connect their own Komoot from the UI. Without an encryption key
+	// the store refuses to save anything, which is the intended outcome: a
+	// session token belongs in the database encrypted or not at all.
+	box, err := secrets.FromEnv()
+	switch {
+	case errors.Is(err, secrets.ErrNoKey):
+		log.Warn("no encryption key: riders cannot connect Komoot from the UI",
+			"hint", "set "+secrets.EnvKey+" (generate one with `domestique keygen`)")
+	case err != nil:
+		return err
+	}
+	links, err := komootlink.UseDB(src.Conn(), src.DSN(), box)
+	if err != nil {
+		return err
+	}
+	srv.KomootLinks = links
 
 	if cfg.Komoot.Enabled {
 		client, err := komootClient()

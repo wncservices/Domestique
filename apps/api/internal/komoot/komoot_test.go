@@ -345,3 +345,96 @@ func TestTourPlannedHelper(t *testing.T) {
 		t.Error("recorded ride reported as planned")
 	}
 }
+
+// TestRequestsAcceptHAL guards a bug that only showed up against the real
+// API: the v007 endpoints are HAL, and a bare `application/json` gets 406 Not
+// Acceptable. The fake server here answers anything, so nothing else in this
+// file would ever notice.
+func TestRequestsAcceptHAL(t *testing.T) {
+	var accepts []string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		accepts = append(accepts, r.Header.Get("Accept"))
+		// Reject the way Komoot does, so a regression fails here rather than
+		// in production.
+		if !strings.Contains(r.Header.Get("Accept"), "application/hal+json") {
+			w.WriteHeader(http.StatusNotAcceptable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/hal+json")
+		_, _ = w.Write([]byte(`{"_embedded":{"tours":[]}}`))
+	}))
+	defer server.Close()
+
+	client := New()
+	client.BaseV6, client.BaseV7 = server.URL, server.URL
+	client.LoginWithToken("user-1", "token-1")
+
+	if _, err := client.Tours(false); err != nil {
+		t.Fatalf("Tours failed: %v", err)
+	}
+	if len(accepts) == 0 {
+		t.Fatal("no request was made")
+	}
+	for _, accept := range accepts {
+		if !strings.Contains(accept, "application/hal+json") {
+			t.Errorf("Accept = %q, want it to offer application/hal+json", accept)
+		}
+	}
+}
+
+// Komoot returns coordinates two ways depending on whether it honours the
+// undocumented `format=coordinate_array` parameter. Understanding only one
+// shape fails every tour with a decode error while the account is fine.
+func TestGPXAcceptsBothCoordinateShapes(t *testing.T) {
+	bodies := map[string]string{
+		"coordinate arrays": `{"name":"Ronde","_embedded":{"coordinates":{"items":[
+			[50.79,2.81,60.5,0],[50.80,2.82,72.0,1000]]}}}`,
+		"objects": `{"name":"Ronde","_embedded":{"coordinates":{"items":[
+			{"lat":50.79,"lng":2.81,"alt":60.5,"t":0},
+			{"lat":50.80,"lng":2.82,"alt":72.0,"t":1000}]}}}`,
+		"objects without altitude": `{"name":"Ronde","_embedded":{"coordinates":{"items":[
+			{"lat":50.79,"lng":2.81},{"lat":50.80,"lng":2.82}]}}}`,
+	}
+
+	for name, body := range bodies {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/hal+json")
+				_, _ = w.Write([]byte(body))
+			}))
+			defer server.Close()
+
+			c := New()
+			c.BaseV6, c.BaseV7 = server.URL, server.URL
+			c.LoginWithToken("user-1", "token-1")
+
+			raw, err := c.GPX("42")
+			if err != nil {
+				t.Fatalf("GPX failed: %v", err)
+			}
+			for _, want := range []string{`lat="50.79"`, `lon="2.82"`, "<name>Ronde</name>"} {
+				if !strings.Contains(string(raw), want) {
+					t.Errorf("GPX missing %s:\n%s", want, raw)
+				}
+			}
+		})
+	}
+}
+
+// A tour with no usable points must say so rather than produce an empty GPX
+// that fails later, somewhere less obvious.
+func TestGPXRejectsAnEmptyTrack(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"name":"Empty","_embedded":{"coordinates":{"items":[]}}}`))
+	}))
+	defer server.Close()
+
+	c := New()
+	c.BaseV6, c.BaseV7 = server.URL, server.URL
+	c.LoginWithToken("user-1", "token-1")
+
+	if _, err := c.GPX("42"); err == nil {
+		t.Error("an empty tour produced a GPX")
+	}
+}

@@ -3,7 +3,8 @@ import { computed, h, onMounted, ref, resolveComponent } from 'vue'
 import type { TableColumn } from '@nuxt/ui'
 import { useToast } from '@nuxt/ui/composables'
 import { api } from '@/api/client'
-import type { KomootTour } from '@/api/types'
+import type { KomootConnection, KomootTour } from '@/api/types'
+import KomootConnect from '@/components/KomootConnect.vue'
 
 const props = defineProps<{ state: 'unconfigured' | 'ready' }>()
 const emit = defineEmits<{ imported: [] }>()
@@ -17,8 +18,27 @@ const selected = ref<string[]>([])
 const loading = ref(true)
 const importing = ref(false)
 const error = ref('')
-/** Whether the panel can actually do anything, as opposed to being shown. */
-const ready = computed(() => props.state === 'ready')
+const connection = ref<KomootConnection>({ connected: false, shared: false, canConnect: false })
+
+/** Whether there is an account to list tours from, as opposed to a panel on
+ *  screen inviting you to connect one. */
+const ready = computed(() => props.state === 'ready' && connection.value.connected)
+
+async function loadConnection() {
+  try {
+    connection.value = await api.komootConnection()
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : String(err)
+  }
+}
+
+/** After connecting or disconnecting: the tour list belongs to the account. */
+async function connectionChanged(next: KomootConnection) {
+  connection.value = next
+  tours.value = []
+  selected.value = []
+  if (next.connected) await load()
+}
 
 const importable = computed(() => tours.value.filter((t) => !t.imported))
 const canImport = computed(() => selected.value.length > 0 && !importing.value)
@@ -88,12 +108,35 @@ async function load() {
   }
 }
 
+/** How many tours to ask for per request.
+ *
+ *  Not a server limit — a limit on how long one request may reasonably take.
+ *  Importing thirty in one call meant the browser waited minutes for the first
+ *  response byte and reported a network error; the import had in fact been
+ *  running. Batches keep every request short and let the count move. */
+const BATCH = 5
+
+const progress = ref(0)
+
 async function runImport() {
   importing.value = true
   error.value = ''
+  progress.value = 0
+
+  const ids = [...selected.value]
+  const imported: string[] = []
+  const skippedEntries: [string, string][] = []
+
   try {
-    const result = await api.komootImport(selected.value)
-    const skipped = Object.entries(result.skipped)
+    for (let i = 0; i < ids.length; i += BATCH) {
+      const batch = await api.komootImport(ids.slice(i, i + BATCH))
+      imported.push(...batch.imported)
+      skippedEntries.push(...Object.entries(batch.skipped))
+      progress.value = Math.min(i + BATCH, ids.length)
+    }
+
+    const result = { imported, skipped: Object.fromEntries(skippedEntries) }
+    const skipped = skippedEntries
 
     toast.add({
       title: `Imported ${result.imported.length} route${result.imported.length === 1 ? '' : 's'}`,
@@ -101,9 +144,19 @@ async function runImport() {
       icon: 'i-lucide-download',
       color: result.imported.length ? 'success' : 'warning',
     })
-    // Say *why* each was skipped; "skipped 3" alone is useless.
+    // Say *why*; "skipped 30" alone is useless. Group identical reasons —
+    // when every tour fails it fails for one reason, and thirty copies of it
+    // buries the one line worth reading.
     if (skipped.length) {
-      error.value = skipped.map(([id, reason]) => `${id}: ${reason}`).join(' · ')
+      const byReason = new Map<string, string[]>()
+      for (const [id, reason] of skipped) {
+        byReason.set(reason, [...(byReason.get(reason) ?? []), id])
+      }
+      error.value = [...byReason.entries()]
+        .map(([reason, ids]) =>
+          ids.length > 3 ? `${ids.length} tours: ${reason}` : `${ids.join(', ')}: ${reason}`,
+        )
+        .join(' · ')
     }
 
     selected.value = []
@@ -113,11 +166,13 @@ async function runImport() {
     error.value = err instanceof Error ? err.message : String(err)
   } finally {
     importing.value = false
+    progress.value = 0
   }
 }
 
-onMounted(() => {
-  if (ready.value) load()
+onMounted(async () => {
+  await loadConnection()
+  if (ready.value) await load()
   else loading.value = false
 })
 </script>
@@ -132,9 +187,14 @@ onMounted(() => {
             Import from Komoot
           </h2>
           <p class="text-sm text-muted">
-            <template v-if="!ready">Enabled, but not signed in</template>
+            <template v-if="!connection.connected">Sign in to import your routes</template>
             <template v-else-if="loading">Loading tours…</template>
             <template v-else-if="!tours.length">No planned routes in that account.</template>
+            <!-- "0 of 30 not imported yet" is true and reads like a failure.
+                 The all-done case is the one that needs its own sentence. -->
+            <template v-else-if="!importable.length">
+              All {{ tours.length }} imported
+            </template>
             <template v-else>
               {{ importable.length }} of {{ tours.length }} not imported yet
             </template>
@@ -157,7 +217,10 @@ onMounted(() => {
             :disabled="!canImport"
             @click="runImport"
           >
-            Import{{ selected.length ? ` ${selected.length}` : '' }}
+            <template v-if="importing && progress">
+              Importing {{ progress }}/{{ selected.length }}
+            </template>
+            <template v-else>Import{{ selected.length ? ` ${selected.length}` : '' }}</template>
           </UButton>
         </div>
       </div>
@@ -172,26 +235,17 @@ onMounted(() => {
       class="mb-4"
     />
 
-    <!-- Enabled but not signed in. Saying so beats hiding the panel: the
-         feature was deliberately switched on, and the gap is two env vars. -->
-    <UAlert
-      v-if="!ready"
-      color="neutral"
-      variant="subtle"
-      icon="i-lucide-key-round"
-      title="Komoot is enabled but not signed in"
-      description="Set KOMOOT_EMAIL and KOMOOT_PASSWORD in the environment and restart. Running locally, put them in a .env file next to compose.yaml."
-    />
+    <KomootConnect :connection="connection" class="mb-4" @changed="connectionChanged" />
 
     <UTable
-      v-else-if="tours.length || loading"
+      v-if="ready && (tours.length || loading)"
       :data="tours"
       :columns="columns"
       :loading="loading"
       :ui="{ td: 'text-sm' }"
     />
     <UEmpty
-      v-else
+      v-else-if="ready"
       icon="i-lucide-mountain-snow"
       title="Nothing to import"
       description="Plan a route in Komoot and refresh."

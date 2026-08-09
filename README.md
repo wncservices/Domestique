@@ -57,10 +57,9 @@ That runs against the same PostgreSQL a deployment uses, so local and deployed
 differ as little as possible. `just docker-test`, `just docker-check` and
 `just docker-build` do the rest without a local toolchain either.
 
-Komoot import is **on** in that stack, so the panel is there to try. It needs
-an account: put `KOMOOT_EMAIL` and `KOMOOT_PASSWORD` in a `.env` file next to
-`compose.yaml` (gitignored) and `just up` picks them up. Without them the panel
-still appears and says it is enabled but not signed in, rather than vanishing.
+Komoot import is **on** in that stack: open the app and sign in to Komoot from
+the panel. The compose file carries a throwaway encryption key so that works
+out of the box.
 
 With Go and Node installed, which is quicker:
 
@@ -126,8 +125,18 @@ komoot:
   enabled: true
 ```
 
-with `KOMOOT_EMAIL` and `KOMOOT_PASSWORD` in the environment. Then pick tours
-in the web UI, or:
+Each rider then signs in to their own Komoot from the web UI and imports from
+their own account. That needs an encryption key, because a sign-in has to be
+kept somewhere:
+
+```bash
+domestique keygen        # prints a DOMESTIQUE_ENCRYPTION_KEY
+```
+
+Without one the sign-in form is not offered at all — a session is stored
+encrypted or not stored. `KOMOOT_EMAIL` and `KOMOOT_PASSWORD` remain an
+alternative: one shared account for the whole deployment, which a rider's own
+sign-in overrides. On the command line, which has no session to sign in with:
 
 ```bash
 just komoot list

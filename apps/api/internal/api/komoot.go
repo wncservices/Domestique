@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sync"
 
 	"github.com/wncservices/domestique/apps/api/internal/auth"
 	"github.com/wncservices/domestique/apps/api/internal/komoot"
@@ -39,12 +40,13 @@ func (s *Server) handleKomootTours(w http.ResponseWriter, r *http.Request) {
 	if !s.require(w, r, auth.PermKomootSync) {
 		return
 	}
-	if s.Komoot == nil {
+	client := s.komootFor(r)
+	if client == nil {
 		s.komootDisabled(w)
 		return
 	}
 
-	tours, err := s.Komoot.Tours(s.Config.Komoot.IncludeRecorded)
+	tours, err := client.Tours(s.Config.Komoot.IncludeRecorded)
 	if err != nil {
 		// Komoot's API is undocumented and moves; surface it as an upstream
 		// problem rather than a fault in this app.
@@ -74,7 +76,8 @@ func (s *Server) handleKomootImport(w http.ResponseWriter, r *http.Request) {
 	if !s.require(w, r, auth.PermKomootSync) {
 		return
 	}
-	if s.Komoot == nil {
+	client := s.komootFor(r)
+	if client == nil {
 		s.komootDisabled(w)
 		return
 	}
@@ -93,7 +96,7 @@ func (s *Server) handleKomootImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tours, err := s.Komoot.Tours(s.Config.Komoot.IncludeRecorded)
+	tours, err := client.Tours(s.Config.Komoot.IncludeRecorded)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
@@ -107,25 +110,41 @@ func (s *Server) handleKomootImport(w http.ResponseWriter, r *http.Request) {
 	existing := s.komootTagIndex()
 	result := komootImportResult{Imported: []string{}, Skipped: map[string]string{}}
 
+	// Decide what to fetch before fetching anything, so the slow part is a
+	// single pass with nothing else interleaved.
+	wanted := make([]string, 0, len(body.TourIDs))
 	for _, id := range body.TourIDs {
-		tour, known := byID[id]
-		if !known {
+		switch {
+		case !contains(byID, id):
 			result.Skipped[id] = "not in this Komoot account"
-			continue
-		}
-		// Re-importing would create a duplicate route, and the rider would
-		// have to work out which of the two their device is following.
-		if existing[id] {
+		case existing[id]:
+			// Re-importing would create a duplicate route, and the rider
+			// would have to work out which their device is following.
 			result.Skipped[id] = "already imported"
-			continue
+		default:
+			wanted = append(wanted, id)
 		}
+	}
 
-		raw, err := s.Komoot.GPX(id)
-		if err != nil {
+	// One round trip to Komoot per tour, and they were sequential: thirty
+	// tours meant thirty waits end to end, with no response byte written
+	// until the last one finished. Browsers give up on that. Fetching a few
+	// at a time turns it into a handful of waits.
+	//
+	// Small on purpose — this is somebody's personal account on an
+	// undocumented API, not a service to saturate.
+	const parallel = 4
+	downloads := fetchTours(client, wanted, parallel)
+
+	for _, id := range wanted {
+		got := downloads[id]
+		if got.err != nil {
 			// One bad tour must not abandon the rest of the batch.
-			result.Skipped[id] = err.Error()
+			result.Skipped[id] = got.err.Error()
 			continue
 		}
+		tour := byID[id]
+		raw := got.gpx
 
 		if _, err := s.Source.Create(source.CreateRequest{
 			Filename:   tour.Name + ".gpx",
@@ -144,6 +163,49 @@ func (s *Server) handleKomootImport(w http.ResponseWriter, r *http.Request) {
 	s.logger().Info("komoot import finished",
 		"user", identity.User, "imported", len(result.Imported), "skipped", len(result.Skipped))
 	writeJSON(w, http.StatusOK, result)
+}
+
+func contains(byID map[string]komoot.Tour, id string) bool {
+	_, ok := byID[id]
+	return ok
+}
+
+type tourDownload struct {
+	gpx []byte
+	err error
+}
+
+// fetchTours downloads several tours at once, bounded by parallel.
+//
+// Order is irrelevant here — the caller walks its own list afterwards — but
+// the results map must be complete, so every id gets an entry even when the
+// fetch failed.
+func fetchTours(client KomootImporter, ids []string, parallel int) map[string]tourDownload {
+	out := make(map[string]tourDownload, len(ids))
+	if len(ids) == 0 {
+		return out
+	}
+
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, parallel)
+
+	for _, id := range ids {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			gpx, err := client.GPX(id)
+
+			mu.Lock()
+			out[id] = tourDownload{gpx: gpx, err: err}
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	return out
 }
 
 // komootTagIndex maps Komoot tour ids already in the library.

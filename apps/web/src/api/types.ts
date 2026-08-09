@@ -139,3 +139,15 @@ export interface TrackResponse {
   /** [lat, lon] pairs in track order. */
   points: [number, number][]
 }
+
+/** One rider's connection to their own Komoot account. */
+export interface KomootConnection {
+  connected: boolean
+  email?: string
+  displayName?: string
+  updatedAt?: string
+  /** True when the deployment supplies the account, so it cannot be unlinked here. */
+  shared: boolean
+  /** False when there is no encryption key: nothing could be stored, so nothing is offered. */
+  canConnect: boolean
+}

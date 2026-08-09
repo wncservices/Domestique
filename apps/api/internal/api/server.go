@@ -21,6 +21,7 @@ import (
 	"github.com/wncservices/domestique/apps/api/internal/config"
 	"github.com/wncservices/domestique/apps/api/internal/fitcourse"
 	"github.com/wncservices/domestique/apps/api/internal/gpx"
+	"github.com/wncservices/domestique/apps/api/internal/komootlink"
 	"github.com/wncservices/domestique/apps/api/internal/model"
 	"github.com/wncservices/domestique/apps/api/internal/source"
 	"github.com/wncservices/domestique/apps/api/internal/state"
@@ -41,6 +42,13 @@ type Server struct {
 	Log      *slog.Logger
 	// Komoot imports routes from a Komoot account. Nil disables the feature.
 	Komoot KomootImporter
+
+	// KomootLinks holds each rider's own Komoot connection, made through the
+	// UI. Nil disables connecting, but not the environment-configured client.
+	KomootLinks *komootlink.Store
+
+	// Connector signs riders in to Komoot and resumes their stored sessions.
+	Connector KomootConnector
 
 	// KomootEnabled is what the operator asked for, which is not the same as
 	// what they got: the config can turn Komoot on while the credentials are
@@ -82,6 +90,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/routes/{slug...}", s.handleUpdate)
 	mux.HandleFunc("DELETE /api/routes/{slug...}", s.handleDelete)
 
+	mux.HandleFunc("GET /api/komoot/connection", s.handleKomootConnection)
+	mux.HandleFunc("POST /api/komoot/connection", s.handleKomootConnect)
+	mux.HandleFunc("DELETE /api/komoot/connection", s.handleKomootDisconnect)
 	mux.HandleFunc("GET /api/komoot/tours", s.handleKomootTours)
 	mux.HandleFunc("POST /api/komoot/import", s.handleKomootImport)
 
@@ -251,10 +262,12 @@ func (s *Server) komootState() string {
 	switch {
 	case !s.KomootEnabled:
 		return "disabled"
-	case s.Komoot == nil:
-		return "unconfigured"
-	default:
+	case s.Komoot != nil || s.KomootLinks.CanStore():
+		// Either the deployment has an account, or a rider can connect their
+		// own. Both are usable, and the panel belongs on screen.
 		return "ready"
+	default:
+		return "unconfigured"
 	}
 }
 
