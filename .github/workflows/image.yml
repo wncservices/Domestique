@@ -36,32 +36,47 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
-      # Docker Hub is a mirror, and an optional one: the credentials live in
-      # repository secrets, and a fork or a repo that has not set them should
-      # still publish to GHCR rather than fail. `secrets` is not available to a
-      # step-level `if`, so the decision becomes an output here.
+      # Docker Hub is a mirror, and an optional one: a fork, or a repo that has
+      # not set the credentials, should still publish to GHCR rather than fail.
+      # `secrets` is not available to a step-level `if`, so the decision becomes
+      # an output here.
+      #
+      # The namespace comes from the DOCKERHUB_USERNAME *variable* (org-level),
+      # the credential from the DOCKERHUB_PASSWORD *secret*. Both must be set:
+      # a password with no namespace has nowhere to push.
       - id: registries
         env:
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+          DOCKERHUB_PASSWORD: ${{ secrets.DOCKERHUB_PASSWORD }}
         run: |
-          # Hardcoded lowercase rather than ${{ github.repository }}: an image
-          # reference may not contain uppercase, and the repository is
-          # `wncservices/Domestique`. Deriving it would produce a name the
-          # registry rejects.
+          hub_path=""
+          if [ -n "$DOCKERHUB_PASSWORD" ] && [ -n "$DOCKERHUB_USERNAME" ]; then
+            # An image reference may not contain uppercase, and the variable is
+            # free text somebody typed.
+            hub_path="$(printf '%s' "$DOCKERHUB_USERNAME" | tr '[:upper:]' '[:lower:]')/domestique"
+          fi
+
           {
             echo "images<<EOF"
+            # Hardcoded lowercase rather than ${{ github.repository }}: an image
+            # reference may not contain uppercase, and the repository is
+            # `wncservices/Domestique`. Deriving it would produce a name the
+            # registry rejects.
             echo "ghcr.io/wncservices/domestique"
-            if [ -n "$DOCKERHUB_TOKEN" ]; then
-              echo "docker.io/wilant/domestique"
+            if [ -n "$hub_path" ]; then
+              echo "docker.io/${hub_path}"
             fi
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-          if [ -n "$DOCKERHUB_TOKEN" ]; then
+          echo "hub_path=${hub_path}" >> "$GITHUB_OUTPUT"
+
+          if [ -n "$hub_path" ]; then
             echo "mirror=true" >> "$GITHUB_OUTPUT"
+            echo "Mirroring to docker.io/${hub_path}"
           else
             echo "mirror=false" >> "$GITHUB_OUTPUT"
-            echo "::notice title=Docker Hub skipped::DOCKERHUB_TOKEN is not set, so the image was published to GHCR only."
+            echo "::notice title=Docker Hub skipped::Set the DOCKERHUB_USERNAME variable and the DOCKERHUB_PASSWORD secret to mirror there. Published to GHCR only."
           fi
 
       - uses: docker/login-action@v3
@@ -73,8 +88,8 @@ jobs:
       - if: steps.registries.outputs.mirror == 'true'
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
 
       - id: meta
         uses: docker/metadata-action@v5
@@ -123,6 +138,7 @@ jobs:
       - name: Warn if the image is not publicly pullable
         env:
           MIRROR: ${{ steps.registries.outputs.mirror }}
+          HUB_PATH: ${{ steps.registries.outputs.hub_path }}
         run: |
           ghcr_token=$(curl -sf "https://ghcr.io/token?scope=repository:wncservices/domestique:pull&service=ghcr.io" \
             | python3 -c 'import sys,json; print(json.load(sys.stdin).get("token",""))' 2>/dev/null || true)
@@ -136,13 +152,13 @@ jobs:
           fi
 
           if [ "$MIRROR" = "true" ]; then
-            hub_token=$(curl -sf "https://auth.docker.io/token?scope=repository:wilant/domestique:pull&service=registry.docker.io" \
+            hub_token=$(curl -sf "https://auth.docker.io/token?scope=repository:${HUB_PATH}:pull&service=registry.docker.io" \
               | python3 -c 'import sys,json; print(json.load(sys.stdin).get("token",""))' 2>/dev/null || true)
             code=$(curl -s -o /dev/null -w '%{http_code}' \
               -H "Authorization: Bearer ${hub_token}" \
-              https://registry-1.docker.io/v2/wilant/domestique/tags/list)
+              "https://registry-1.docker.io/v2/${HUB_PATH}/tags/list")
             if [ "$code" != "200" ]; then
-              echo "::warning title=Docker Hub repository is private::Anonymous pull returned ${code}. Make wilant/domestique public in its Docker Hub settings."
+              echo "::warning title=Docker Hub repository is private::Anonymous pull returned ${code}. Make ${HUB_PATH} public in its Docker Hub settings."
             else
               echo "Docker Hub: anonymous pull works."
             fi
