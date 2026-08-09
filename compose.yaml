@@ -1,0 +1,94 @@
+# Everything needed to run and test Domestique locally, so the only thing you
+# have to install is Docker.
+#
+# `db` and `app` are the running application. `go` and `node` are toolchain
+# containers behind the `tools` profile, so they never start with `up` — they
+# exist so `just test` and `just build` can run without a local Go or Node.
+
+name: domestique
+
+services:
+  db:
+    # Same major as the cluster, so local and deployed disagree as little as
+    # possible.
+    image: postgres:17
+    environment:
+      POSTGRES_USER: domestique
+      POSTGRES_PASSWORD: domestique
+      POSTGRES_DB: domestique
+    ports:
+      # Not 5432: that is usually already taken by something else.
+      - "15432:5432"
+    volumes:
+      - db:/var/lib/postgresql/data
+      # Creates the separate database the test suite uses. Runs once, when the
+      # volume is first initialised.
+      - ./docker/postgres-init.d:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U domestique -d domestique"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  app:
+    build:
+      context: .
+      args:
+        VERSION: local
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # The point of running against PostgreSQL locally: it is what a
+      # deployment uses, and the two engines do differ.
+      DOMESTIQUE_SOURCE_DSN: postgres://domestique:domestique@db:5432/domestique?sslmode=disable
+      # Set these in a .env file to try the Komoot import. Never commit it.
+      KOMOOT_EMAIL: ${KOMOOT_EMAIL:-}
+      KOMOOT_PASSWORD: ${KOMOOT_PASSWORD:-}
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+    healthcheck:
+      # Without this, `up --wait` returns as soon as the process starts, which
+      # is well before it has migrated the database and can answer.
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/api/health"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+
+  # --- toolchain containers (profile: tools) ---
+
+  go:
+    profiles: [tools]
+    image: golang:1.26.5-alpine
+    working_dir: /src
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # The Go suite skips its PostgreSQL cases unless this is set, and a skip
+      # looks exactly like a pass. It points at a *separate* database: the
+      # tests drop their tables, and the app's routes live next door.
+      DOMESTIQUE_TEST_POSTGRES: postgres://domestique:domestique@db:5432/domestique_test?sslmode=disable
+      GOFLAGS: -buildvcs=false
+      GOCACHE: /cache/go-build
+      GOMODCACHE: /cache/go-mod
+    volumes:
+      - .:/src
+      - gocache:/cache
+
+  node:
+    profiles: [tools]
+    image: node:24.19.0-alpine
+    working_dir: /src
+    volumes:
+      - .:/src
+      # node_modules stays in the container: the host may be a different
+      # platform, and native binaries do not survive the trip.
+      - nodemodules:/src/node_modules
+
+volumes:
+  db:
+  gocache:
+  nodemodules:

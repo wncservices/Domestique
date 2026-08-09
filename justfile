@@ -1,6 +1,48 @@
 default:
     @just --list
 
+# --- in Docker (the only thing you need installed is Docker) ---
+#
+# Everything below this heading runs in a container, against the same
+# PostgreSQL a deployment uses. The native recipes further down are the same
+# work with a local Go and Node, which is quicker if you have them.
+
+# Start PostgreSQL and the app on http://localhost:8080. Builds on first run.
+up *ARGS:
+    docker compose up --build --wait {{ARGS}}
+    @echo "→ http://localhost:8080"
+
+# Stop everything. The database survives; use `just reset` to drop it.
+down:
+    docker compose down
+
+# Stop everything and throw the database away.
+reset:
+    docker compose down --volumes
+
+logs *ARGS:
+    docker compose logs --follow {{ARGS}}
+
+# The CLI inside the running app, same database. e.g. `just cli state`
+cli *ARGS:
+    docker compose exec app domestique {{ARGS}}
+
+# The Go suite, against a real PostgreSQL. Same command CI runs.
+docker-test *ARGS:
+    docker compose run --rm go go test ./apps/api/... {{ARGS}}
+
+# Typecheck, vet and test — everything CI checks, in containers.
+docker-check:
+    docker compose run --rm go sh -c 'gofmt -l apps/api | tee /dev/stderr | (! read)'
+    docker compose run --rm go go vet ./apps/api/...
+    docker compose run --rm go go test ./apps/api/...
+    docker compose run --rm node sh -c 'npm ci && npm run typecheck'
+
+# Frontend bundle + a binary in ./bin. Built for Linux, so a Mac cannot run it.
+docker-build:
+    docker compose run --rm node sh -c 'npm ci && npm run build'
+    docker compose run --rm go go build -o bin/domestique ./apps/api/cmd/domestique
+
 # --- setup ---
 
 install:

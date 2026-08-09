@@ -45,13 +45,27 @@ GPX files are personal location data — a route usually starts at somebody's fr
 
 ## Quick start
 
+Only Docker installed:
+
+```bash
+just up            # PostgreSQL + the app on :8080
+just logs
+just down          # `just reset` also drops the database
+```
+
+That runs against the same PostgreSQL a deployment uses, so local and deployed
+differ as little as possible. `just docker-test`, `just docker-check` and
+`just docker-build` do the rest without a local toolchain either.
+
+With Go and Node installed, which is quicker:
+
 ```bash
 just install
 just build
 just demo          # a local SQLite library with the example route loaded
 ```
 
-Then open <http://localhost:8080>.
+Either way, open <http://localhost:8080>.
 
 For frontend work run `just api` and `just web` side by side and use the Vite server on :5173.
 
