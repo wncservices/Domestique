@@ -190,6 +190,11 @@ onMounted(async () => {
             <template v-if="!connection.connected">Sign in to import your routes</template>
             <template v-else-if="loading">Loading tours…</template>
             <template v-else-if="!tours.length">No planned routes in that account.</template>
+            <!-- "0 of 30 not imported yet" is true and reads like a failure.
+                 The all-done case is the one that needs its own sentence. -->
+            <template v-else-if="!importable.length">
+              All {{ tours.length }} imported
+            </template>
             <template v-else>
               {{ importable.length }} of {{ tours.length }} not imported yet
             </template>
