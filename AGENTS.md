@@ -200,6 +200,45 @@ just fit SLUG     # write a route out as a FIT course for a real device
 
 For UI work run `just api` and `just web` side by side and use :5173.
 
+Everything above needs a local Go and Node. The container equivalents need only
+Docker, and run against PostgreSQL rather than SQLite:
+
+```bash
+just up           # PostgreSQL + the app on :8080 (`down`, `reset`, `logs`)
+just cli ARGS     # the CLI inside the running app, same database
+just docker-test  # the Go suite, PostgreSQL cases included
+just docker-check # gofmt, vet, go test, web typecheck
+just docker-build # frontend bundle + a Linux binary in ./bin
+```
+
+`compose.yaml` gives the test suite its **own** database (`domestique_test`).
+That is not tidiness: the suite drops and recreates its tables, so sharing one
+database would make `just docker-test` silently wipe whatever `just up` is
+holding.
+
+## The name is Domestique; the identifiers are not
+
+Capitalised wherever it is a name — prose, page title, UI heading, CLI banner,
+GPX creator. Everything a machine parses stays lowercase, and has to:
+
+- an OCI image reference and an npm package name may not contain uppercase;
+- a Helm chart name becomes a Kubernetes object name (RFC 1123, lowercase);
+- a Go module path with a capital is escaped as `!d` in the module cache.
+
+So the image name in `image.yml` is **hardcoded** as
+`ghcr.io/wncservices/domestique` rather than derived from
+`${{ github.repository }}` — the repository is `wncservices/Domestique`, and
+deriving it would produce a reference the registry rejects. Do not "simplify"
+it back.
+
+## Toolchain versions
+
+Node and Go versions are pinned in three places that must agree: `.tool-versions`
+(asdf/mise), `.nvmrc` (CI, via `node-version-file`), and the image tags in
+`Dockerfile` and `compose.yaml`. Node tracks the **LTS** line, not Current.
+Changing one and not the others is how CI and the image end up on different
+majors.
+
 ## Architecture
 
 Desired state is whatever the source offers; observed state is a JSON file recording what each
