@@ -155,10 +155,22 @@ lowercased>/domestique` — so moving the mirror to a Docker Hub organisation is
 a variable change and nothing else. It is lowercased because an image reference
 may not contain uppercase and the variable is free text somebody typed.
 
-Both must be set. With either missing the job publishes to GHCR alone and says
-so in a notice rather than failing, which keeps forks working. `secrets` is not
-available to a step-level `if`, which is why the decision is computed into an
-output by the `registries` step.
+Both must be set. In a fork, neither is, and the job publishes to GHCR alone
+with a notice rather than failing. **In this repository the job fails instead**
+— after the GHCR push, so the image is not lost — because a skipped mirror is
+otherwise invisible: everything reports success and half the contract went
+unmet.
+
+Two ways for the credentials not to arrive, and the second is the one that bit:
+
+- they do not exist; or
+- they exist at organisation level but their **Repository access** excludes
+  this repo. An organisation secret defaults to *Private repositories*, and
+  this repository is public, so it is handed nothing. Set the access to *All
+  repositories*, or list this one explicitly.
+
+`secrets` is not available to a step-level `if`, which is why the decision is
+computed into an output by the `registries` step.
 
 ### GHCR packages default to private
 
