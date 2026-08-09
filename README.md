@@ -168,7 +168,9 @@ junction — a route planner that knows the roads does this better.
 There is a Helm chart in `charts/domestique`, published on every change:
 
 ```bash
-helm install domestique oci://ghcr.io/wncservices/charts/domestique \
+helm repo add domestique https://wncservices.github.io/Domestique
+helm repo update
+helm install domestique domestique/domestique \
   --namespace domestique --create-namespace
 ```
 
@@ -192,7 +194,7 @@ usually needs no chart edit.
 | Container image, dev | every merge to `main` | `:dev`, `:sha-<short>` |
 | Container image, release | tag `v<x.y.z>` | `:x.y.z`, `:x.y`, `:x`, `:latest` |
 | Binaries | tag `v<x.y.z>` | a GitHub Release with tarballs |
-| Helm chart | any change under `charts/` on `main` | a chart release + `oci://ghcr.io/wncservices/charts/domestique` |
+| Helm chart | any change under `charts/` on `main` | a GitHub Release + the Helm repo at `wncservices.github.io/Domestique` |
 
 Each image is pushed to **two registries from one build**, under the same tags:
 

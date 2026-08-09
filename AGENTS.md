@@ -15,7 +15,7 @@ route data**:
 |---|---|
 | `apps/api/` | Go service — CLI (`validate`/`plan`/`push`/`state`/`import`) and HTTP API (`serve`) |
 | `apps/web/` | Vue 3 + Vite + TypeScript frontend |
-| `charts/domestique/` | The Helm chart, published to GHCR and GitHub Pages on every change |
+| `charts/domestique/` | The Helm chart, published as a Helm repo on GitHub Pages |
 | `examples/routes/` | One sample route so the demo has something to show. Not a library |
 | `docs/` | Design notes, including the research behind the provider choices |
 
@@ -148,8 +148,9 @@ accepts the file** — `domestique fit <slug>` writes one out for exactly that.
 ## The Helm chart
 
 `charts/domestique` is published by `.github/workflows/chart-release.yml` on any
-push to `main` that touches it — to GHCR as an OCI artifact and to the Helm
-repository on GitHub Pages. **Bump `version` in `Chart.yaml` for any chart
+push to `main` that touches it, as a Helm repository on GitHub Pages
+(`https://wncservices.github.io/Domestique`). **That URL follows the
+repository name**, capital D included — the lowercase one 404s. **Bump `version` in `Chart.yaml` for any chart
 change**, or the release is skipped and the published chart silently lags the
 repository.
 

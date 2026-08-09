@@ -1,24 +1,18 @@
 # Domestique Helm chart
 
-Deploys [Domestique](https://github.com/wncservices/domestique) — a shared
+Deploys [Domestique](https://github.com/wncservices/Domestique) — a shared
 cycling route library that syncs to Garmin and Wahoo head units.
 
 ## Install
 
-From the OCI registry, which needs no repository setup:
-
 ```bash
-helm install domestique oci://ghcr.io/wncservices/charts/domestique \
+helm repo add domestique https://wncservices.github.io/Domestique
+helm repo update
+helm install domestique domestique/domestique \
   --namespace domestique --create-namespace
 ```
 
-Or from the Helm repository:
-
-```bash
-helm repo add domestique https://wncservices.github.io/domestique
-helm repo update
-helm install domestique domestique/domestique --namespace domestique --create-namespace
-```
+The URL carries the repository's capital D — the lowercase one 404s.
 
 **PostgreSQL is required** — see below; the chart refuses to render without
 one. With nothing else set you get a single pod, no ingress and **no
