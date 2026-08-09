@@ -135,6 +135,23 @@ repository on GitHub Pages. **Bump `version` in `Chart.yaml` for any chart
 change**, or the release is skipped and the published chart silently lags the
 repository.
 
+### GHCR packages default to private
+
+A package published to GHCR for the first time is **private**, whatever the
+visibility of the repository that published it. Both of ours started that way,
+which means `docker pull` and `helm install` fail for everyone — including the
+cluster, unless you fit an imagePullSecret.
+
+There is no API for this. GitHub exposes package visibility only in the UI, so
+it is a one-time manual step per package, under *Package settings → Danger Zone
+→ Change visibility*:
+
+- [image](https://github.com/orgs/wncservices/packages/container/domestique/settings)
+- [chart](https://github.com/orgs/wncservices/packages/container/charts%2Fdomestique/settings)
+
+Check it after adding any new published artifact. Nothing in CI will tell you;
+the push succeeds and the pull is what fails, later, somewhere else.
+
 Two defaults are deliberately unsafe-but-obvious rather than safe-but-silent:
 authentication is `none` and the NOTES warn loudly about it, because a chart
 that quietly required config nobody set would be worse. Same for persistence.

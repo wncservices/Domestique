@@ -82,6 +82,22 @@ jobs:
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
 
+      # A private package pushes fine and only fails when something tries to
+      # pull it — in the cluster, days later. GHCR has no API for visibility,
+      # so this cannot be fixed here; a warning is the most CI can do.
+      - name: Warn if the package is not publicly pullable
+        run: |
+          token=$(curl -sf "https://ghcr.io/token?scope=repository:wncservices/domestique:pull&service=ghcr.io" \
+            | python3 -c 'import sys,json; print(json.load(sys.stdin).get("token",""))' 2>/dev/null || true)
+          code=$(curl -s -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer ${token}" \
+            https://ghcr.io/v2/wncservices/domestique/tags/list)
+          if [ "$code" != "200" ]; then
+            echo "::warning title=Package is private::Anonymous pull returned ${code}. Set the package public under Package settings → Danger Zone → Change visibility, or deployments need an imagePullSecret."
+          else
+            echo "Anonymous pull works."
+          fi
+
       - name: Summary
         run: |
           {
