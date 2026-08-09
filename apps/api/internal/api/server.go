@@ -41,6 +41,12 @@ type Server struct {
 	Log      *slog.Logger
 	// Komoot imports routes from a Komoot account. Nil disables the feature.
 	Komoot KomootImporter
+
+	// KomootEnabled is what the operator asked for, which is not the same as
+	// what they got: the config can turn Komoot on while the credentials are
+	// missing, leaving Komoot nil. Keeping both apart lets the UI say "set
+	// KOMOOT_EMAIL" instead of hiding a feature somebody deliberately enabled.
+	KomootEnabled bool
 	// WebFS is the built frontend. Nil serves an API-only server.
 	WebFS fs.FS
 	// TargetFactory builds the provider adapter for an account. Nil uses the
@@ -159,9 +165,8 @@ func roleLabel(r auth.Role) string {
 
 type configDTO struct {
 	Source string `json:"source"`
-	// Writable is always true now that the library is always a database. Kept
-	// so the frontend contract does not churn; drop both together.
-	Writable bool `json:"writable"`
+	// Komoot is one of "disabled", "unconfigured" or "ready".
+	Komoot string `json:"komoot"`
 }
 
 type accountDTO struct {
@@ -232,7 +237,25 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, configDTO{Source: s.Source.Describe(), Writable: true})
+	writeJSON(w, http.StatusOK, configDTO{
+		Source: s.Source.Describe(),
+		Komoot: s.komootState(),
+	})
+}
+
+// komootState separates "nobody asked for Komoot" from "somebody asked and it
+// could not start". Hiding the second looks identical to the first, which is
+// how a missing environment variable turns into a feature that silently is
+// not there.
+func (s *Server) komootState() string {
+	switch {
+	case !s.KomootEnabled:
+		return "disabled"
+	case s.Komoot == nil:
+		return "unconfigured"
+	default:
+		return "ready"
+	}
 }
 
 type meDTO struct {

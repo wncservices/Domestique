@@ -10,10 +10,18 @@ import (
 
 	"github.com/wncservices/domestique/apps/api/internal/accounts"
 	"github.com/wncservices/domestique/apps/api/internal/config"
+	"github.com/wncservices/domestique/apps/api/internal/komoot"
 	"github.com/wncservices/domestique/apps/api/internal/model"
 	"github.com/wncservices/domestique/apps/api/internal/source"
 	"github.com/wncservices/domestique/apps/api/internal/state"
 )
+
+// stubKomoot stands in for a signed-in client. What it returns does not
+// matter here; only that it is non-nil.
+type stubKomoot struct{}
+
+func (stubKomoot) Tours(bool) ([]komoot.Tour, error) { return nil, nil }
+func (stubKomoot) GPX(string) ([]byte, error)        { return nil, nil }
 
 func testServer(t *testing.T, src *source.DB) http.Handler {
 	t.Helper()
@@ -74,8 +82,8 @@ func TestConfigDescribesTheLibrary(t *testing.T) {
 	rec := do(dbServer(t), http.MethodGet, "/api/config")
 
 	var body struct {
-		Source   string `json:"source"`
-		Writable bool   `json:"writable"`
+		Source string `json:"source"`
+		Komoot string `json:"komoot"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
@@ -83,8 +91,62 @@ func TestConfigDescribesTheLibrary(t *testing.T) {
 	if !strings.HasPrefix(body.Source, "sqlite database") {
 		t.Errorf("source = %q, want it to name the engine", body.Source)
 	}
-	if !body.Writable {
-		t.Error("writable = false; the library is always a database now")
+	if body.Komoot != "disabled" {
+		t.Errorf("komoot = %q, want disabled when nobody asked for it", body.Komoot)
+	}
+}
+
+// TestConfigSeparatesKomootOffFromKomootBroken is the distinction the whole
+// state field exists for. Both cases refuse an import; only one of them is
+// something the operator should be told to fix, and collapsing them is how a
+// missing environment variable becomes a feature that silently is not there.
+func TestConfigSeparatesKomootOffFromKomootBroken(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		enabled  bool
+		importer KomootImporter
+		want     string
+	}{
+		{"nobody asked", false, nil, "disabled"},
+		{"asked, no credentials", true, nil, "unconfigured"},
+		{"asked and signed in", true, stubKomoot{}, "ready"},
+		// Config off but a client somehow present: the config wins, because
+		// that is what the operator asked for.
+		{"off but client present", false, stubKomoot{}, "disabled"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, err := source.OpenDB(filepath.Join(t.TempDir(), "test.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { db.Close() })
+
+			store, err := state.Open(filepath.Join(t.TempDir(), "state.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			srv := &Server{
+				Source:        db,
+				Store:         store,
+				Config:        &config.Config{},
+				Accounts:      linkedStore(t, db),
+				Komoot:        tc.importer,
+				KomootEnabled: tc.enabled,
+			}
+
+			rec := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/config", nil))
+
+			var body struct {
+				Komoot string `json:"komoot"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if body.Komoot != tc.want {
+				t.Errorf("komoot = %q, want %q", body.Komoot, tc.want)
+			}
+		})
 	}
 }
 

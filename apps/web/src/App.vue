@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { api } from '@/api/client'
 import type { Account, AppConfig, Me, Permission, PlanResponse, Route } from '@/api/types'
 import AccountsPanel from '@/components/AccountsPanel.vue'
+import ColorModeToggle from '@/components/ColorModeToggle.vue'
 import KomootPanel from '@/components/KomootPanel.vue'
 import PlanPanel from '@/components/PlanPanel.vue'
 import RouteCard from '@/components/RouteCard.vue'
@@ -27,8 +28,8 @@ function can(permission: Permission): boolean {
   return me.value?.permissions.includes(permission) ?? false
 }
 
-const canUpload = computed(() => can('routes:upload') && (config.value?.writable ?? false))
-const canImportKomoot = computed(() => can('komoot:import') && (config.value?.writable ?? false))
+const canUpload = computed(() => can('routes:upload'))
+const canImportKomoot = computed(() => can('komoot:import'))
 const canPush = computed(() => can('sync:push'))
 const canManageAccounts = computed(() => can('accounts:manage'))
 
@@ -44,6 +45,14 @@ const roleColor = computed(() => {
 })
 
 const totalDistance = computed(() => routes.value.reduce((sum, r) => sum + r.distanceM, 0) / 1000)
+const totalAscent = computed(() => routes.value.reduce((sum, r) => sum + r.ascentM, 0))
+
+const stats = computed(() => [
+  { label: 'Routes', value: String(routes.value.length), icon: 'i-lucide-route' },
+  { label: 'Distance', value: `${totalDistance.value.toFixed(0)} km`, icon: 'i-lucide-ruler' },
+  { label: 'Ascent', value: `${Math.round(totalAscent.value).toLocaleString()} m`, icon: 'i-lucide-mountain' },
+  { label: 'Head units', value: String(accounts.value.length), icon: 'i-lucide-watch' },
+])
 
 const visibleRoutes = computed(() => {
   const needle = search.value.trim().toLowerCase()
@@ -98,50 +107,64 @@ onMounted(refresh)
 
 <template>
   <UApp>
-    <UContainer class="flex max-w-5xl flex-col gap-6 py-8">
-      <header class="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <h1 class="text-2xl font-semibold tracking-tight text-highlighted">Domestique</h1>
-          <p class="text-sm text-muted">Shared route library, carried to every head unit.</p>
-          <p v-if="config" class="mt-1 font-mono text-xs text-dimmed">
-            {{ config.source }}
-            <span v-if="!config.writable"> · read-only, add routes by committing them</span>
-          </p>
-        </div>
-
-        <div class="flex flex-col items-end gap-2">
-          <div v-if="me" class="flex items-center gap-2">
-            <UBadge v-if="me.authenticated" :color="roleColor" variant="subtle" icon="i-lucide-user">
-              {{ me.name || me.user }} · {{ me.role }}
-            </UBadge>
-            <UTooltip
-              v-else
-              text="Anyone who can reach this page has full access. Put it behind Authelia before exposing it."
-            >
-              <UBadge color="warning" variant="subtle" icon="i-lucide-shield-off">
-                no login required
-              </UBadge>
-            </UTooltip>
+    <!-- Sticky, because the library scrolls and the identity badge is the
+         thing you want to be sure of before you push anything. -->
+    <div class="app-header sticky top-0 z-20">
+      <UContainer class="flex max-w-5xl items-center justify-between gap-4 py-3">
+        <div class="flex min-w-0 items-center gap-3">
+          <span
+            class="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary"
+            aria-hidden="true"
+          >
+            <UIcon name="i-lucide-bike" class="size-5" />
+          </span>
+          <div class="min-w-0">
+            <h1 class="truncate text-base font-semibold tracking-tight text-highlighted">
+              Domestique
+            </h1>
+            <p class="truncate text-xs text-muted">
+              Shared route library, carried to every head unit.
+            </p>
           </div>
-
-          <dl class="flex gap-6">
-            <div>
-              <dt class="text-[0.7rem] uppercase tracking-wide text-dimmed">Routes</dt>
-              <dd class="text-xl tabular-nums text-highlighted">{{ routes.length }}</dd>
-            </div>
-            <div>
-              <dt class="text-[0.7rem] uppercase tracking-wide text-dimmed">Distance</dt>
-              <dd class="text-xl tabular-nums text-highlighted">
-                {{ totalDistance.toFixed(0) }} km
-              </dd>
-            </div>
-            <div>
-              <dt class="text-[0.7rem] uppercase tracking-wide text-dimmed">Head units</dt>
-              <dd class="text-xl tabular-nums text-highlighted">{{ accounts.length }}</dd>
-            </div>
-          </dl>
         </div>
-      </header>
+
+        <div class="flex shrink-0 items-center gap-2">
+          <UBadge
+            v-if="me?.authenticated"
+            :color="roleColor"
+            variant="subtle"
+            icon="i-lucide-user"
+            class="hidden sm:inline-flex"
+          >
+            {{ me.name || me.user }} · {{ me.role }}
+          </UBadge>
+          <UTooltip
+            v-else-if="me"
+            text="Anyone who can reach this page has full access. Put it behind Authelia before exposing it."
+          >
+            <UBadge color="warning" variant="subtle" icon="i-lucide-shield-off">
+              <span class="hidden sm:inline">no login required</span>
+              <span class="sm:hidden">open</span>
+            </UBadge>
+          </UTooltip>
+
+          <ColorModeToggle />
+        </div>
+      </UContainer>
+    </div>
+
+    <UContainer class="flex max-w-5xl flex-col gap-6 py-8">
+      <section class="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <div v-for="stat in stats" :key="stat.label" class="app-card px-4 py-3">
+          <div class="flex items-center gap-1.5 text-[0.7rem] uppercase tracking-wide text-dimmed">
+            <UIcon :name="stat.icon" class="size-3.5" />
+            {{ stat.label }}
+          </div>
+          <div class="mt-1 truncate text-2xl tabular-nums text-highlighted">
+            {{ stat.value }}
+          </div>
+        </div>
+      </section>
 
       <UAlert
         v-if="error"
@@ -172,15 +195,19 @@ onMounted(refresh)
       />
 
       <AccountsPanel
-      :accounts="accounts"
-      :me="me"
-      :can-manage="canManageAccounts"
-      @changed="refresh"
-    />
+        :accounts="accounts"
+        :me="me"
+        :can-manage="canManageAccounts"
+        @changed="refresh"
+      />
 
-    <UploadPanel v-if="canUpload" :accounts="accounts" :me="me" @uploaded="refresh" />
+      <UploadPanel v-if="canUpload" :accounts="accounts" :me="me" @uploaded="refresh" />
 
-      <KomootPanel v-if="canImportKomoot" @imported="refresh" />
+      <KomootPanel
+        v-if="canImportKomoot && config && config.komoot !== 'disabled'"
+        :state="config.komoot"
+        @imported="refresh"
+      />
 
       <section>
         <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
@@ -201,11 +228,7 @@ onMounted(refresh)
           v-else-if="!routes.length"
           icon="i-lucide-route"
           title="No routes yet"
-          :description="
-            config?.writable
-              ? 'Upload a GPX above, or import from Komoot.'
-              : 'Commit a route.gpx to the routes repo and refresh.'
-          "
+          description="Upload a GPX above, or import from Komoot."
         />
 
         <UEmpty
@@ -227,6 +250,13 @@ onMounted(refresh)
           />
         </div>
       </section>
+      <footer
+        v-if="config"
+        class="flex flex-wrap items-center justify-between gap-2 border-t border-default pt-4 text-xs text-dimmed"
+      >
+        <span class="font-mono">{{ config.source }}</span>
+        <span>Domestique</span>
+      </footer>
     </UContainer>
   </UApp>
 </template>

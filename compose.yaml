@@ -42,9 +42,15 @@ services:
       # The point of running against PostgreSQL locally: it is what a
       # deployment uses, and the two engines do differ.
       DOMESTIQUE_SOURCE_DSN: postgres://domestique:domestique@db:5432/domestique?sslmode=disable
-      # Set these in a .env file to try the Komoot import. Never commit it.
+      # Komoot is enabled in docker/domestique.yaml, so the panel is there to
+      # test. It needs these two; put them in a .env file next to this one
+      # (gitignored) and they are picked up automatically. Without them the
+      # panel appears and says it cannot sign in, which is the honest state.
       KOMOOT_EMAIL: ${KOMOOT_EMAIL:-}
       KOMOOT_PASSWORD: ${KOMOOT_PASSWORD:-}
+    volumes:
+      # The image ships no config; this is what turns Komoot on locally.
+      - ./docker/domestique.yaml:/app/domestique.yaml:ro
     ports:
       - "8080:8080"
     restart: unless-stopped

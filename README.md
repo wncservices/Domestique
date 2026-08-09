@@ -57,6 +57,11 @@ That runs against the same PostgreSQL a deployment uses, so local and deployed
 differ as little as possible. `just docker-test`, `just docker-check` and
 `just docker-build` do the rest without a local toolchain either.
 
+Komoot import is **on** in that stack, so the panel is there to try. It needs
+an account: put `KOMOOT_EMAIL` and `KOMOOT_PASSWORD` in a `.env` file next to
+`compose.yaml` (gitignored) and `just up` picks them up. Without them the panel
+still appears and says it is enabled but not signed in, rather than vanishing.
+
 With Go and Node installed, which is quicker:
 
 ```bash
