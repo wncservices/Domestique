@@ -164,6 +164,19 @@ jobs:
             fi
           fi
 
+          # In *this* repository the mirror is not optional, and a skipped
+          # mirror is invisible: the job pushes to GHCR and reports success. It
+          # already happened once — an organisation secret defaults to
+          # "Private repositories", and this repository is public, so the
+          # credentials silently never arrived.
+          #
+          # Deliberately last, after the image and its attestation are safely
+          # pushed: the failure is the report, not a reason to lose the build.
+          if [ "$MIRROR" != "true" ] && [ "$GITHUB_REPOSITORY" = "wncservices/Domestique" ]; then
+            echo "::error title=Docker Hub mirror was skipped::The image reached GHCR but not Docker Hub. Check that the DOCKERHUB_USERNAME variable and DOCKERHUB_PASSWORD secret exist AND that their organisation-level Repository access includes this public repository."
+            exit 1
+          fi
+
       - name: Summary
         run: |
           {
