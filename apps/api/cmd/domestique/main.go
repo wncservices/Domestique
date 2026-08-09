@@ -605,6 +605,11 @@ func runServe(src *source.DB, cfg *config.Config, store state.Store, addr, webDi
 		Log:      log,
 	}
 
+	srv.LandingHost = cfg.Web.LandingHost
+	if host := os.Getenv("DOMESTIQUE_LANDING_HOST"); host != "" {
+		srv.LandingHost = host
+	}
+
 	srv.KomootEnabled = cfg.Komoot.Enabled
 	srv.Connector = api.LiveKomoot{}
 

@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -57,6 +58,16 @@ type Server struct {
 	KomootEnabled bool
 	// WebFS is the built frontend. Nil serves an API-only server.
 	WebFS fs.FS
+
+	// LandingHost is the hostname that gets the logged-out page instead of
+	// the app — the apex, while the app itself lives behind Authelia on a
+	// subdomain. Empty serves the app to everyone, which is what a laptop
+	// wants.
+	//
+	// One deployment serving both is deliberate: the landing page is three
+	// screens of static content and does not earn a service of its own. If it
+	// ever does, this is the seam to split on.
+	LandingHost string
 	// TargetFactory builds the provider adapter for an account. Nil uses the
 	// real ones; tests substitute fakes, since the real adapters are stubs and
 	// a successful push would otherwise be unreachable.
@@ -847,6 +858,28 @@ func (s *Server) failLookup(w http.ResponseWriter, err error) {
 	s.fail(w, err)
 }
 
+// isLandingRequest reports whether this request should get the logged-out
+// page rather than the app.
+//
+// Matched on the Host header, and only for the root path: a request for
+// /assets/... on the apex is still a real asset, and the landing page has none
+// of its own anyway.
+func (s *Server) isLandingRequest(r *http.Request) bool {
+	if s.LandingHost == "" {
+		return false
+	}
+	if p := filepath.Clean(r.URL.Path); p != "/" && p != "." {
+		return false
+	}
+
+	// Host can carry a port, and comparison is case-insensitive.
+	host := r.Host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	return strings.EqualFold(host, s.LandingHost)
+}
+
 // spaHandler serves the built frontend, falling back to index.html so client
 // side routes survive a refresh.
 func (s *Server) spaHandler() http.Handler {
@@ -856,6 +889,15 @@ func (s *Server) spaHandler() http.Handler {
 		clean := strings.TrimPrefix(filepath.Clean(r.URL.Path), "/")
 		if clean == "." || clean == "" {
 			clean = "index.html"
+		}
+		if s.isLandingRequest(r) {
+			// Falls through to the app when the file is missing, so an
+			// unbuilt frontend degrades rather than 404s the front door.
+			if _, err := fs.Stat(s.WebFS, "landing.html"); err == nil {
+				clean = "landing.html"
+				r = r.Clone(r.Context())
+				r.URL.Path = "/landing.html"
+			}
 		}
 		if _, err := fs.Stat(s.WebFS, clean); errors.Is(err, os.ErrNotExist) {
 			r = r.Clone(r.Context())

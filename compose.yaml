@@ -53,6 +53,9 @@ services:
       # a fresh one per `up` would invalidate yesterday's connection. A
       # deployment sets its own: `domestique keygen`, then Vault.
       DOMESTIQUE_ENCRYPTION_KEY: ${DOMESTIQUE_ENCRYPTION_KEY:-ZG9tZXN0aXF1ZS1sb2NhbC1kZXYta2V5LTMyYnl0ZXM=}
+      # The apex serves the logged-out page; everything else serves the app.
+      # Locally: http://domestique.localhost:8080 vs http://localhost:8080
+      DOMESTIQUE_LANDING_HOST: domestique.localhost
     volumes:
       # The image ships no config; this is what turns Komoot on locally.
       - ./docker/domestique.yaml:/app/domestique.yaml:ro

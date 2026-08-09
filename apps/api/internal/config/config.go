@@ -44,8 +44,17 @@ type KomootConfig struct {
 // devices are written down and no way for the two to disagree. What is left is
 // what a process needs before it can reach anything — where the database is,
 // and how to recognise a user.
+// WebConfig is how the frontend is served.
+type WebConfig struct {
+	// LandingHost gets the logged-out page instead of the app — the apex,
+	// while the app lives behind the proxy on a subdomain. Empty serves the
+	// app to everyone, which is what a laptop wants.
+	LandingHost string `yaml:"landing_host,omitempty"`
+}
+
 type Config struct {
 	Source SourceConfig `yaml:"source"`
+	Web    WebConfig    `yaml:"web"`
 	Auth   auth.Config  `yaml:"auth"`
 	Komoot KomootConfig `yaml:"komoot"`
 }
