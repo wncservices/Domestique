@@ -1,0 +1,351 @@
+// Package garmin talks to Garmin Connect as one rider.
+//
+// There is no self-serve Garmin API. The official Courses API is Connect
+// Developer Program only — commercial partners — so this uses the same
+// endpoints Connect's own web app does. That has consequences worth stating
+// plainly, because they shape the whole package:
+//
+//   - It can break on any Garmin deploy. Failures are contained: a push fails,
+//     the route stays in the library, and nothing else stops working.
+//   - It is acceptable for two personal accounts and not for anything shared
+//     more widely.
+//
+// # The handshake
+//
+// Signing in is four steps, and only the first involves the password:
+//
+//  1. GET the SSO sign-in page for a CSRF token and its cookies.
+//  2. POST the credentials. A successful response embeds a service ticket.
+//  3. Exchange the ticket for an OAuth1 token, signed with Connect's own
+//     consumer key.
+//  4. Exchange the OAuth1 token for an OAuth2 bearer token.
+//
+// The bearer token is what every later call uses. It expires in about a day
+// and is refreshed from the OAuth1 token, which lasts roughly a year — so the
+// OAuth1 token is what has to be stored, and its eventual expiry is a thing to
+// notice deliberately rather than discover at the start of a ride. See
+// TokenExpiry.
+package garmin
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/cookiejar"
+	"net/url"
+	"regexp"
+	"strings"
+	"time"
+)
+
+const (
+	ssoBase     = "https://sso.garmin.com/sso"
+	connectAPI  = "https://connectapi.garmin.com"
+	connectBase = "https://connect.garmin.com"
+
+	defaultTimeout = 45 * time.Second
+	maxBody        = 8 << 20
+)
+
+// ErrMFARequired means the account has two-factor authentication on.
+//
+// Its own error because it is not a failure to fix by retrying, and the UI has
+// to say something different: this flow cannot complete an MFA challenge, and
+// pretending the password was wrong would send the rider round in circles.
+var ErrMFARequired = errors.New("garmin: this account requires two-factor authentication, which this sign-in cannot complete")
+
+// ErrBadCredentials means Garmin rejected the email or password.
+var ErrBadCredentials = errors.New("garmin: email or password not accepted")
+
+// Session is what has to be kept to stay signed in.
+//
+// OAuth1Token and OAuth1Secret are the long-lived pair; everything else is
+// derived and can be thrown away. Store these two encrypted, the way a Komoot
+// session is stored.
+type Session struct {
+	OAuth1Token  string    `json:"oauth1Token"`
+	OAuth1Secret string    `json:"oauth1Secret"`
+	DisplayName  string    `json:"displayName,omitempty"`
+	ObtainedAt   time.Time `json:"obtainedAt"`
+}
+
+// TokenExpiry is when an OAuth1 token stops working, near enough.
+//
+// Garmin does not say. A year is the observed lifetime, and the point of
+// exposing it is so a deployment can warn *before* pushes start failing —
+// silence is the failure mode that matters here.
+func (s Session) TokenExpiry() time.Time { return s.ObtainedAt.AddDate(1, 0, 0) }
+
+// Expired reports whether the stored token is past its expected life.
+func (s Session) Expired(now time.Time) bool { return now.After(s.TokenExpiry()) }
+
+// Client is one rider's Connect session.
+type Client struct {
+	HTTP *http.Client
+
+	// Base URLs, overridable so tests do not touch Garmin.
+	SSOBase    string
+	APIBase    string
+	WebBase    string
+	UserAgent  string
+	Now        func() time.Time
+	consumer   consumerKey
+	session    Session
+	bearer     string
+	bearerTill time.Time
+}
+
+// consumerKey is the OAuth1 consumer Connect's own clients use.
+type consumerKey struct {
+	Key    string
+	Secret string
+}
+
+// New returns a client that has not signed in yet.
+func New() *Client {
+	jar, _ := cookiejar.New(nil)
+	return &Client{
+		HTTP: &http.Client{
+			Timeout: defaultTimeout,
+			Jar:     jar,
+		},
+		SSOBase: ssoBase,
+		APIBase: connectAPI,
+		WebBase: connectBase,
+		// Connect's SSO rejects requests that do not look like a browser.
+		UserAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
+			"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+		Now: time.Now,
+	}
+}
+
+// Session returns what should be stored to sign in again without a password.
+func (c *Client) Session() Session { return c.session }
+
+// Resume rebuilds a client from a stored session. No password, no SSO: the
+// OAuth1 token is exchanged for a fresh bearer on the next call.
+func (c *Client) Resume(s Session) { c.session = s }
+
+var (
+	csrfPattern   = regexp.MustCompile(`name="_csrf"\s+value="([^"]+)"`)
+	ticketPattern = regexp.MustCompile(`embed\?ticket=([^"]+)"`)
+	// Connect returns 200 with an MFA page rather than an error status.
+	mfaPattern = regexp.MustCompile(`(?i)mfa-code|verificationCode|two-step`)
+)
+
+// Login signs in with a password.
+//
+// The password is used here and nowhere else: what comes back is a Session,
+// and that is what a caller stores in its place.
+func (c *Client) Login(email, password string) error {
+	if email == "" || password == "" {
+		return errors.New("garmin: email and password are both required")
+	}
+
+	csrf, err := c.signinPage()
+	if err != nil {
+		return err
+	}
+
+	ticket, err := c.submitCredentials(email, password, csrf)
+	if err != nil {
+		return err
+	}
+
+	if err := c.exchangeTicket(ticket); err != nil {
+		return err
+	}
+
+	c.session.ObtainedAt = c.now()
+	return nil
+}
+
+func (c *Client) now() time.Time {
+	if c.Now != nil {
+		return c.Now()
+	}
+	return time.Now()
+}
+
+// signinParams are what Connect's own sign-in page carries. They are not
+// optional: the SSO service refuses a request that does not name the service
+// it is authenticating for.
+func (c *Client) signinParams() url.Values {
+	return url.Values{
+		"service":              {c.WebBase + "/modern/"},
+		"webhost":              {c.WebBase},
+		"source":               {c.SSOBase + "/signin"},
+		"gauthHost":            {c.SSOBase},
+		"clientId":             {"GarminConnect"},
+		"consumeServiceTicket": {"false"},
+	}
+}
+
+func (c *Client) signinPage() (csrf string, err error) {
+	endpoint := c.SSOBase + "/signin?" + c.signinParams().Encode()
+	body, _, err := c.do(http.MethodGet, endpoint, nil, "")
+	if err != nil {
+		return "", fmt.Errorf("garmin: fetching the sign-in page: %w", err)
+	}
+
+	match := csrfPattern.FindSubmatch(body)
+	if match == nil {
+		return "", errors.New("garmin: no CSRF token on the sign-in page — the SSO flow has changed")
+	}
+	return string(match[1]), nil
+}
+
+func (c *Client) submitCredentials(email, password, csrf string) (ticket string, err error) {
+	form := url.Values{
+		"username": {email},
+		"password": {password},
+		"embed":    {"false"},
+		"_csrf":    {csrf},
+	}
+
+	endpoint := c.SSOBase + "/signin?" + c.signinParams().Encode()
+	body, status, err := c.do(http.MethodPost, endpoint, strings.NewReader(form.Encode()),
+		"application/x-www-form-urlencoded")
+	if err != nil {
+		return "", err
+	}
+
+	if match := ticketPattern.FindSubmatch(body); match != nil {
+		return string(match[1]), nil
+	}
+
+	// No ticket. Work out why, because "login failed" covers three very
+	// different situations and only one of them is worth retrying.
+	switch {
+	case mfaPattern.Match(body):
+		return "", ErrMFARequired
+	case status == http.StatusOK:
+		return "", ErrBadCredentials
+	default:
+		return "", fmt.Errorf("garmin: sign-in returned %d and no ticket", status)
+	}
+}
+
+// exchangeTicket turns a service ticket into the OAuth1 token pair.
+func (c *Client) exchangeTicket(ticket string) error {
+	if err := c.loadConsumer(); err != nil {
+		return err
+	}
+
+	endpoint := fmt.Sprintf(
+		"%s/oauth-service/oauth/preauthorized?ticket=%s&login-url=%s&accepts-mfa-tokens=true",
+		c.APIBase, url.QueryEscape(ticket), url.QueryEscape(c.SSOBase+"/embed"))
+
+	signed, err := c.signOAuth1(http.MethodGet, endpoint, "", "")
+	if err != nil {
+		return err
+	}
+
+	body, status, err := c.do(http.MethodGet, endpoint, nil, "", header{"Authorization", signed})
+	if err != nil {
+		return err
+	}
+	if status != http.StatusOK {
+		return fmt.Errorf("garmin: exchanging the ticket returned %d", status)
+	}
+
+	// The response is form-encoded, not JSON.
+	values, err := url.ParseQuery(string(body))
+	if err != nil {
+		return fmt.Errorf("garmin: unreadable OAuth1 response: %w", err)
+	}
+	token, secret := values.Get("oauth_token"), values.Get("oauth_token_secret")
+	if token == "" || secret == "" {
+		return errors.New("garmin: the OAuth1 exchange returned no token")
+	}
+
+	c.session.OAuth1Token, c.session.OAuth1Secret = token, secret
+	return nil
+}
+
+type header struct{ Name, Value string }
+
+// bearerToken returns a valid OAuth2 bearer, refreshing it when needed.
+//
+// The bearer lasts about a day and the OAuth1 token about a year, so this is
+// the routine that runs on essentially every call — hence the cache.
+func (c *Client) bearerToken() (string, error) {
+	if c.bearer != "" && c.now().Before(c.bearerTill) {
+		return c.bearer, nil
+	}
+	if c.session.OAuth1Token == "" {
+		return "", errors.New("garmin: not signed in")
+	}
+	if err := c.loadConsumer(); err != nil {
+		return "", err
+	}
+
+	endpoint := c.APIBase + "/oauth-service/oauth/exchange/user/2.0"
+	signed, err := c.signOAuth1(http.MethodPost, endpoint,
+		c.session.OAuth1Token, c.session.OAuth1Secret)
+	if err != nil {
+		return "", err
+	}
+
+	body, status, err := c.do(http.MethodPost, endpoint, strings.NewReader(""),
+		"application/x-www-form-urlencoded", header{"Authorization", signed})
+	if err != nil {
+		return "", err
+	}
+	if status == http.StatusUnauthorized {
+		return "", fmt.Errorf("garmin: the stored token is no longer accepted — sign in again")
+	}
+	if status != http.StatusOK {
+		return "", fmt.Errorf("garmin: the OAuth2 exchange returned %d", status)
+	}
+
+	var out struct {
+		AccessToken string `json:"access_token"`
+		ExpiresIn   int    `json:"expires_in"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return "", fmt.Errorf("garmin: unreadable OAuth2 response: %w", err)
+	}
+	if out.AccessToken == "" {
+		return "", errors.New("garmin: the OAuth2 exchange returned no access token")
+	}
+
+	life := time.Duration(out.ExpiresIn) * time.Second
+	if life <= 0 {
+		life = time.Hour
+	}
+	// Refresh a minute early rather than racing the expiry mid-push.
+	c.bearer, c.bearerTill = out.AccessToken, c.now().Add(life-time.Minute)
+	return c.bearer, nil
+}
+
+// do performs a request and reads a capped body.
+func (c *Client) do(method, endpoint string, body io.Reader, contentType string, extra ...header) ([]byte, int, error) {
+	req, err := http.NewRequest(method, endpoint, body)
+	if err != nil {
+		return nil, 0, err
+	}
+	req.Header.Set("User-Agent", c.UserAgent)
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	for _, h := range extra {
+		req.Header.Set(h.Name, h.Value)
+	}
+
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	// Capped: this is a third party, and an unbounded read is a way to be
+	// taken down by one.
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxBody))
+	if err != nil {
+		return nil, resp.StatusCode, err
+	}
+	return raw, resp.StatusCode, nil
+}
