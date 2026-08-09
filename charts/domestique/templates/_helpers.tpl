@@ -42,13 +42,32 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
 {{/*
-The claim the pod mounts at /app/data: an existing one if given, otherwise the
-one this chart creates.
+Which Secret holds the PostgreSQL URL.
+
+CloudNativePG publishes <cluster>-app when it creates a cluster: a Secret with
+a ready-made connection string that already points at the read-write service
+and follows a failover. Reading it directly means there is no copy of the
+password anywhere, and nothing to update when the operator rotates it.
+
+Failing here rather than defaulting to SQLite is deliberate. A chart that
+quietly fell back would hand you a working pod holding the only copy of your
+library on a disk nothing backs up, and you would find out later.
 */}}
-{{- define "domestique.claimName" -}}
-{{- if .Values.persistence.existingClaim -}}
-{{- .Values.persistence.existingClaim -}}
+{{- define "domestique.databaseSecret" -}}
+{{- if .Values.postgresql.existingSecret -}}
+{{- .Values.postgresql.existingSecret -}}
+{{- else if .Values.postgresql.cluster -}}
+{{- printf "%s-app" .Values.postgresql.cluster -}}
 {{- else -}}
-{{- include "domestique.fullname" . -}}
+{{- fail "domestique needs PostgreSQL: set postgresql.cluster to a CloudNativePG cluster in this namespace, or postgresql.existingSecret to a Secret holding a connection URL" -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "domestique.databaseSecretKey" -}}
+{{- if .Values.postgresql.existingSecret -}}
+{{- .Values.postgresql.secretKey -}}
+{{- else -}}
+{{- /* CloudNativePG names it `uri`. */ -}}
+uri
 {{- end -}}
 {{- end -}}

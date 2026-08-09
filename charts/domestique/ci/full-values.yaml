@@ -34,8 +34,12 @@ envFrom:
       name: domestique
 
 # With PostgreSQL there is nothing left to keep on disk.
-persistence:
-  enabled: false
+postgresql:
+  # The operator publishes domestique-db-app; the chart reads it.
+  cluster: domestique-db
+
+encryptionKey:
+  existingSecret: domestique
 
 ingressRoute:
   enabled: true

@@ -116,11 +116,24 @@ jobs:
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
       - run: helm lint charts/domestique
 
+      # Rendering with no values must FAIL: PostgreSQL is required, and a
+      # chart that quietly fell back to SQLite would hand you a pod holding
+      # the only copy of the library on a disk nothing backs up. Assert the
+      # refusal rather than the render, or the guard could rot away unnoticed.
+      - name: Refuse to render without PostgreSQL
+        run: |
+          if helm template dom charts/domestique > /dev/null 2>/tmp/err; then
+            echo "the chart rendered without a database; it must not"
+            exit 1
+          fi
+          grep -q "domestique needs PostgreSQL" /tmp/err || {
+            echo "it failed, but not for the expected reason:"; cat /tmp/err; exit 1; }
+          echo "refused, as it should:"; cat /tmp/err
+
       # Rendering is the part that catches real mistakes: a template that only
       # breaks with ingress on, or values the app cannot parse.
       - name: Render every example
         run: |
-          helm template dom charts/domestique > /dev/null
           for values in charts/domestique/ci/*-values.yaml; do
             echo "rendering $values"
             helm template dom charts/domestique -f "$values" > /dev/null
