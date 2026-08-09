@@ -135,6 +135,44 @@ repository on GitHub Pages. **Bump `version` in `Chart.yaml` for any chart
 change**, or the release is skipped and the published chart silently lags the
 repository.
 
+### Two registries, one build
+
+`image.yml` pushes the same build to `ghcr.io/wncservices/domestique` and
+`docker.io/wilant/domestique` under identical tags. One `build-push-action`
+invocation with two entries in `images:` — never two builds, which would put
+two different digests behind the same tag.
+
+GHCR is canonical: it is what the chart pulls and where the provenance
+attestation is pushed. Docker Hub is a mirror and an **optional** one. It needs
+two repository secrets:
+
+| Secret | Value |
+|---|---|
+| `DOCKERHUB_USERNAME` | `wilant` |
+| `DOCKERHUB_TOKEN` | a Docker Hub access token with Read/Write |
+
+If `DOCKERHUB_TOKEN` is unset the job publishes to GHCR alone and says so in a
+notice, rather than failing. That keeps forks working. Note that `secrets` is
+not available to a step-level `if`, which is why the decision is computed into
+an output by the `registries` step.
+
+### GHCR packages default to private
+
+A package published to GHCR for the first time is **private**, whatever the
+visibility of the repository that published it. Both of ours started that way,
+which means `docker pull` and `helm install` fail for everyone — including the
+cluster, unless you fit an imagePullSecret.
+
+There is no API for this. GitHub exposes package visibility only in the UI, so
+it is a one-time manual step per package, under *Package settings → Danger Zone
+→ Change visibility*:
+
+- [image](https://github.com/orgs/wncservices/packages/container/domestique/settings)
+- [chart](https://github.com/orgs/wncservices/packages/container/charts%2Fdomestique/settings)
+
+Check it after adding any new published artifact. Nothing in CI will tell you;
+the push succeeds and the pull is what fails, later, somewhere else.
+
 Two defaults are deliberately unsafe-but-obvious rather than safe-but-silent:
 authentication is `none` and the NOTES warn loudly about it, because a chart
 that quietly required config nobody set would be worse. Same for persistence.
