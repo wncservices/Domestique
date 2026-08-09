@@ -137,24 +137,28 @@ repository.
 
 ### Two registries, one build
 
-`image.yml` pushes the same build to `ghcr.io/wncservices/domestique` and
-`docker.io/wilant/domestique` under identical tags. One `build-push-action`
-invocation with two entries in `images:` — never two builds, which would put
-two different digests behind the same tag.
+`image.yml` pushes the same build to GHCR and Docker Hub under identical tags.
+One `build-push-action` invocation with two entries in `images:` — never two
+builds, which would put two different digests behind the same tag.
 
 GHCR is canonical: it is what the chart pulls and where the provenance
-attestation is pushed. Docker Hub is a mirror and an **optional** one. It needs
-two repository secrets:
+attestation is pushed. Docker Hub is a mirror and an **optional** one, wired to
+an organisation-level variable and secret:
 
-| Secret | Value |
-|---|---|
-| `DOCKERHUB_USERNAME` | `wilant` |
-| `DOCKERHUB_TOKEN` | a Docker Hub access token with Read/Write |
+| Kind | Name | Value |
+|---|---|---|
+| Variable | `DOCKERHUB_USERNAME` | the Docker Hub namespace, e.g. `wilant` |
+| Secret | `DOCKERHUB_PASSWORD` | a Docker Hub access token with Read/Write |
 
-If `DOCKERHUB_TOKEN` is unset the job publishes to GHCR alone and says so in a
-notice, rather than failing. That keeps forks working. Note that `secrets` is
-not available to a step-level `if`, which is why the decision is computed into
-an output by the `registries` step.
+The namespace is **derived from the variable**, not hardcoded — `docker.io/<var
+lowercased>/domestique` — so moving the mirror to a Docker Hub organisation is
+a variable change and nothing else. It is lowercased because an image reference
+may not contain uppercase and the variable is free text somebody typed.
+
+Both must be set. With either missing the job publishes to GHCR alone and says
+so in a notice rather than failing, which keeps forks working. `secrets` is not
+available to a step-level `if`, which is why the decision is computed into an
+output by the `registries` step.
 
 ### GHCR packages default to private
 
