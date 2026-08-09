@@ -4,7 +4,6 @@ import type { TableColumn } from '@nuxt/ui'
 import { useToast } from '@nuxt/ui/composables'
 import { api } from '@/api/client'
 import type { KomootConnection, KomootTour } from '@/api/types'
-import KomootConnect from '@/components/KomootConnect.vue'
 
 const props = defineProps<{ state: 'unconfigured' | 'ready' }>()
 const emit = defineEmits<{ imported: [] }>()
@@ -32,15 +31,21 @@ async function loadConnection() {
   }
 }
 
-/** After connecting or disconnecting: the tour list belongs to the account. */
-async function connectionChanged(next: KomootConnection) {
-  connection.value = next
-  tours.value = []
-  selected.value = []
-  if (next.connected) await load()
-}
+// Connecting happens on Settings. This panel only reports whether there is an
+// account to import from, and sends you there if not — a second sign-in form
+// on a second page is two places to get the same thing wrong.
 
 const importable = computed(() => tours.value.filter((t) => !t.imported))
+
+/** Already-imported tours are hidden by default.
+ *
+ *  After the first import the list is mostly things you cannot do anything
+ *  with — they are not selectable, and thirty of them bury the two that are
+ *  new. They stay one click away, because "where did my tour go" is a
+ *  reasonable question. */
+const showImported = ref(false)
+const visibleTours = computed(() => (showImported.value ? tours.value : importable.value))
+const importedCount = computed(() => tours.value.length - importable.value.length)
 const canImport = computed(() => selected.value.length > 0 && !importing.value)
 const allSelected = computed(
   () => importable.value.length > 0 && selected.value.length === importable.value.length,
@@ -235,15 +240,35 @@ onMounted(async () => {
       class="mb-4"
     />
 
-    <KomootConnect :connection="connection" class="mb-4" @changed="connectionChanged" />
+    <UEmpty
+      v-if="!connection.connected"
+      icon="i-lucide-log-in"
+      title="Not signed in to Komoot"
+      description="Connect your account to import the routes you have planned."
+    >
+      <template #actions>
+        <UButton to="/settings" icon="i-lucide-settings" color="neutral">Go to Settings</UButton>
+      </template>
+    </UEmpty>
+
+    <div v-if="ready && importedCount" class="mb-3 flex justify-end">
+      <USwitch v-model="showImported" :label="`Show ${importedCount} already imported`" />
+    </div>
 
     <UTable
-      v-if="ready && (tours.length || loading)"
-      :data="tours"
+      v-if="ready && (visibleTours.length || loading)"
+      :data="visibleTours"
       :columns="columns"
       :loading="loading"
       :ui="{ td: 'text-sm' }"
     />
+    <UEmpty
+      v-else-if="ready && tours.length"
+      icon="i-lucide-check"
+      title="Everything is imported"
+      :description="`All ${tours.length} tours in that account are already in the library.`"
+    />
+
     <UEmpty
       v-else-if="ready"
       icon="i-lucide-mountain-snow"
