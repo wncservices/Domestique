@@ -24,5 +24,14 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
+    rollupOptions: {
+      // Two entries: the app, and the logged-out page served on the apex host.
+      // Separate bundles on purpose — the landing page should not pull in the
+      // router or the API client to render three paragraphs.
+      input: {
+        main: fileURLToPath(new URL('./index.html', import.meta.url)),
+        landing: fileURLToPath(new URL('./landing.html', import.meta.url)),
+      },
+    },
   },
 })
