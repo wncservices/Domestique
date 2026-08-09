@@ -91,8 +91,26 @@ would 403.
 public one. Expect it to break; Komoot changed hands in 2025. Failures are
 contained — the API returns 502 and the rest of the app carries on.
 
-Credentials come from `KOMOOT_EMAIL` / `KOMOOT_PASSWORD` in the environment,
-never the config file. Imported routes carry a `komoot:<id>` tag, which is how
+Riders sign in from the UI; `KOMOOT_EMAIL` / `KOMOOT_PASSWORD` are the
+alternative, one shared account for the whole deployment, and a rider's own
+connection wins over it.
+
+**The password is never stored.** Komoot's login returns a user id and a
+session token, and the token is what the API wants afterwards — so the
+password is used for one request and discarded. The token is encrypted with
+`DOMESTIQUE_ENCRYPTION_KEY` (`internal/secrets`, AES-256-GCM) and kept in
+`komoot_links`, one row per rider. Three rules hold this together:
+
+- **No key, no storing.** `komootlink.Store.CanStore` is false without one,
+  `Save` refuses, and the UI does not offer the form. There is no path that
+  writes a session in clear.
+- **The rider comes from the session**, never the request body — same rule as
+  linking a head unit.
+- **Refuse before signing in.** With no key the handler returns 412 without
+  calling Komoot, so a password is not sent somewhere useless.
+
+An expired or undecryptable token is not an error to work around: the rider
+reconnects. That is why `Save` is an upsert. Imported routes carry a `komoot:<id>` tag, which is how
 re-imports are detected; without it a second import silently duplicates every
 route and the rider cannot tell which copy their device follows.
 

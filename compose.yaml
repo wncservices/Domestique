@@ -48,6 +48,11 @@ services:
       # panel appears and says it cannot sign in, which is the honest state.
       KOMOOT_EMAIL: ${KOMOOT_EMAIL:-}
       KOMOOT_PASSWORD: ${KOMOOT_PASSWORD:-}
+      # Encrypts stored Komoot sessions. This one is a throwaway for local use
+      # and is committed on purpose — it protects nothing real, and generating
+      # a fresh one per `up` would invalidate yesterday's connection. A
+      # deployment sets its own: `domestique keygen`, then Vault.
+      DOMESTIQUE_ENCRYPTION_KEY: ${DOMESTIQUE_ENCRYPTION_KEY:-ZG9tZXN0aXF1ZS1sb2NhbC1kZXYta2V5LTMyYnl0ZXM=}
     volumes:
       # The image ships no config; this is what turns Komoot on locally.
       - ./docker/domestique.yaml:/app/domestique.yaml:ro

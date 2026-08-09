@@ -160,6 +160,12 @@ func (c *Client) LoginWithToken(userID, token string) {
 	c.userID, c.token = userID, token
 }
 
+// Session returns what Login obtained, so a caller can store it and resume
+// later with LoginWithToken. Komoot's login hands back a session token rather
+// than expecting the password again — which is why nothing has to keep the
+// password.
+func (c *Client) Session() (userID, token string) { return c.userID, c.token }
+
 // DisplayName is the account's name, when login provided one.
 func (c *Client) DisplayName() string { return c.name }
 

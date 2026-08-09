@@ -2,6 +2,7 @@ import type {
   Account,
   AppConfig,
   KomootImportResult,
+  KomootConnection,
   KomootTour,
   LinkAccountRequest,
   Me,
@@ -44,6 +45,16 @@ function encodeSlug(slug: string): string {
 export const api = {
   config: () => request<AppConfig>('/api/config'),
   me: () => request<Me>('/api/me'),
+
+  komootConnection: () => request<KomootConnection>('/api/komoot/connection'),
+  komootConnect: (email: string, password: string) =>
+    request<KomootConnection>('/api/komoot/connection', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    }),
+  komootDisconnect: () =>
+    request<KomootConnection>('/api/komoot/connection', { method: 'DELETE' }),
 
   komootTours: () => request<KomootTour[]>('/api/komoot/tours'),
   komootImport: (tourIds: string[]) =>

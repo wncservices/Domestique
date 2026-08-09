@@ -39,12 +39,13 @@ func (s *Server) handleKomootTours(w http.ResponseWriter, r *http.Request) {
 	if !s.require(w, r, auth.PermKomootSync) {
 		return
 	}
-	if s.Komoot == nil {
+	client := s.komootFor(r)
+	if client == nil {
 		s.komootDisabled(w)
 		return
 	}
 
-	tours, err := s.Komoot.Tours(s.Config.Komoot.IncludeRecorded)
+	tours, err := client.Tours(s.Config.Komoot.IncludeRecorded)
 	if err != nil {
 		// Komoot's API is undocumented and moves; surface it as an upstream
 		// problem rather than a fault in this app.
@@ -74,7 +75,8 @@ func (s *Server) handleKomootImport(w http.ResponseWriter, r *http.Request) {
 	if !s.require(w, r, auth.PermKomootSync) {
 		return
 	}
-	if s.Komoot == nil {
+	client := s.komootFor(r)
+	if client == nil {
 		s.komootDisabled(w)
 		return
 	}
@@ -93,7 +95,7 @@ func (s *Server) handleKomootImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tours, err := s.Komoot.Tours(s.Config.Komoot.IncludeRecorded)
+	tours, err := client.Tours(s.Config.Komoot.IncludeRecorded)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
@@ -120,7 +122,7 @@ func (s *Server) handleKomootImport(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		raw, err := s.Komoot.GPX(id)
+		raw, err := client.GPX(id)
 		if err != nil {
 			// One bad tour must not abandon the rest of the batch.
 			result.Skipped[id] = err.Error()

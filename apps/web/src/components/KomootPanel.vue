@@ -3,7 +3,8 @@ import { computed, h, onMounted, ref, resolveComponent } from 'vue'
 import type { TableColumn } from '@nuxt/ui'
 import { useToast } from '@nuxt/ui/composables'
 import { api } from '@/api/client'
-import type { KomootTour } from '@/api/types'
+import type { KomootConnection, KomootTour } from '@/api/types'
+import KomootConnect from '@/components/KomootConnect.vue'
 
 const props = defineProps<{ state: 'unconfigured' | 'ready' }>()
 const emit = defineEmits<{ imported: [] }>()
@@ -17,8 +18,27 @@ const selected = ref<string[]>([])
 const loading = ref(true)
 const importing = ref(false)
 const error = ref('')
-/** Whether the panel can actually do anything, as opposed to being shown. */
-const ready = computed(() => props.state === 'ready')
+const connection = ref<KomootConnection>({ connected: false, shared: false, canConnect: false })
+
+/** Whether there is an account to list tours from, as opposed to a panel on
+ *  screen inviting you to connect one. */
+const ready = computed(() => props.state === 'ready' && connection.value.connected)
+
+async function loadConnection() {
+  try {
+    connection.value = await api.komootConnection()
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : String(err)
+  }
+}
+
+/** After connecting or disconnecting: the tour list belongs to the account. */
+async function connectionChanged(next: KomootConnection) {
+  connection.value = next
+  tours.value = []
+  selected.value = []
+  if (next.connected) await load()
+}
 
 const importable = computed(() => tours.value.filter((t) => !t.imported))
 const canImport = computed(() => selected.value.length > 0 && !importing.value)
@@ -116,8 +136,9 @@ async function runImport() {
   }
 }
 
-onMounted(() => {
-  if (ready.value) load()
+onMounted(async () => {
+  await loadConnection()
+  if (ready.value) await load()
   else loading.value = false
 })
 </script>
@@ -132,7 +153,7 @@ onMounted(() => {
             Import from Komoot
           </h2>
           <p class="text-sm text-muted">
-            <template v-if="!ready">Enabled, but not signed in</template>
+            <template v-if="!connection.connected">Sign in to import your routes</template>
             <template v-else-if="loading">Loading tours…</template>
             <template v-else-if="!tours.length">No planned routes in that account.</template>
             <template v-else>
@@ -172,26 +193,17 @@ onMounted(() => {
       class="mb-4"
     />
 
-    <!-- Enabled but not signed in. Saying so beats hiding the panel: the
-         feature was deliberately switched on, and the gap is two env vars. -->
-    <UAlert
-      v-if="!ready"
-      color="neutral"
-      variant="subtle"
-      icon="i-lucide-key-round"
-      title="Komoot is enabled but not signed in"
-      description="Set KOMOOT_EMAIL and KOMOOT_PASSWORD in the environment and restart. Running locally, put them in a .env file next to compose.yaml."
-    />
+    <KomootConnect :connection="connection" class="mb-4" @changed="connectionChanged" />
 
     <UTable
-      v-else-if="tours.length || loading"
+      v-if="ready && (tours.length || loading)"
       :data="tours"
       :columns="columns"
       :loading="loading"
       :ui="{ td: 'text-sm' }"
     />
     <UEmpty
-      v-else
+      v-else-if="ready"
       icon="i-lucide-mountain-snow"
       title="Nothing to import"
       description="Plan a route in Komoot and refresh."

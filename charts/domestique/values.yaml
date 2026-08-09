@@ -48,9 +48,13 @@ config:
 # — with an ExternalSecret from Vault, for instance — and name it here.
 #
 # Keys Domestique reads:
-#   DOMESTIQUE_SOURCE_DSN   PostgreSQL connection string (overrides config.source.dsn)
-#   KOMOOT_EMAIL            Komoot account, when komoot.enabled
-#   KOMOOT_PASSWORD
+#   DOMESTIQUE_SOURCE_DSN      PostgreSQL connection string (overrides config.source.dsn)
+#   DOMESTIQUE_ENCRYPTION_KEY  base64 of 32 bytes; lets riders sign in to Komoot
+#                              from the UI. Generate with `domestique keygen`.
+#                              Without it that form is not offered, and replacing
+#                              it invalidates every stored sign-in.
+#   KOMOOT_EMAIL               one shared Komoot account, as an alternative to
+#   KOMOOT_PASSWORD            riders signing in themselves
 envFrom: []
 # - secretRef:
 #     name: domestique
