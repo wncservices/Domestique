@@ -108,12 +108,35 @@ async function load() {
   }
 }
 
+/** How many tours to ask for per request.
+ *
+ *  Not a server limit — a limit on how long one request may reasonably take.
+ *  Importing thirty in one call meant the browser waited minutes for the first
+ *  response byte and reported a network error; the import had in fact been
+ *  running. Batches keep every request short and let the count move. */
+const BATCH = 5
+
+const progress = ref(0)
+
 async function runImport() {
   importing.value = true
   error.value = ''
+  progress.value = 0
+
+  const ids = [...selected.value]
+  const imported: string[] = []
+  const skippedEntries: [string, string][] = []
+
   try {
-    const result = await api.komootImport(selected.value)
-    const skipped = Object.entries(result.skipped)
+    for (let i = 0; i < ids.length; i += BATCH) {
+      const batch = await api.komootImport(ids.slice(i, i + BATCH))
+      imported.push(...batch.imported)
+      skippedEntries.push(...Object.entries(batch.skipped))
+      progress.value = Math.min(i + BATCH, ids.length)
+    }
+
+    const result = { imported, skipped: Object.fromEntries(skippedEntries) }
+    const skipped = skippedEntries
 
     toast.add({
       title: `Imported ${result.imported.length} route${result.imported.length === 1 ? '' : 's'}`,
@@ -133,6 +156,7 @@ async function runImport() {
     error.value = err instanceof Error ? err.message : String(err)
   } finally {
     importing.value = false
+    progress.value = 0
   }
 }
 
@@ -178,7 +202,10 @@ onMounted(async () => {
             :disabled="!canImport"
             @click="runImport"
           >
-            Import{{ selected.length ? ` ${selected.length}` : '' }}
+            <template v-if="importing && progress">
+              Importing {{ progress }}/{{ selected.length }}
+            </template>
+            <template v-else>Import{{ selected.length ? ` ${selected.length}` : '' }}</template>
           </UButton>
         </div>
       </div>

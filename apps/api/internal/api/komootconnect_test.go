@@ -2,11 +2,15 @@ package api_test
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/wncservices/domestique/apps/api/internal/api"
 	"github.com/wncservices/domestique/apps/api/internal/auth"
@@ -27,6 +31,10 @@ type fakeConnector struct {
 
 	resumedUser  string
 	resumedToken string
+
+	// importer, when set, is what Resume hands back — for tests that care
+	// what the import loop does rather than that it happened.
+	importer api.KomootImporter
 }
 
 type fakeImporter struct{ tours []komoot.Tour }
@@ -48,6 +56,9 @@ func (c *fakeConnector) Connect(email, password string) (api.KomootImporter, api
 
 func (c *fakeConnector) Resume(userID, token string) api.KomootImporter {
 	c.resumedUser, c.resumedToken = userID, token
+	if c.importer != nil {
+		return c.importer
+	}
 	return &fakeImporter{tours: []komoot.Tour{{ID: "42", Name: "A tour"}}}
 }
 
@@ -333,5 +344,100 @@ func TestConnectRejectsMissingFields(t *testing.T) {
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Errorf("body %q gave status %d, want 400", body, resp.StatusCode)
 		}
+	}
+}
+
+// slowImporter counts how many fetches overlap, so the test can tell
+// concurrency from a sequential loop that merely finished.
+type slowImporter struct {
+	mu       sync.Mutex
+	inFlight int
+	peak     int
+	calls    int
+	failFor  string
+}
+
+func (s *slowImporter) Tours(bool) ([]komoot.Tour, error) {
+	out := make([]komoot.Tour, 0, 12)
+	for i := range 12 {
+		out = append(out, komoot.Tour{ID: fmt.Sprintf("tour-%d", i), Name: fmt.Sprintf("Tour %d", i)})
+	}
+	return out, nil
+}
+
+func (s *slowImporter) GPX(id string) ([]byte, error) {
+	s.mu.Lock()
+	s.inFlight++
+	s.calls++
+	if s.inFlight > s.peak {
+		s.peak = s.inFlight
+	}
+	s.mu.Unlock()
+
+	time.Sleep(20 * time.Millisecond)
+
+	s.mu.Lock()
+	s.inFlight--
+	s.mu.Unlock()
+
+	if id == s.failFor {
+		return nil, errors.New("komoot said no")
+	}
+	return []byte(`<?xml version="1.0"?><gpx version="1.1" creator="t"><trk><trkseg>` +
+		`<trkpt lat="50.79" lon="2.81"><ele>50</ele></trkpt>` +
+		`<trkpt lat="50.80" lon="2.82"><ele>60</ele></trkpt>` +
+		`</trkseg></trk></gpx>`), nil
+}
+
+// The bug this fixes: thirty tours meant thirty sequential round trips with no
+// response byte until the last, and the browser gave up first.
+func TestImportFetchesToursConcurrently(t *testing.T) {
+	h := newConnectHarness(t, true)
+	slow := &slowImporter{}
+	h.connector.importer = slow
+
+	h.as("wilant", "cyclists", http.MethodPost, "/api/komoot/connection",
+		`{"email":"r@example.com","password":"pw"}`)
+
+	resp := h.as("wilant", "cyclists", http.MethodPost, "/api/komoot/import",
+		`{"tourIds":["tour-0","tour-1","tour-2","tour-3","tour-4","tour-5","tour-6","tour-7"]}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	slow.mu.Lock()
+	peak := slow.peak
+	slow.mu.Unlock()
+	if peak < 2 {
+		t.Errorf("peak concurrent fetches = %d; the import is still sequential", peak)
+	}
+}
+
+// A tour Komoot refuses must not abandon the others, and must be reported.
+func TestImportSurvivesOneBadTour(t *testing.T) {
+	h := newConnectHarness(t, true)
+	h.connector.importer = &slowImporter{failFor: "tour-1"}
+
+	h.as("wilant", "cyclists", http.MethodPost, "/api/komoot/connection",
+		`{"email":"r@example.com","password":"pw"}`)
+
+	resp := h.as("wilant", "cyclists", http.MethodPost, "/api/komoot/import",
+		`{"tourIds":["tour-0","tour-1","tour-2"]}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	var body struct {
+		Imported []string          `json:"imported"`
+		Skipped  map[string]string `json:"skipped"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Imported) != 2 {
+		t.Errorf("imported %v, want the two good tours", body.Imported)
+	}
+	if _, ok := body.Skipped["tour-1"]; !ok {
+		t.Errorf("skipped = %v, want tour-1 reported", body.Skipped)
 	}
 }
