@@ -125,6 +125,21 @@ onMounted(refresh)
       />
 
       <RouterView />
+
+      <!-- AGPL-3.0 section 13: a modified version offered over a network has
+           to offer its users the source. A link in the footer of every page is
+           the simplest way to actually satisfy that, and the easiest thing to
+           forget. -->
+      <footer class="mt-2 border-t border-default pt-4 text-xs text-dimmed">
+        <a
+          href="https://github.com/wncservices/Domestique"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="hover:text-default"
+        >
+          Domestique — free software under the AGPL-3.0. Source.
+        </a>
+      </footer>
     </UContainer>
   </UApp>
 </template>

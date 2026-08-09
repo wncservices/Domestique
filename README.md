@@ -6,9 +6,12 @@ Two riders, two different head units, one shared set of routes. Domestique keeps
 in sync with each rider's Garmin Connect and Wahoo account, so a route added once shows up on a
 Garmin Edge *and* a Wahoo ELEMNT.
 
-Source-available under [PolyForm Noncommercial 1.0.0](LICENSE): use it, change it and share it
-freely for anything non-commercial — personal riding, hobby projects, research, clubs. Commercial
-use is not permitted. This is deliberately **not** an open source license.
+Free software under the [GNU AGPL-3.0](LICENSE): use it, change it, self-host it, for anything at
+all. The one condition that matters — **if you run a modified version as a network service, its
+users must be able to get your source.** That is section 13, and it is the reason for this licence
+rather than a permissive one.
+
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 **This repository holds no route data** — see [Where routes live](#where-routes-live).
 
