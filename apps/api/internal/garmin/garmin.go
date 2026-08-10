@@ -146,8 +146,19 @@ func (c *Client) Session() Session { return c.session }
 func (c *Client) Resume(s Session) { c.session = s }
 
 var (
-	csrfPattern   = regexp.MustCompile(`name="_csrf"\s+value="([^"]+)"`)
-	ticketPattern = regexp.MustCompile(`embed\?ticket=([^"]+)"`)
+	csrfPattern = regexp.MustCompile(`name="_csrf"\s+value="([^"]+)"`)
+	// The service ticket, wherever the success page happens to put it.
+	//
+	// This used to require `embed?ticket=...` inside double quotes. Garmin
+	// still signs the rider in and still returns its "Success" page, but the
+	// ticket now sits in a JavaScript string the old pattern did not match —
+	// so a completed sign-in was reported as a wrong password, which is about
+	// the most misleading thing this package could have said.
+	//
+	// Matched on `ticket=` after a `?` or `&`, ending at whatever quote,
+	// ampersand or whitespace follows. Nothing about the surrounding page is
+	// assumed: that assumption is what broke.
+	ticketPattern = regexp.MustCompile(`[?&]ticket=([^"'&\s<>]+)`)
 	// Connect returns 200 with an MFA page rather than an error status.
 	mfaPattern = regexp.MustCompile(`(?i)mfa-code|verificationCode|two-step`)
 	// Cloudflare's block page. Matched on the interstitial's own markers
