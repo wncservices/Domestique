@@ -260,12 +260,22 @@ func (c *Client) now() time.Time {
 	return time.Now()
 }
 
+// embedURL is the service this client authenticates for.
+//
+// One function because the value has to appear in two places that must agree:
+// the `service` a ticket is issued for, and the `login-url` that ticket is
+// later presented with. A CAS service ticket is only valid for the service it
+// was issued for, so when those two drifted apart the sign-in succeeded and
+// the exchange came back 401 — a failure that looks nothing like its cause.
+func (c *Client) embedURL() string { return c.SSOBase + "/embed" }
+
 // signinParams are what Connect's own sign-in page carries. They are not
 // optional: the SSO service refuses a request that does not name the service
 // it is authenticating for.
 func (c *Client) signinParams() url.Values {
 	return url.Values{
-		"service":              {c.WebBase + "/modern/"},
+		// Must equal the login-url in exchangeTicket. See embedURL.
+		"service":              {c.embedURL()},
 		"webhost":              {c.WebBase},
 		"source":               {c.SSOBase + "/signin"},
 		"gauthHost":            {c.SSOBase},
@@ -371,9 +381,11 @@ func (c *Client) exchangeTicket(ticket string) error {
 		return err
 	}
 
+	// login-url must be the service the ticket was issued for — the same
+	// value signinParams sent. See embedURL.
 	endpoint := fmt.Sprintf(
 		"%s/oauth-service/oauth/preauthorized?ticket=%s&login-url=%s&accepts-mfa-tokens=true",
-		c.APIBase, url.QueryEscape(ticket), url.QueryEscape(c.SSOBase+"/embed"))
+		c.APIBase, url.QueryEscape(ticket), url.QueryEscape(c.embedURL()))
 
 	signed, err := c.signOAuth1(http.MethodGet, endpoint, "", "")
 	if err != nil {
