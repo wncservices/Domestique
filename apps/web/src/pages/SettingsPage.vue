@@ -4,7 +4,7 @@ import { api } from '@/api/client'
 import type { GarminConnection, KomootConnection } from '@/api/types'
 import { useLibrary } from '@/composables/useLibrary'
 import AccountsPanel from '@/components/AccountsPanel.vue'
-import GarminConnect from '@/components/GarminConnect.vue'
+import GarminSetup from '@/components/GarminSetup.vue'
 import KomootConnect from '@/components/KomootConnect.vue'
 
 const { accounts, me, config, canManageAccounts, canImportKomoot, komootEnabled, refresh } =
@@ -59,31 +59,18 @@ onMounted(async () => {
       :accounts="accounts"
       :me="me"
       :can-manage="canManageAccounts"
+      :garmin="garmin"
       @changed="refresh"
+      @garmin-changed="garminChanged"
     />
 
-    <UCard v-if="canManageAccounts" id="garmin" variant="outline">
-      <template #header>
-        <h2 class="flex items-center gap-2 font-medium text-highlighted">
-          <UIcon name="i-lucide-watch" />
-          Garmin
-        </h2>
-        <p class="text-sm text-muted">
-          Sign in with your Garmin Connect account to send routes to your Edge.
-        </p>
-      </template>
-
-      <UAlert
-        v-if="garminError"
-        color="error"
-        variant="subtle"
-        icon="i-lucide-triangle-alert"
-        :description="garminError"
-        class="mb-4"
-      />
-
-      <GarminConnect :connection="garmin" @changed="garminChanged" @setup="loadGarmin" />
-    </UCard>
+    <UAlert
+      v-if="garminError"
+      color="error"
+      variant="subtle"
+      icon="i-lucide-triangle-alert"
+      :description="garminError"
+    />
 
     <UCard v-if="canImportKomoot && komootEnabled" variant="outline">
       <template #header>
@@ -104,6 +91,23 @@ onMounted(async () => {
       />
 
       <KomootConnect :connection="connection" @changed="connection = $event" />
+    </UCard>
+
+    <!-- Deployment plumbing, and only an admin gets it: the API omits the
+         consumer entirely for everyone else, so this card does not exist for
+         a rider. Nothing here is theirs to set or worth them knowing. -->
+    <UCard v-if="garmin.consumer" variant="outline">
+      <template #header>
+        <h2 class="flex items-center gap-2 font-medium text-highlighted">
+          <UIcon name="i-lucide-watch" />
+          Garmin setup
+        </h2>
+        <p class="text-sm text-muted">
+          One pair of app keys for the whole deployment, so riders can sign in.
+        </p>
+      </template>
+
+      <GarminSetup :consumer="garmin.consumer" @changed="loadGarmin" />
     </UCard>
 
     <UCard variant="outline">

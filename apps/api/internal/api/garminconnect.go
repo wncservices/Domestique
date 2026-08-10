@@ -62,12 +62,12 @@ func (s *Server) garminConnectionDTO(r *http.Request) garminConnectionDTO {
 		dto.CanConnect = true
 	}
 
-	// The consumer travels with the connection in two cases: it is what is
-	// standing in the way, so the UI can offer the fix instead of an apology;
-	// or the caller is an admin, who needs to be able to replace a pair that
-	// turned out to be wrong. Attaching it only in the first case would make
-	// setting a bad key a one-way door.
-	if !consumer.Configured() || auth.FromContext(r.Context()).Role.Can(auth.PermManageSettings) {
+	// Only an admin ever sees the consumer. A rider cannot set it, cannot act
+	// on knowing it is missing, and has no reason to learn that Garmin app
+	// keys are a thing that exists — they get "not set up yet" and someone to
+	// ask. An admin gets it whether or not it is configured, because a pair
+	// that turned out to be wrong has to be replaceable.
+	if auth.FromContext(r.Context()).Role.Can(auth.PermManageSettings) {
 		consumerDTO := s.garminConsumerDTOFor(r)
 		dto.Consumer = &consumerDTO
 	}
@@ -188,19 +188,27 @@ func (s *Server) handleGarminConnect(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.garminConnectionDTO(r))
 }
 
-// writeGarminLoginError says which of the three sign-in failures happened.
+// writeGarminLoginError says which of the four sign-in failures happened.
 //
-// They need different words: a wrong password is worth retrying, an MFA-
-// protected account is not (this flow cannot answer the challenge), and
-// anything else is Garmin's problem rather than the rider's. Reporting them
-// all as "sign-in failed" is how somebody with 2FA on ends up typing their
-// password five times.
+// They need different words, and only one of them is the password. An MFA
+// challenge cannot be answered by this flow at all. A Cloudflare block never
+// reached Garmin, so it says nothing about the account. Anything else is
+// Garmin having a bad day. Reporting them all as "sign-in failed" is how
+// somebody ends up resetting a password that was never wrong.
 func (s *Server) writeGarminLoginError(w http.ResponseWriter, rider string, err error) {
 	// Logged without the password and without the upstream body, which can
 	// echo the request.
 	s.logger().Warn("garmin connect failed", "rider", rider, "reason", classifyGarminError(err))
 
 	switch {
+	case errors.Is(err, garmin.ErrBlocked):
+		// 503, not 401: nothing is wrong with the account and nothing the
+		// rider types will change the outcome right now.
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"error": "Garmin's protection blocked the sign-in before it reached them. " +
+				"This usually follows several failed attempts — leave it a while and try again.",
+			"blocked": true,
+		})
 	case errors.Is(err, garmin.ErrMFARequired):
 		writeJSON(w, http.StatusConflict, map[string]any{
 			"error": "This Garmin account uses two-factor authentication, which this sign-in cannot complete.",
@@ -221,6 +229,8 @@ func (s *Server) writeGarminLoginError(w http.ResponseWriter, rider string, err 
 
 func classifyGarminError(err error) string {
 	switch {
+	case errors.Is(err, garmin.ErrBlocked):
+		return "blocked"
 	case errors.Is(err, garmin.ErrMFARequired):
 		return "mfa"
 	case errors.Is(err, garmin.ErrBadCredentials):

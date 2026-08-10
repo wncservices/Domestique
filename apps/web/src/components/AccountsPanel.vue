@@ -2,10 +2,22 @@
 import { computed, ref } from 'vue'
 import { useToast } from '@nuxt/ui/composables'
 import { api } from '@/api/client'
-import type { Account, Me, Provider } from '@/api/types'
+import type { Account, GarminConnection, Me, Provider } from '@/api/types'
+import GarminSignIn from '@/components/GarminSignIn.vue'
 
-const props = defineProps<{ accounts: Account[]; me?: Me | null; canManage: boolean }>()
-const emit = defineEmits<{ changed: [] }>()
+const props = defineProps<{
+  accounts: Account[]
+  me?: Me | null
+  canManage: boolean
+  garmin: GarminConnection
+}>()
+const emit = defineEmits<{ changed: []; garminChanged: [GarminConnection] }>()
+
+// Garmin is linked by signing in, so its button opens a dialog instead of
+// creating an account outright. Wahoo still links directly — there is no
+// sign-in behind it yet, which is what the "adapter not wired up" badge in
+// the list below is there to admit.
+const signingIn = ref(false)
 
 const toast = useToast()
 
@@ -18,24 +30,20 @@ const providers: { id: Provider; name: string; icon: string }[] = [
   { id: 'wahoo', name: 'Wahoo', icon: 'i-lucide-gauge' },
 ]
 
-/**
- * Providers you link by signing in rather than by pressing a button here.
- *
- * Garmin used to be in this list, and pressing "Link Garmin" created a head
- * unit with no account behind it — a push target that could only ever fail.
- * Signing in on the card below does both, so the button would be a second,
- * worse way to do the same thing. Wahoo joins this list when its adapter does.
- */
-const signInProviders: Provider[] = ['garmin']
-
 /** One account per rider per provider, so hide what is already linked. */
 const linkable = computed(() =>
-  providers.filter(
-    (p) =>
-      !signInProviders.includes(p.id) &&
-      !props.accounts.some((a) => a.provider === p.id && isMine(a)),
-  ),
+  providers.filter((p) => !props.accounts.some((a) => a.provider === p.id && isMine(a))),
 )
+
+/** Garmin needs a password before it is a push target; Wahoo does not yet. */
+function isSignIn(provider: Provider): boolean {
+  return provider === 'garmin'
+}
+
+function onGarminChanged(connection: GarminConnection) {
+  emit('garminChanged', connection)
+  emit('changed')
+}
 
 function isMine(account: Account): boolean {
   const user = props.me?.user
@@ -68,6 +76,15 @@ async function unlink(account: Account) {
   unlinking.value = account.id
   error.value = ''
   try {
+    // Unlinking a Garmin has to forget the sign-in behind it too, or the
+    // account comes back on the next sign-in attached to a session the rider
+    // thought they had removed. The endpoint does both.
+    if (account.provider === 'garmin' && isMine(account)) {
+      emit('garminChanged', await api.garminDisconnect())
+      toast.add({ title: `${account.label} unlinked`, icon: 'i-lucide-unlink', color: 'success' })
+      emit('changed')
+      return
+    }
     await api.unlinkAccount(account.id)
     toast.add({ title: `${account.label} unlinked`, icon: 'i-lucide-unlink', color: 'success' })
     emit('changed')
@@ -97,7 +114,7 @@ async function unlink(account: Account) {
             color="neutral"
             variant="subtle"
             :loading="linking === provider.id"
-            @click="link(provider.id)"
+            @click="isSignIn(provider.id) ? (signingIn = true) : link(provider.id)"
           >
             Link {{ provider.name }}
           </UButton>
@@ -152,9 +169,11 @@ async function unlink(account: Account) {
       title="No head units linked"
       :description="
         canManage
-          ? 'Sign in to Garmin below to add one. Until then there is nowhere to push routes.'
+          ? 'Link a Garmin or Wahoo account above. Until then there is nowhere to push routes.'
           : 'Nothing is linked yet, so there is nowhere to push routes.'
       "
     />
+
+    <GarminSignIn v-model:open="signingIn" :connection="props.garmin" @changed="onGarminChanged" />
   </UCard>
 </template>

@@ -118,15 +118,16 @@ func TestOnlyAnAdminManagesTheConsumer(t *testing.T) {
 		}
 	}
 
-	// And a rider is not shown a form they cannot submit.
+	// A rider is not told the consumer exists as a concept. They cannot set
+	// it, cannot act on knowing it is missing, and "Garmin app keys" is
+	// deployment plumbing — they get a plain "not set up yet" instead.
 	noConsumer(t)
 	body := decodeConnection(t, h.as("rider", "cyclists", http.MethodGet, "/api/garmin/connection", ""))
-	consumer, ok := body["consumer"].(map[string]any)
-	if !ok {
-		t.Fatalf("connection = %v, want it to describe the missing consumer", body)
+	if _, present := body["consumer"]; present {
+		t.Errorf("a rider was shown the deployment's consumer: %v", body)
 	}
-	if consumer["canManage"] != false {
-		t.Errorf("canManage = %v for a rider", consumer["canManage"])
+	if body["unavailable"] == nil {
+		t.Error("a rider was told nothing about why there is no sign-in")
 	}
 }
 
