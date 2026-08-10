@@ -661,7 +661,18 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 		messages = append(messages, f.Error())
 	}
 
-	s.logger().Info("push finished", "changes", len(changes), "failures", len(failures))
+	// Log why, not just how many. "failures=30" is a number nobody can act
+	// on, and the reasons only existed in the HTTP response — which is no
+	// help when the push was a scheduled one, and little help when it was
+	// not. Thirty failures are usually one cause thirty times, so the
+	// distinct reasons are what is worth having.
+	if len(failures) > 0 {
+		s.logger().Warn("push finished with failures",
+			"changes", len(changes), "failures", len(failures),
+			"reasons", distinctReasons(messages))
+	} else {
+		s.logger().Info("push finished", "changes", len(changes), "failures", 0)
+	}
 	writeJSON(w, http.StatusOK, pushResponse{
 		Applied:  len(changes) - len(failures),
 		Failures: messages,
@@ -1090,4 +1101,33 @@ func (s *Server) garminCourses(rider string) (targets.Courses, error) {
 
 	consumer, _ := s.garminConsumer()
 	return s.Garmin.Courses(consumer, session)
+}
+
+// distinctReasons collapses failure messages to the handful worth logging.
+//
+// A failing push tends to fail identically for every route — one expired
+// session, one moved endpoint — so the useful line is the set of reasons, not
+// thirty repetitions of it. The account and slug prefix is what makes each
+// message unique, so it is dropped before comparing: what is left is the
+// cause.
+func distinctReasons(messages []string) []string {
+	const maxReasons = 5
+
+	seen := map[string]bool{}
+	out := make([]string, 0, maxReasons)
+	for _, msg := range messages {
+		reason := msg
+		// "<account> <slug>: <op> failed: <cause>" — keep the cause.
+		if i := strings.Index(msg, " failed: "); i >= 0 {
+			reason = msg[i+len(" failed: "):]
+		}
+		if seen[reason] {
+			continue
+		}
+		seen[reason] = true
+		if out = append(out, reason); len(out) == maxReasons {
+			break
+		}
+	}
+	return out
 }
