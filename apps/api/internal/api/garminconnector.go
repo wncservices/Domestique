@@ -2,6 +2,7 @@ package api
 
 import (
 	"github.com/wncservices/domestique/apps/api/internal/garmin"
+	"github.com/wncservices/domestique/apps/api/internal/targets"
 )
 
 // GarminConsumer is the OAuth1 consumer pair a sign-in is signed with.
@@ -31,6 +32,9 @@ type GarminConnector interface {
 	// Devices lists the head units on an account, from a stored session. No
 	// password: this is what the session is for.
 	Devices(consumer GarminConsumer, session garmin.Session) ([]garmin.Device, error)
+	// Courses returns a client that can push and remove courses, from that
+	// same stored session.
+	Courses(consumer GarminConsumer, session garmin.Session) (targets.Courses, error)
 }
 
 // LiveGarmin is the real connector: it talks to Garmin.
@@ -75,12 +79,16 @@ func (l LiveGarmin) Connect(consumer GarminConsumer, email, password string) (ga
 	return session, nil
 }
 
-// Devices lists the head units registered to a connected account.
+// resume rebuilds a signed-in client from a stored session.
 //
-// Resumed from the stored session, so it costs no password and no sign-in.
-// The consumer is still needed: the OAuth1 token is exchanged for a bearer on
-// every call, and that exchange is signed with it.
-func (l LiveGarmin) Devices(consumer GarminConsumer, session garmin.Session) ([]garmin.Device, error) {
+// Devices and Courses both need exactly this and nothing more. They arrived
+// from separate branches doing it identically, which is the moment to put it
+// in one place rather than keep two copies in step.
+//
+// The consumer is needed even though no password is: every call underneath
+// begins by exchanging the OAuth1 token for a bearer, and that exchange is
+// signed with it.
+func (l LiveGarmin) resume(consumer GarminConsumer, session garmin.Session) (*garmin.Client, error) {
 	if !consumer.Configured() {
 		return nil, garmin.ErrNoConsumer
 	}
@@ -88,5 +96,19 @@ func (l LiveGarmin) Devices(consumer GarminConsumer, session garmin.Session) ([]
 	client := garmin.New()
 	client.SetConsumer(consumer.Key, consumer.Secret)
 	client.Resume(session)
+	return client, nil
+}
+
+// Devices lists the head units registered to a connected account.
+func (l LiveGarmin) Devices(consumer GarminConsumer, session garmin.Session) ([]garmin.Device, error) {
+	client, err := l.resume(consumer, session)
+	if err != nil {
+		return nil, err
+	}
 	return client.Devices()
+}
+
+// Courses returns a client for pushing courses to a connected account.
+func (l LiveGarmin) Courses(consumer GarminConsumer, session garmin.Session) (targets.Courses, error) {
+	return l.resume(consumer, session)
 }

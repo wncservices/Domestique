@@ -21,6 +21,7 @@ import (
 	"github.com/wncservices/domestique/apps/api/internal/auth"
 	"github.com/wncservices/domestique/apps/api/internal/config"
 	"github.com/wncservices/domestique/apps/api/internal/fitcourse"
+	"github.com/wncservices/domestique/apps/api/internal/garmin"
 	"github.com/wncservices/domestique/apps/api/internal/gpx"
 	"github.com/wncservices/domestique/apps/api/internal/model"
 	"github.com/wncservices/domestique/apps/api/internal/providerlink"
@@ -633,7 +634,7 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 
 	build := s.TargetFactory
 	if build == nil {
-		build = targets.Build
+		build = s.targetFactory().Build
 	}
 
 	byAccount := map[string]targets.Target{}
@@ -1039,4 +1040,54 @@ func logRequests(log *slog.Logger, next http.Handler) http.Handler {
 		log.Debug("request", "method", r.Method, "path", r.URL.Path)
 		next.ServeHTTP(w, r)
 	})
+}
+
+// targetFactory gives the adapters what they need to push for real: a route's
+// points, and a signed-in client for the account's rider.
+//
+// Resolved per push rather than held on the server, so a rider who reconnects
+// or disconnects between pushes gets the session they have now.
+func (s *Server) targetFactory() targets.Factory {
+	return targets.Factory{
+		Track:  s.Source.Track,
+		Garmin: s.garminCourses,
+		// Off, matching the download's default. The cues are inferred from
+		// the track's shape, not authored, and a wrong one at a junction is
+		// worse than none — not something to opt a rider into silently on
+		// every push. The FIT download offers ?cues=1 for anyone who wants
+		// them.
+		TurnCues: false,
+		Log:      s.logger().Warn,
+	}
+}
+
+// garminCourses resolves one rider's Garmin client from their stored sign-in.
+//
+// Every failure here is "this rider cannot push to Garmin", never "the push
+// is broken": one account failing must leave the rest of the plan alone, which
+// is what returning an error per adapter gets us.
+func (s *Server) garminCourses(rider string) (targets.Courses, error) {
+	if s.Garmin == nil {
+		return nil, errors.New("this deployment has no Garmin sign-in configured")
+	}
+	if s.Links == nil || rider == "" {
+		return nil, errors.New("no Garmin sign-in to push with")
+	}
+
+	_, secret, err := s.Links.Secret(garminProvider, rider)
+	if err != nil {
+		return nil, fmt.Errorf("%s has not connected Garmin: %w", rider, err)
+	}
+
+	var session garmin.Session
+	if err := json.Unmarshal([]byte(secret), &session); err != nil {
+		return nil, fmt.Errorf("the stored Garmin sign-in for %s is unreadable: %w", rider, err)
+	}
+	if session.Expired(time.Now()) {
+		// Saying so beats a 401 from Connect that reads like an outage.
+		return nil, fmt.Errorf("%s's Garmin sign-in has expired: reconnect it in Settings", rider)
+	}
+
+	consumer, _ := s.garminConsumer()
+	return s.Garmin.Courses(consumer, session)
 }

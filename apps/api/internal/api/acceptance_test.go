@@ -333,11 +333,14 @@ func TestAccountsEndpoint(t *testing.T) {
 	if len(accounts) != 2 {
 		t.Fatalf("got %d accounts, want the two that were linked", len(accounts))
 	}
-	// Both adapters are still stubs; the UI relies on this to disable push.
+	// The UI shows "adapter not wired up" from this, so it has to say what is
+	// true of each provider rather than of both: Garmin pushes for real now,
+	// Wahoo is still a stub.
 	for _, account := range accounts {
-		if account.Implemented {
-			t.Errorf("%s reports implemented; flip this only when the adapter works",
-				account.ID)
+		want := account.Provider == string(model.ProviderGarmin)
+		if account.Implemented != want {
+			t.Errorf("%s reports implemented=%v, want %v",
+				account.ID, account.Implemented, want)
 		}
 		if account.Label == "" {
 			t.Errorf("%s has no label", account.ID)

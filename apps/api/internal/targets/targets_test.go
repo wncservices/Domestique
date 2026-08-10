@@ -30,12 +30,15 @@ func TestBuildRejectsUnknownProvider(t *testing.T) {
 	}
 }
 
-// The stubs must fail rather than silently claim success — a silent success
-// would record state and the route would never be retried once implemented.
+// An adapter with nothing wired to it must fail rather than silently claim
+// success — a silent success would record state and the route would never be
+// retried. Garmin is implemented now, but one built without a session is
+// still in this position, and that is exactly what `domestique push` from a
+// laptop does.
 func TestStubsFailLoudly(t *testing.T) {
 	for name, target := range map[string]Target{
-		"garmin": &Garmin{},
-		"wahoo":  &Wahoo{},
+		"garmin without a session": &Garmin{},
+		"wahoo":                    &Wahoo{},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := target.Create(model.Route{}); err == nil {
@@ -51,14 +54,14 @@ func TestStubsFailLoudly(t *testing.T) {
 	}
 }
 
-// Implemented drives the UI's "not wired up" message and the disabled push
-// button. It must stay false until an adapter genuinely works.
+// Implemented drives the UI's "not wired up" badge. It must say what is true:
+// Garmin pushes for real now, Wahoo does not.
 func TestImplementedMatchesReality(t *testing.T) {
-	for _, provider := range []model.Provider{model.ProviderGarmin, model.ProviderWahoo} {
-		if Implemented(provider) {
-			t.Errorf("%s reports implemented, but its adapter still returns errors — "+
-				"flip this only when the adapter works", provider)
-		}
+	if !Implemented(model.ProviderGarmin) {
+		t.Error("garmin has a working adapter but reports unimplemented")
+	}
+	if Implemented(model.ProviderWahoo) {
+		t.Error("wahoo still returns errors from every method — see wahoo.go")
 	}
 	if Implemented("strava") {
 		t.Error("unknown provider reports implemented")
