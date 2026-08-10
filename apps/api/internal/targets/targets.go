@@ -7,6 +7,7 @@ package targets
 import (
 	"fmt"
 
+	"github.com/wncservices/domestique/apps/api/internal/gpx"
 	"github.com/wncservices/domestique/apps/api/internal/model"
 )
 
@@ -20,28 +21,70 @@ type Target interface {
 	Delete(remoteID string) error
 }
 
+// Courses is the slice of a provider's client an adapter needs to push.
+//
+// An interface so the adapters can be tested without a provider, and so
+// internal/garmin stays a client with no opinion about syncing.
+type Courses interface {
+	// ImportCourse uploads a course file and returns the provider's id.
+	ImportCourse(filename string, data []byte) (string, error)
+	// DeleteCourse removes one.
+	DeleteCourse(id string) error
+}
+
 // Implemented reports whether pushes to a provider actually work yet, so the
 // UI can say "not wired up" rather than offering a push that always fails.
-// Flip these as Phases 3 and 4 land; see garmin.go and wahoo.go.
 func Implemented(p model.Provider) bool {
 	switch p {
 	case model.ProviderGarmin:
-		return false
+		return true
 	case model.ProviderWahoo:
+		// Phase 4. See wahoo.go.
 		return false
 	default:
 		return false
 	}
 }
 
+// Factory builds adapters with what they need to do real work: the route's
+// points, and a signed-in client for the account's rider.
+//
+// A struct rather than more arguments to Build because the list will keep
+// growing as providers land, and because a caller with none of it — the CLI,
+// which has no rider sessions — can still build adapters that fail with
+// something a person can act on rather than a nil dereference.
+type Factory struct {
+	// Track returns a route's points by slug.
+	Track func(slug string) ([]gpx.Point, error)
+	// Garmin resolves the signed-in Garmin client for a rider.
+	Garmin func(rider string) (Courses, error)
+	// TurnCues asks adapters for cues inferred from the track's geometry.
+	TurnCues bool
+	// Log receives what is worth knowing and not worth failing over.
+	Log func(msg string, args ...any)
+}
+
 // Build returns the adapter for an account.
-func Build(account model.Account) (Target, error) {
+func (f Factory) Build(account model.Account) (Target, error) {
 	switch account.Provider {
 	case model.ProviderGarmin:
-		return &Garmin{Account: account}, nil
+		return &Garmin{
+			Account:  account,
+			Track:    f.Track,
+			Courses:  f.Garmin,
+			TurnCues: f.TurnCues,
+			Log:      f.Log,
+		}, nil
 	case model.ProviderWahoo:
 		return &Wahoo{Account: account}, nil
 	default:
 		return nil, fmt.Errorf("unsupported provider %q", account.Provider)
 	}
 }
+
+// Build returns an adapter with nothing wired to it.
+//
+// Kept for callers that have no sessions to offer. A Garmin push through this
+// fails with "connect Garmin in Settings", which is the truth: the adapter is
+// implemented, this caller just cannot reach an account.
+func Build(account model.Account) (Target, error) { return Factory{}.Build(account) }

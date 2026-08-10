@@ -14,6 +14,8 @@ import (
 	"github.com/wncservices/domestique/apps/api/internal/auth"
 	"github.com/wncservices/domestique/apps/api/internal/garmin"
 	"github.com/wncservices/domestique/apps/api/internal/model"
+	"github.com/wncservices/domestique/apps/api/internal/source"
+	"github.com/wncservices/domestique/apps/api/internal/targets"
 )
 
 // fakeGarmin records what it was asked to sign in with, so a test can assert
@@ -31,13 +33,24 @@ type fakeGarmin struct {
 	// devices is what Devices hands back, and devicesErr what it fails with.
 	devices    []garmin.Device
 	devicesErr error
-	// devicesSession records the session it was resumed from, so a test can
-	// assert the stored one was used rather than a fresh sign-in.
-	devicesSession garmin.Session
+	// resumedSession records the session a resumed call was given, so a test
+	// can assert the stored sign-in was used rather than a fresh one. Shared
+	// by Devices and Courses, which resume identically.
+	resumedSession garmin.Session
+
+	// courses is what a push is handed, and coursesErr what resolving it
+	// fails with.
+	courses    targets.Courses
+	coursesErr error
+}
+
+func (f *fakeGarmin) Courses(_ api.GarminConsumer, session garmin.Session) (targets.Courses, error) {
+	f.resumedSession = session
+	return f.courses, f.coursesErr
 }
 
 func (f *fakeGarmin) Devices(_ api.GarminConsumer, session garmin.Session) ([]garmin.Device, error) {
-	f.devicesSession = session
+	f.resumedSession = session
 	return f.devices, f.devicesErr
 }
 
@@ -444,9 +457,9 @@ func TestDevicesUseTheStoredSession(t *testing.T) {
 	if len(got) != 2 || got[0].Name != "Edge 530" || got[1].Name != "Forerunner 165" {
 		t.Errorf("devices = %+v, want both units", got)
 	}
-	if h.garmin.devicesSession.OAuth1Token != "garmin-token-1" {
+	if h.garmin.resumedSession.OAuth1Token != "garmin-token-1" {
 		t.Errorf("resumed with %q, want the stored token",
-			h.garmin.devicesSession.OAuth1Token)
+			h.garmin.resumedSession.OAuth1Token)
 	}
 }
 
@@ -502,3 +515,111 @@ func TestDeviceListFailureIsUpstream(t *testing.T) {
 		t.Errorf("status = %d, want 502", resp.StatusCode)
 	}
 }
+
+// recordingCourses is a provider that remembers what it was sent.
+type recordingCourses struct {
+	filenames []string
+	sizes     []int
+	deleted   []string
+}
+
+func (r *recordingCourses) ImportCourse(filename string, data []byte) (string, error) {
+	r.filenames = append(r.filenames, filename)
+	r.sizes = append(r.sizes, len(data))
+	return "garmin-course-1", nil
+}
+
+func (r *recordingCourses) DeleteCourse(id string) error {
+	r.deleted = append(r.deleted, id)
+	return nil
+}
+
+// The whole path, through HTTP: a rider connects Garmin, uploads a route
+// targeting their account, and pushes. What proves the wiring is that a FIT
+// file reaches the provider — the server resolving the session, the factory
+// handing it to the adapter, the adapter rendering the course.
+func TestPushSendsACourseToGarmin(t *testing.T) {
+	h := newConnectHarness(t, true)
+	courses := &recordingCourses{}
+	h.garmin.courses = courses
+
+	h.as("wilant", "cyclists", http.MethodPost, "/api/garmin/connection",
+		`{"email":"r@example.com","password":"pw"}`)
+
+	if _, err := h.db.Create(source.CreateRequest{
+		Filename:   "ride.gpx",
+		Name:       "Kluisbergen",
+		Targets:    &[]string{"garmin:wilant"},
+		UploadedBy: "wilant",
+		GPX:        []byte(aTestGPX),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := h.as("wilant", "cyclists", http.MethodPost, "/api/push", "")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	var out struct {
+		Applied  int      `json:"applied"`
+		Failures []string `json:"failures"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Failures) != 0 {
+		t.Fatalf("push failed: %v", out.Failures)
+	}
+	if len(courses.filenames) != 1 {
+		t.Fatalf("uploaded %d courses, want 1", len(courses.filenames))
+	}
+	if !strings.HasSuffix(courses.filenames[0], ".fit") {
+		t.Errorf("uploaded %q, want a .fit", courses.filenames[0])
+	}
+	if courses.sizes[0] == 0 {
+		t.Error("an empty course reached the provider")
+	}
+
+	// The session it pushed with is the stored one, not a fresh sign-in.
+	if h.garmin.resumedSession.OAuth1Token != "garmin-token-1" {
+		t.Errorf("pushed with %q, want the stored token", h.garmin.resumedSession.OAuth1Token)
+	}
+}
+
+// A rider who has not connected must fail their own push and nobody else's,
+// with a sentence that says what to do.
+func TestPushWithoutAGarminConnectionFailsThatAccountOnly(t *testing.T) {
+	h := newConnectHarness(t, true)
+
+	if _, err := h.db.Create(source.CreateRequest{
+		Filename:   "ride.gpx",
+		Name:       "Kluisbergen",
+		Targets:    &[]string{"garmin:wilant"},
+		UploadedBy: "wilant",
+		GPX:        []byte(aTestGPX),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := h.as("wilant", "cyclists", http.MethodPost, "/api/push", "")
+	var out struct {
+		Failures []string `json:"failures"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Failures) != 1 {
+		t.Fatalf("failures = %v, want exactly the unconnected account", out.Failures)
+	}
+	if !strings.Contains(out.Failures[0], "has not connected Garmin") {
+		t.Errorf("failure = %q, want it to say the account is not connected", out.Failures[0])
+	}
+}
+
+const aTestGPX = `<?xml version="1.0"?>
+<gpx version="1.1" creator="test"><trk><trkseg>
+<trkpt lat="50.85" lon="4.35"><ele>20</ele></trkpt>
+<trkpt lat="50.86" lon="4.36"><ele>25</ele></trkpt>
+<trkpt lat="50.87" lon="4.37"><ele>30</ele></trkpt>
+</trkseg></trk></gpx>`
