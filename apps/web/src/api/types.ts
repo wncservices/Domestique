@@ -50,6 +50,10 @@ export interface Me {
   groups: string[]
   role: Role
   permissions: Permission[]
+  /** Where signing out goes. The identity provider's address, not ours — the
+   *  session belongs to the proxy, so this app cannot end it. Absent when
+   *  there is nothing to sign out of. */
+  logoutUrl?: string
 }
 
 export interface KomootTour {

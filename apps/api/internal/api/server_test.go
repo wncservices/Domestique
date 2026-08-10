@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/wncservices/domestique/apps/api/internal/accounts"
+	"github.com/wncservices/domestique/apps/api/internal/auth"
 	"github.com/wncservices/domestique/apps/api/internal/config"
 	"github.com/wncservices/domestique/apps/api/internal/komoot"
 	"github.com/wncservices/domestique/apps/api/internal/model"
@@ -168,5 +169,59 @@ func TestRoutesAndPlanAgree(t *testing.T) {
 	// A linked account and no routes: nothing to do, and no error.
 	if len(plan.Items) != 0 {
 		t.Errorf("plan = %+v, want nothing on an empty library", plan.Items)
+	}
+}
+
+// The sign-out button exists only when there is a session to end, and the
+// address is the identity provider's — this app holds no session of its own,
+// so it cannot invent one.
+func TestMeCarriesTheLogoutURL(t *testing.T) {
+	authenticator, err := auth.New(auth.Config{
+		Mode:      auth.ModeProxy,
+		LogoutURL: "https://app.example.test/auth/logout",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &Server{Auth: authenticator}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/me", nil)
+	req.Header.Set(auth.HeaderUser, "wilant")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	var body struct {
+		LogoutURL string `json:"logoutUrl"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.LogoutURL != "https://app.example.test/auth/logout" {
+		t.Errorf("logoutUrl = %q, want the configured address", body.LogoutURL)
+	}
+}
+
+// Without authentication there is nothing to sign out of, so the button must
+// not appear — it would be a link to nowhere on a laptop.
+func TestMeHasNoLogoutURLWithoutAuth(t *testing.T) {
+	authenticator, err := auth.New(auth.Config{
+		Mode:      auth.ModeNone,
+		LogoutURL: "https://app.example.test/auth/logout",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &Server{Auth: authenticator}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/me", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	var body map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := body["logoutUrl"]; ok {
+		t.Errorf("logoutUrl present with auth off: %v", body["logoutUrl"])
 	}
 }

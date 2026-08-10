@@ -309,6 +309,9 @@ type meDTO struct {
 	Groups        []string          `json:"groups"`
 	Role          string            `json:"role"`
 	Permissions   []auth.Permission `json:"permissions"`
+	// LogoutURL is the identity provider's, not this app's: the session being
+	// ended belongs to the proxy. Empty means no sign-out button.
+	LogoutURL string `json:"logoutUrl,omitempty"`
 }
 
 // handleMe tells the UI who it is talking to and what to show. Without it the
@@ -324,6 +327,7 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		Groups:        orEmpty(id.Groups),
 		Role:          roleLabel(id.Role),
 		Permissions:   orEmpty(id.Role.Permissions()),
+		LogoutURL:     s.authenticator().LogoutURL(),
 	})
 }
 
