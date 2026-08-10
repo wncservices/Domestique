@@ -154,7 +154,51 @@ var (
 	// rather than on the status alone, because 403 is also what Garmin
 	// itself returns for other things.
 	blockedPattern = regexp.MustCompile(`(?i)Attention Required!|Sorry, you have been blocked|cf-wrapper|cf-error-details`)
+
+	// Used only to describe a page nobody expected. See fingerprint.
+	titlePattern     = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)
+	inputNamePattern = regexp.MustCompile(`(?i)<input[^>]+name="([^"]+)"`)
 )
+
+// fingerprint describes an unexpected page in terms safe to log.
+//
+// The body itself never goes near a log line — it echoes the form that was
+// posted, password included. A title, a size and the names of the form fields
+// carry none of that and are enough to recognise a page: a sign-in form that
+// came back has a password field, an MFA challenge asks for a code, and a
+// consent wall has neither.
+//
+// Field *names* only. A hidden input's value is a token; its name is
+// structure.
+func fingerprint(body []byte) string {
+	parts := make([]string, 0, 3)
+
+	if m := titlePattern.FindSubmatch(body); m != nil {
+		title := strings.Join(strings.Fields(string(m[1])), " ")
+		if len(title) > 80 {
+			title = title[:80] + "…"
+		}
+		parts = append(parts, fmt.Sprintf("title=%q", title))
+	}
+	parts = append(parts, fmt.Sprintf("bytes=%d", len(body)))
+
+	seen := map[string]bool{}
+	names := make([]string, 0, 6)
+	for _, m := range inputNamePattern.FindAllSubmatch(body, -1) {
+		name := string(m[1])
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		if names = append(names, name); len(names) == 6 {
+			break
+		}
+	}
+	if len(names) > 0 {
+		parts = append(parts, "fields=["+strings.Join(names, " ")+"]")
+	}
+	return strings.Join(parts, " ")
+}
 
 // blocked reports whether a response is Cloudflare's block page rather than
 // anything Garmin generated.
@@ -298,12 +342,13 @@ func (c *Client) submitCredentials(email, password, csrf string) (ticket string,
 	case mfaPattern.Match(body):
 		return "", ErrMFARequired
 	case status == http.StatusOK, status == http.StatusUnauthorized:
-		// Carry the status. Both codes mean "no ticket", and which one it was
-		// is the only cheap signal separating a rejected password from Garmin
-		// having changed the flow under us again — a 200 with a page we no
-		// longer parse looks identical to a wrong password from here. The
-		// body is deliberately still not included: it can echo the request.
-		return "", fmt.Errorf("%w (sign-in returned %d)", ErrBadCredentials, status)
+		// Carry the status and a description of the page. Both codes mean "no
+		// ticket", and the status alone was enough to learn that a rejected
+		// password answers 401 — which makes a 200 something else, and the
+		// question becomes *what*. The fingerprint answers that without
+		// quoting the body, which can echo the request.
+		return "", fmt.Errorf("%w (sign-in returned %d, %s)",
+			ErrBadCredentials, status, fingerprint(body))
 	default:
 		return "", fmt.Errorf("garmin: sign-in returned %d and no ticket", status)
 	}
