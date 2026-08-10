@@ -1,6 +1,8 @@
 import type {
   Account,
   AppConfig,
+  GarminConnection,
+  GarminConsumer,
   KomootImportResult,
   KomootConnection,
   KomootTour,
@@ -14,6 +16,25 @@ import type {
   UploadRequest,
 } from './types'
 
+/**
+ * A failed request, carrying what the API said rather than only how it read.
+ *
+ * The body matters when a failure is a *state* and not just a message: a
+ * Garmin sign-in refused for two-factor needs different words from a wrong
+ * password, and matching on the text of an error message across the API
+ * boundary is a thing that breaks the next time the wording is improved.
+ */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly body: Record<string, unknown> = {},
+  ) {
+    super(message)
+    this.name = 'ApiError'
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     headers: { Accept: 'application/json', ...(init?.headers ?? {}) },
@@ -24,13 +45,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     // The API returns {"error": "..."} on failure; fall back to the status text
     // when something upstream (a proxy, a crash) returns something else.
     let detail = response.statusText
+    let body: Record<string, unknown> = {}
     try {
-      const body = (await response.json()) as { error?: string }
-      if (body.error) detail = body.error
+      body = (await response.json()) as Record<string, unknown>
+      if (typeof body.error === 'string') detail = body.error
     } catch {
       /* not JSON — keep the status text */
     }
-    throw new Error(detail || `request to ${path} failed`)
+    throw new ApiError(detail || `request to ${path} failed`, response.status, body)
   }
 
   if (response.status === 204) return undefined as T
@@ -55,6 +77,26 @@ export const api = {
     }),
   komootDisconnect: () =>
     request<KomootConnection>('/api/komoot/connection', { method: 'DELETE' }),
+
+  garminConnection: () => request<GarminConnection>('/api/garmin/connection'),
+  garminConnect: (email: string, password: string) =>
+    request<GarminConnection>('/api/garmin/connection', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    }),
+  garminDisconnect: () =>
+    request<GarminConnection>('/api/garmin/connection', { method: 'DELETE' }),
+
+  garminConsumer: () => request<GarminConsumer>('/api/garmin/consumer'),
+  setGarminConsumer: (key: string, secret: string) =>
+    request<GarminConsumer>('/api/garmin/consumer', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key, secret }),
+    }),
+  clearGarminConsumer: () =>
+    request<GarminConsumer>('/api/garmin/consumer', { method: 'DELETE' }),
 
   komootTours: () => request<KomootTour[]>('/api/komoot/tours'),
   komootImport: (tourIds: string[]) =>

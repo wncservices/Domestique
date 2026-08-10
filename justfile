@@ -23,6 +23,11 @@ reset:
 logs *ARGS:
     docker compose logs --follow {{ARGS}}
 
+# Install the Garmin app keys, so the sign-in form appears. Needs `just up`
+# first; run it again after `just reset`.
+garmin-keys:
+    docker compose run --rm node node docker/garmin-keys.mjs
+
 # The CLI inside the running app, same database. e.g. `just cli state`
 cli *ARGS:
     docker compose exec app domestique {{ARGS}}

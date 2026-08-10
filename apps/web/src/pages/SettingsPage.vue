@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { api } from '@/api/client'
-import type { KomootConnection } from '@/api/types'
+import type { GarminConnection, KomootConnection } from '@/api/types'
 import { useLibrary } from '@/composables/useLibrary'
 import AccountsPanel from '@/components/AccountsPanel.vue'
+import GarminSetup from '@/components/GarminSetup.vue'
 import KomootConnect from '@/components/KomootConnect.vue'
 
 const { accounts, me, config, canManageAccounts, canImportKomoot, komootEnabled, refresh } =
@@ -14,6 +15,9 @@ const { accounts, me, config, canManageAccounts, canImportKomoot, komootEnabled,
 const connection = ref<KomootConnection>({ connected: false, shared: false, canConnect: false })
 const connectionError = ref('')
 
+const garmin = ref<GarminConnection>({ connected: false, canConnect: false })
+const garminError = ref('')
+
 async function loadConnection() {
   if (!komootEnabled.value || !canImportKomoot.value) return
   try {
@@ -23,13 +27,29 @@ async function loadConnection() {
   }
 }
 
+async function loadGarmin() {
+  if (!canManageAccounts.value) return
+  try {
+    garmin.value = await api.garminConnection()
+  } catch (err) {
+    garminError.value = err instanceof Error ? err.message : String(err)
+  }
+}
+
+// Signing in to Garmin links the head unit, so the accounts list is stale the
+// moment either of those changes.
+async function garminChanged(next: GarminConnection) {
+  garmin.value = next
+  await refresh()
+}
+
 onMounted(async () => {
   // Wait for the shared state first. Whether Komoot is worth asking about
   // depends on the config and the caller's permissions, and mounting a page
   // races the shell's first fetch — without this the card renders and then
   // reports "no encryption key" because it never got to ask.
   await refresh()
-  await loadConnection()
+  await Promise.all([loadConnection(), loadGarmin()])
 })
 </script>
 
@@ -39,7 +59,17 @@ onMounted(async () => {
       :accounts="accounts"
       :me="me"
       :can-manage="canManageAccounts"
+      :garmin="garmin"
       @changed="refresh"
+      @garmin-changed="garminChanged"
+    />
+
+    <UAlert
+      v-if="garminError"
+      color="error"
+      variant="subtle"
+      icon="i-lucide-triangle-alert"
+      :description="garminError"
     />
 
     <UCard v-if="canImportKomoot && komootEnabled" variant="outline">
@@ -61,6 +91,23 @@ onMounted(async () => {
       />
 
       <KomootConnect :connection="connection" @changed="connection = $event" />
+    </UCard>
+
+    <!-- Deployment plumbing, and only an admin gets it: the API omits the
+         consumer entirely for everyone else, so this card does not exist for
+         a rider. Nothing here is theirs to set or worth them knowing. -->
+    <UCard v-if="garmin.consumer" variant="outline">
+      <template #header>
+        <h2 class="flex items-center gap-2 font-medium text-highlighted">
+          <UIcon name="i-lucide-watch" />
+          Garmin setup
+        </h2>
+        <p class="text-sm text-muted">
+          One pair of app keys for the whole deployment, so riders can sign in.
+        </p>
+      </template>
+
+      <GarminSetup :consumer="garmin.consumer" @changed="loadGarmin" />
     </UCard>
 
     <UCard variant="outline">

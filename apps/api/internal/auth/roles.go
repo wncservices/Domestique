@@ -63,6 +63,11 @@ const (
 	// PermManageAccounts is linking and unlinking head units. A rider manages
 	// their own; touching somebody else's additionally needs PermEditAny.
 	PermManageAccounts Permission = "accounts:manage"
+	// PermManageSettings is changing deployment-wide configuration from the
+	// UI — today, the Garmin OAuth1 consumer. Admin only: these settings
+	// belong to the whole deployment rather than to the rider changing them,
+	// and a bad value breaks the feature for everybody.
+	PermManageSettings Permission = "settings:manage"
 )
 
 // minimumRole is the least privileged role that holds each permission.
@@ -74,6 +79,7 @@ var minimumRole = map[Permission]Role{
 	PermKomootSync:     RoleRider,
 	PermManageAccounts: RoleRider,
 	PermEditAny:        RoleAdmin,
+	PermManageSettings: RoleAdmin,
 }
 
 // Can reports whether a role holds a permission.
@@ -92,7 +98,7 @@ func (r Role) Permissions() []Permission {
 	var out []Permission
 	for _, p := range []Permission{
 		PermReadRoutes, PermUploadRoute, PermEditOwn, PermEditAny, PermPush,
-		PermKomootSync, PermManageAccounts,
+		PermKomootSync, PermManageAccounts, PermManageSettings,
 	} {
 		if r.Can(p) {
 			out = append(out, p)

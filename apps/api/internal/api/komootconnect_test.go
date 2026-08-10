@@ -12,12 +12,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wncservices/domestique/apps/api/internal/accounts"
 	"github.com/wncservices/domestique/apps/api/internal/api"
 	"github.com/wncservices/domestique/apps/api/internal/auth"
 	"github.com/wncservices/domestique/apps/api/internal/config"
+	"github.com/wncservices/domestique/apps/api/internal/garmin"
 	"github.com/wncservices/domestique/apps/api/internal/komoot"
-	"github.com/wncservices/domestique/apps/api/internal/komootlink"
+	"github.com/wncservices/domestique/apps/api/internal/providerlink"
 	"github.com/wncservices/domestique/apps/api/internal/secrets"
+	"github.com/wncservices/domestique/apps/api/internal/settings"
 	"github.com/wncservices/domestique/apps/api/internal/source"
 	"github.com/wncservices/domestique/apps/api/internal/state"
 )
@@ -66,8 +69,11 @@ type connectHarness struct {
 	t         *testing.T
 	client    *http.Client
 	base      string
-	links     *komootlink.Store
+	links     *providerlink.Store
 	connector *fakeConnector
+	garmin    *fakeGarmin
+	settings  *settings.Store
+	accounts  *accounts.Store
 	db        *source.DB
 }
 
@@ -98,7 +104,7 @@ func newConnectHarness(t *testing.T, withKey bool) *connectHarness {
 		}
 	}
 
-	links, err := komootlink.UseDB(db.Conn(), db.DSN(), box)
+	links, err := providerlink.UseDB(db.Conn(), db.DSN(), box)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,14 +117,30 @@ func newConnectHarness(t *testing.T, withKey bool) *connectHarness {
 		t.Fatal(err)
 	}
 
+	appSettings, err := settings.UseDB(db.Conn(), db.DSN(), box)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A consumer pair in the environment, so the default harness is a
+	// deployment where Garmin sign-in is available. Set explicitly rather than
+	// inherited: whether these tests pass must not depend on whether the
+	// machine running them has real Garmin credentials exported.
+	t.Setenv(garmin.EnvConsumerKey, "test-consumer-key")
+	t.Setenv(garmin.EnvConsumerSecret, "test-consumer-secret")
+
 	connector := &fakeConnector{}
+	garminConnector := &fakeGarmin{}
+	accountStore := seedRoleAccounts(t, db)
 	srv := &api.Server{
 		Source:        db,
 		Store:         store,
 		Auth:          authenticator,
-		Accounts:      seedRoleAccounts(t, db),
-		KomootLinks:   links,
+		Accounts:      accountStore,
+		Links:         links,
 		Connector:     connector,
+		Garmin:        garminConnector,
+		Settings:      appSettings,
 		KomootEnabled: true,
 		Config:        &config.Config{Komoot: config.KomootConfig{Enabled: true}},
 	}
@@ -127,7 +149,8 @@ func newConnectHarness(t *testing.T, withKey bool) *connectHarness {
 	t.Cleanup(server.Close)
 
 	return &connectHarness{t: t, client: server.Client(), base: server.URL,
-		links: links, connector: connector, db: db}
+		links: links, connector: connector, garmin: garminConnector,
+		settings: appSettings, accounts: accountStore, db: db}
 }
 
 func (h *connectHarness) as(user, groups, method, path, body string) *http.Response {
@@ -182,7 +205,7 @@ func TestConnectStoresTheSessionAndNotThePassword(t *testing.T) {
 	// ...and nowhere else. This is the reason the feature is built this way.
 	var rows int
 	if err := h.db.Conn().QueryRow(
-		`SELECT COUNT(*) FROM komoot_links WHERE CAST(token AS TEXT) LIKE '%hunter2%'`).
+		`SELECT COUNT(*) FROM provider_links WHERE CAST(secret AS TEXT) LIKE '%hunter2%'`).
 		Scan(&rows); err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +213,7 @@ func TestConnectStoresTheSessionAndNotThePassword(t *testing.T) {
 		t.Fatal("the password appears in the stored token")
 	}
 
-	userID, token, err := h.links.Credentials("wilant")
+	userID, token, err := h.links.Secret("komoot", "wilant")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,10 +233,10 @@ func TestConnectIgnoresARiderInTheBody(t *testing.T) {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 
-	if _, err := h.links.Get("wilant"); err != nil {
+	if _, err := h.links.Get("komoot", "wilant"); err != nil {
 		t.Errorf("the connection was not stored against the session rider: %v", err)
 	}
-	if _, err := h.links.Get("someone-else"); err == nil {
+	if _, err := h.links.Get("komoot", "someone-else"); err == nil {
 		t.Error("the body's rider was honoured")
 	}
 }
@@ -293,10 +316,10 @@ func TestDisconnectRemovesOnlyTheCallersConnection(t *testing.T) {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 
-	if _, err := h.links.Get("wilant"); err == nil {
+	if _, err := h.links.Get("komoot", "wilant"); err == nil {
 		t.Error("the caller's connection survived")
 	}
-	if _, err := h.links.Get("friend"); err != nil {
+	if _, err := h.links.Get("komoot", "friend"); err != nil {
 		t.Errorf("another rider's connection was removed: %v", err)
 	}
 }
@@ -317,7 +340,7 @@ func TestFailedLoginStoresNothing(t *testing.T) {
 	if msg, _ := body["error"].(string); strings.Contains(msg, "wrong") {
 		t.Errorf("the error echoes the password: %q", msg)
 	}
-	if _, err := h.links.Get("wilant"); err == nil {
+	if _, err := h.links.Get("komoot", "wilant"); err == nil {
 		t.Error("a connection was stored despite the failed login")
 	}
 }

@@ -47,6 +47,16 @@ func (c *Client) loadConsumer() error {
 	return nil
 }
 
+// ConsumerFromEnv returns the consumer pair the environment carries.
+//
+// One of two places it can come from — an admin can also paste it into the UI,
+// which is stored encrypted and wins over this. Callers decide between them;
+// this only reports what the environment has.
+func ConsumerFromEnv() (key, secret string, ok bool) {
+	key, secret = os.Getenv(EnvConsumerKey), os.Getenv(EnvConsumerSecret)
+	return key, secret, key != "" && secret != ""
+}
+
 // SetConsumer supplies the OAuth1 consumer directly, for tests and for callers
 // that hold it somewhere other than the environment.
 func (c *Client) SetConsumer(key, secret string) {

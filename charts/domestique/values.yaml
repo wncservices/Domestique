@@ -49,9 +49,14 @@ config:
 # Keys Domestique reads:
 #   DOMESTIQUE_SOURCE_DSN      PostgreSQL connection string (overrides config.source.dsn)
 #   DOMESTIQUE_ENCRYPTION_KEY  base64 of 32 bytes; lets riders sign in to Komoot
-#                              from the UI. Generate with `domestique keygen`.
+#                              and Garmin from the UI. `domestique keygen`.
 #                              Without it that form is not offered, and replacing
 #                              it invalidates every stored sign-in.
+#   GARMIN_OAUTH_CONSUMER_KEY  the OAuth1 consumer Connect's own clients use.
+#   GARMIN_OAUTH_CONSUMER_SECRET  Optional: an admin can paste the pair into
+#                              Settings instead, which is stored encrypted and
+#                              takes precedence. Supply them here to keep them
+#                              in Vault rather than in the database.
 #   KOMOOT_EMAIL               one shared Komoot account, as an alternative to
 #   KOMOOT_PASSWORD            riders signing in themselves
 envFrom: []

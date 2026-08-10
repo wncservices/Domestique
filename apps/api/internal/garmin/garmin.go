@@ -59,6 +59,16 @@ var ErrMFARequired = errors.New("garmin: this account requires two-factor authen
 // ErrBadCredentials means Garmin rejected the email or password.
 var ErrBadCredentials = errors.New("garmin: email or password not accepted")
 
+// ErrBlocked means Cloudflare refused the request before Garmin saw it.
+//
+// Its own error because it is the one failure that says nothing about the
+// account: the sign-in never reached Garmin. Reporting it as a wrong password
+// sends someone to reset a password that was fine, which is the same mistake
+// as reporting an MFA challenge that way. Observed after repeated failed
+// attempts from one address, so it usually clears on its own.
+var ErrBlocked = errors.New(
+	"garmin: the sign-in was blocked by Garmin's bot protection before it reached them")
+
 // Session is what has to be kept to stay signed in.
 //
 // OAuth1Token and OAuth1Secret are the long-lived pair; everything else is
@@ -140,7 +150,18 @@ var (
 	ticketPattern = regexp.MustCompile(`embed\?ticket=([^"]+)"`)
 	// Connect returns 200 with an MFA page rather than an error status.
 	mfaPattern = regexp.MustCompile(`(?i)mfa-code|verificationCode|two-step`)
+	// Cloudflare's block page. Matched on the interstitial's own markers
+	// rather than on the status alone, because 403 is also what Garmin
+	// itself returns for other things.
+	blockedPattern = regexp.MustCompile(`(?i)Attention Required!|Sorry, you have been blocked|cf-wrapper|cf-error-details`)
 )
+
+// blocked reports whether a response is Cloudflare's block page rather than
+// anything Garmin generated.
+func blocked(status int, body []byte) bool {
+	return (status == http.StatusForbidden || status == http.StatusTooManyRequests) &&
+		blockedPattern.Match(body)
+}
 
 // Login signs in with a password.
 //
@@ -149,6 +170,14 @@ var (
 func (c *Client) Login(email, password string) error {
 	if email == "" || password == "" {
 		return errors.New("garmin: email and password are both required")
+	}
+
+	// Connect's own page loads the embedded widget before the form, which
+	// sets cookies the later requests are expected to carry. Skipping it
+	// worked for a while and is the kind of difference from a real browser
+	// that bot protection notices, so it is no longer skipped.
+	if err := c.preflight(); err != nil {
+		return err
 	}
 
 	csrf, err := c.signinPage()
@@ -190,11 +219,39 @@ func (c *Client) signinParams() url.Values {
 	}
 }
 
+// embedParams are what the sign-in widget is loaded with.
+func (c *Client) embedParams() url.Values {
+	return url.Values{
+		"id":                              {"gauth-widget"},
+		"embedWidget":                     {"true"},
+		"gauthHost":                       {c.SSOBase},
+		"redirectAfterAccountLoginUrl":    {c.WebBase + "/modern/"},
+		"redirectAfterAccountCreationUrl": {c.WebBase + "/modern/"},
+	}
+}
+
+// preflight loads the widget, for its cookies.
+func (c *Client) preflight() error {
+	endpoint := c.SSOBase + "/embed?" + c.embedParams().Encode()
+	body, status, err := c.do(http.MethodGet, endpoint, nil, "")
+	if err != nil {
+		return fmt.Errorf("garmin: loading the sign-in widget: %w", err)
+	}
+	if blocked(status, body) {
+		return ErrBlocked
+	}
+	return nil
+}
+
 func (c *Client) signinPage() (csrf string, err error) {
 	endpoint := c.SSOBase + "/signin?" + c.signinParams().Encode()
-	body, _, err := c.do(http.MethodGet, endpoint, nil, "")
+	body, status, err := c.do(http.MethodGet, endpoint, nil, "",
+		header{"Referer", c.SSOBase + "/embed?" + c.embedParams().Encode()})
 	if err != nil {
 		return "", fmt.Errorf("garmin: fetching the sign-in page: %w", err)
+	}
+	if blocked(status, body) {
+		return "", ErrBlocked
 	}
 
 	match := csrfPattern.FindSubmatch(body)
@@ -214,7 +271,10 @@ func (c *Client) submitCredentials(email, password, csrf string) (ticket string,
 
 	endpoint := c.SSOBase + "/signin?" + c.signinParams().Encode()
 	body, status, err := c.do(http.MethodPost, endpoint, strings.NewReader(form.Encode()),
-		"application/x-www-form-urlencoded")
+		"application/x-www-form-urlencoded",
+		// A browser posts a form from the page it just loaded. Without this
+		// the request looks like it came from nowhere.
+		header{"Referer", endpoint})
 	if err != nil {
 		return "", err
 	}
@@ -223,12 +283,21 @@ func (c *Client) submitCredentials(email, password, csrf string) (ticket string,
 		return string(match[1]), nil
 	}
 
-	// No ticket. Work out why, because "login failed" covers three very
-	// different situations and only one of them is worth retrying.
+	// No ticket. Work out why, because "login failed" covers four very
+	// different situations and only one of them is the password.
+	//
+	// The credentials case is both 200 and 401: Garmin answered 200 with an
+	// error page for years and now answers 401, and both were observed within
+	// a day of each other. Treating only 200 as "wrong password" turned a
+	// rejected password into "Garmin could not be signed in to just now — try
+	// again later", which is a maddening thing to be told when the fix is to
+	// check what you typed.
 	switch {
+	case blocked(status, body):
+		return "", ErrBlocked
 	case mfaPattern.Match(body):
 		return "", ErrMFARequired
-	case status == http.StatusOK:
+	case status == http.StatusOK, status == http.StatusUnauthorized:
 		return "", ErrBadCredentials
 	default:
 		return "", fmt.Errorf("garmin: sign-in returned %d and no ticket", status)
@@ -368,6 +437,11 @@ func (c *Client) do(method, endpoint string, body io.Reader, contentType string,
 		return nil, 0, err
 	}
 	req.Header.Set("User-Agent", c.UserAgent)
+	// What a browser sends and a bare HTTP client does not. Set before the
+	// caller's own headers so anything explicit still wins — the API calls
+	// ask for JSON and get it.
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	req.Header.Set("Accept-Language", "en-GB,en;q=0.9")
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}

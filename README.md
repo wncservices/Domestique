@@ -64,6 +64,13 @@ Komoot import is **on** in that stack: open the app and sign in to Komoot from
 the panel. The compose file carries a throwaway encryption key so that works
 out of the box.
 
+For Garmin, install the app keys once — see [Linking a head
+unit](#linking-a-head-unit) for what they are and where they come from:
+
+```bash
+just garmin-keys   # after `just up`; again after `just reset`
+```
+
 With Go and Node installed, which is quicker:
 
 ```bash
@@ -103,7 +110,7 @@ auth:
 |---|---|
 | `viewer` | read routes, download GPX, see what would be pushed |
 | `rider` | + upload, import from Komoot, link **their own** head units, push, edit and delete **their own** routes |
-| `admin` | + edit and delete **anyone's** routes and head units |
+| `admin` | + edit and delete **anyone's** routes and head units, and set up Garmin for the deployment |
 
 > **The app must not be reachable except through the proxy.** With `mode: proxy`
 > it believes the `Remote-User` header — and so would anyone who can talk to it
@@ -116,10 +123,44 @@ so in the header.
 
 ## Linking a head unit
 
-Nothing about riders or devices is configured. Each rider signs in and links
-their own Garmin or Wahoo from the web UI; the link is stored in the database,
-keyed to their Authelia username. A route with no targets of its own goes to
-every linked head unit.
+Nothing about riders or devices is configured. Each rider links their own head
+unit from Settings, keyed to their Authelia username. A route with no targets
+of its own goes to every linked head unit.
+
+**Garmin is linked by signing in.** Enter your Garmin Connect email and
+password on the Settings page: the password is used for that one sign-in and
+discarded, and what Garmin gives back is stored encrypted in its place.
+
+Before anyone can do that, the deployment needs one pair of Garmin **app
+keys** — the OAuth1 consumer Connect's own clients use. This is *not* a
+per-rider credential: one pair signs everybody's sign-in, and an admin sets it
+once. Two ways, and the first needs no file:
+
+- **Paste them into Settings.** An admin sees a "Garmin app keys" panel under
+  the Garmin card; saving there stores them encrypted in the database and the
+  sign-in form appears for every rider. Replaceable and removable from the
+  same panel. Locally, `just garmin-keys` does the same thing without the
+  copying — it fetches the pair, checks it looks usable, and installs it
+  through that same endpoint.
+- **Supply them in the environment**, if you would rather keep them in Vault:
+  `GARMIN_OAUTH_CONSUMER_KEY` and `GARMIN_OAUTH_CONSUMER_SECRET`. Anything set
+  in Settings wins over these, and removing it falls back to them.
+
+Either way needs an encryption key (`domestique keygen`, as below). The keys
+themselves are deliberately **not in this repository** — baking scraped
+credentials into a source-available project invites them to be treated as ours
+to publish.
+
+Two limits worth knowing before you try:
+
+- **An account with two-factor authentication cannot be signed in to this
+  way.** There is no code challenge to answer — Garmin offers no other route
+  for an app like this one, and the UI says so rather than blaming your
+  password.
+- **The sign-in lasts about a year**, then it stops working and Settings shows
+  when that will be. Signing in again replaces it.
+
+Wahoo is still a stub — see [Roadmap](#roadmap).
 
 ## Importing from Komoot
 
@@ -241,7 +282,7 @@ none. Naming targets is what keeps one rider's private routes off the other's de
 |---|---|---|
 | 1 | Library, diff engine, CLI, API, web UI | ✅ |
 | 2 | GPX → FIT course conversion, with inferred turn cues | ✅ |
-| 3 | Garmin push (unofficial Connect session) | ⬜ stub |
+| 3 | Garmin: sign-in ✅, FIT course upload ✅, push not wired to the library yet | 🟡 |
 | 4 | Wahoo push (Cloud API) | ⬜ stub, needs approved API access |
 | 5 | Deploy: Helm chart ✅, scheduled reconcile, Vault-backed tokens | 🟡 |
 | 6 | Metrics + staleness alerting | ⬜ |

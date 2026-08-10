@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -366,4 +367,112 @@ func parseAuthHeader(t *testing.T, header string) map[string]string {
 	}
 	sort.Strings(names)
 	return out
+}
+
+// A Cloudflare block is not a wrong password, and must not be reported as
+// one: it says nothing about the account, and sending someone to reset a
+// password that was fine is the same mistake as mislabelling an MFA prompt.
+func TestCloudflareBlockIsItsOwnError(t *testing.T) {
+	const blockPage = `<!DOCTYPE html><html><head><title>Attention Required! | Cloudflare</title></head>
+<body><div class="cf-wrapper">Sorry, you have been blocked</div></body></html>`
+
+	for _, at := range []string{"embed", "signin", "post"} {
+		t.Run(at, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				blockHere := (at == "embed" && strings.Contains(r.URL.Path, "/embed")) ||
+					(at == "signin" && strings.Contains(r.URL.Path, "/signin") && r.Method == http.MethodGet) ||
+					(at == "post" && r.Method == http.MethodPost)
+				if blockHere {
+					w.WriteHeader(http.StatusForbidden)
+					_, _ = io.WriteString(w, blockPage)
+					return
+				}
+				_, _ = io.WriteString(w, `<form><input name="_csrf" value="token-1" /></form>`)
+			}))
+			defer server.Close()
+
+			client := New()
+			client.SSOBase, client.APIBase, client.WebBase = server.URL, server.URL, server.URL
+			client.SetConsumer("k", "s")
+
+			err := client.Login("rider@example.com", "pw")
+			if !errors.Is(err, ErrBlocked) {
+				t.Errorf("Login error = %v, want ErrBlocked", err)
+			}
+			if errors.Is(err, ErrBadCredentials) {
+				t.Error("a block was reported as a bad password")
+			}
+		})
+	}
+}
+
+// ...and a genuine rejection is still a rejection. Without this the block
+// detector could swallow everything and nobody would notice.
+func TestPlainRejectionIsStillBadCredentials(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			_, _ = io.WriteString(w, `<html><body>Invalid username or password</body></html>`)
+			return
+		}
+		_, _ = io.WriteString(w, `<form><input name="_csrf" value="token-1" /></form>`)
+	}))
+	defer server.Close()
+
+	client := New()
+	client.SSOBase, client.APIBase, client.WebBase = server.URL, server.URL, server.URL
+	client.SetConsumer("k", "s")
+
+	if err := client.Login("rider@example.com", "pw"); !errors.Is(err, ErrBadCredentials) {
+		t.Errorf("Login error = %v, want ErrBadCredentials", err)
+	}
+}
+
+// The widget load is what sets the cookies the rest of the flow carries.
+func TestLoginLoadsTheWidgetFirst(t *testing.T) {
+	var order []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		order = append(order, r.Method+" "+r.URL.Path)
+		if r.Method == http.MethodPost {
+			_, _ = io.WriteString(w, `<a href="embed?ticket=ST-1-abc"></a>`)
+			return
+		}
+		_, _ = io.WriteString(w, `<form><input name="_csrf" value="token-1" /></form>`)
+	}))
+	defer server.Close()
+
+	client := New()
+	client.SSOBase, client.APIBase, client.WebBase = server.URL, server.URL, server.URL
+	client.SetConsumer("k", "s")
+	_ = client.Login("rider@example.com", "pw")
+
+	if len(order) == 0 || !strings.HasSuffix(order[0], "/embed") {
+		t.Errorf("request order = %v, want the widget loaded first", order)
+	}
+}
+
+// Garmin has rejected a password with 200-and-an-error-page and with 401,
+// both observed within a day. Either has to read as "check what you typed",
+// not as "Garmin is having a bad day".
+func TestRejectedCredentialsInEitherDialect(t *testing.T) {
+	for _, status := range []int{http.StatusOK, http.StatusUnauthorized} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodPost {
+					w.WriteHeader(status)
+					_, _ = io.WriteString(w, `<html><body>Invalid username or password</body></html>`)
+					return
+				}
+				_, _ = io.WriteString(w, `<form><input name="_csrf" value="token-1" /></form>`)
+			}))
+			defer server.Close()
+
+			client := New()
+			client.SSOBase, client.APIBase, client.WebBase = server.URL, server.URL, server.URL
+			client.SetConsumer("k", "s")
+
+			if err := client.Login("rider@example.com", "pw"); !errors.Is(err, ErrBadCredentials) {
+				t.Errorf("Login error = %v, want ErrBadCredentials", err)
+			}
+		})
+	}
 }

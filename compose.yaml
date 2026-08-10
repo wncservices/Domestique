@@ -48,6 +48,12 @@ services:
       # panel appears and says it cannot sign in, which is the honest state.
       KOMOOT_EMAIL: ${KOMOOT_EMAIL:-}
       KOMOOT_PASSWORD: ${KOMOOT_PASSWORD:-}
+      # Garmin sign-in needs the OAuth1 consumer pair Connect's own clients
+      # use. Deliberately not in this repository — see internal/garmin/oauth1.go
+      # — so without them the Settings page says the sign-in is unavailable
+      # rather than offering a form that cannot work. Same .env file.
+      GARMIN_OAUTH_CONSUMER_KEY: ${GARMIN_OAUTH_CONSUMER_KEY:-}
+      GARMIN_OAUTH_CONSUMER_SECRET: ${GARMIN_OAUTH_CONSUMER_SECRET:-}
       # Encrypts stored Komoot sessions. This one is a throwaway for local use
       # and is committed on purpose — it protects nothing real, and generating
       # a fresh one per `up` would invalidate yesterday's connection. A
