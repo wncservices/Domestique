@@ -197,8 +197,13 @@ func (s *Server) handleGarminConnect(w http.ResponseWriter, r *http.Request) {
 // somebody ends up resetting a password that was never wrong.
 func (s *Server) writeGarminLoginError(w http.ResponseWriter, rider string, err error) {
 	// Logged without the password and without the upstream body, which can
-	// echo the request.
-	s.logger().Warn("garmin connect failed", "rider", rider, "reason", classifyGarminError(err))
+	// echo the request. The error text is safe and worth having: `reason` is
+	// one of four words, and on its own it cannot say whether "credentials"
+	// meant a rejected password or a response shape we stopped recognising.
+	// That distinction decides whether the rider retypes something or somebody
+	// reads Garmin's HTML again, and guessing wrong wastes an afternoon.
+	s.logger().Warn("garmin connect failed",
+		"rider", rider, "reason", classifyGarminError(err), "detail", err.Error())
 
 	switch {
 	case errors.Is(err, garmin.ErrBlocked):
