@@ -64,6 +64,13 @@ Komoot import is **on** in that stack: open the app and sign in to Komoot from
 the panel. The compose file carries a throwaway encryption key so that works
 out of the box.
 
+For Garmin, install the app keys once — see [Linking a head
+unit](#linking-a-head-unit) for what they are and where they come from:
+
+```bash
+just garmin-keys   # after `just up`; again after `just reset`
+```
+
 With Go and Node installed, which is quicker:
 
 ```bash
@@ -132,7 +139,9 @@ once. Two ways, and the first needs no file:
 - **Paste them into Settings.** An admin sees a "Garmin app keys" panel under
   the Garmin card; saving there stores them encrypted in the database and the
   sign-in form appears for every rider. Replaceable and removable from the
-  same panel.
+  same panel. Locally, `just garmin-keys` does the same thing without the
+  copying — it fetches the pair, checks it looks usable, and installs it
+  through that same endpoint.
 - **Supply them in the environment**, if you would rather keep them in Vault:
   `GARMIN_OAUTH_CONSUMER_KEY` and `GARMIN_OAUTH_CONSUMER_SECRET`. Anything set
   in Settings wins over these, and removing it falls back to them.
