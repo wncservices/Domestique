@@ -913,8 +913,15 @@ func (s *Server) spaHandler() http.Handler {
 
 		// Real files are served as themselves on either host: /assets/... is
 		// shared by both pages, and the landing page has none of its own.
-		_, statErr := fs.Stat(s.WebFS, clean)
-		missing := errors.Is(statErr, os.ErrNotExist)
+		//
+		// A directory counts as missing. http.FileServer lists one otherwise,
+		// so /assets/ answered with an index of every file in the build — on
+		// the public host as well. Nothing secret is in those names, but a
+		// listing is not something anyone asked this server to publish, and
+		// treating a directory as "not a file" both removes it and leaves the
+		// path handled by the same fallback as any other unknown one.
+		info, statErr := fs.Stat(s.WebFS, clean)
+		missing := errors.Is(statErr, os.ErrNotExist) || (statErr == nil && info.IsDir())
 
 		// On the landing host every path that is not a real file is the
 		// logged-out page — not just "/". The app is a different host, and

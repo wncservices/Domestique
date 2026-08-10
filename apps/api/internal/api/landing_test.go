@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"testing/fstest"
 )
@@ -74,5 +75,40 @@ func TestMissingLandingFallsBackToTheApp(t *testing.T) {
 
 	if rec.Code != http.StatusOK || rec.Body.String() != "<html>APP</html>" {
 		t.Errorf("status %d body %q, want the app", rec.Code, rec.Body.String())
+	}
+}
+
+// http.FileServer publishes a directory index for any directory it is asked
+// for, so /assets/ answered with a list of every file in the build — on the
+// public host too. Nothing secret is in those names, but nobody asked this
+// server to publish an index, and a directory is not a page.
+func TestDirectoriesAreNotListed(t *testing.T) {
+	web := fstest.MapFS{
+		"index.html":    {Data: []byte("<html>APP</html>")},
+		"landing.html":  {Data: []byte("<html>LANDING</html>")},
+		"assets/app.js": {Data: []byte("<html>ASSET</html>")},
+	}
+
+	for _, tc := range []struct{ name, host, path, want string }{
+		{"apex", "domestique.dev", "/assets/", "LANDING"},
+		{"app host", "app.domestique.dev", "/assets/", "APP"},
+		{"without the trailing slash", "app.domestique.dev", "/assets", "APP"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := &Server{WebFS: web, LandingHost: "domestique.dev"}
+
+			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			req.Host = tc.host
+			rec := httptest.NewRecorder()
+			srv.spaHandler().ServeHTTP(rec, req)
+
+			body := rec.Body.String()
+			if strings.Contains(body, "app.js") {
+				t.Errorf("the directory was listed: %q", body)
+			}
+			if body != "<html>"+tc.want+"</html>" {
+				t.Errorf("served %q, want %s", body, tc.want)
+			}
+		})
 	}
 }
