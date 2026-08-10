@@ -306,3 +306,55 @@ func (s *Server) ensureAccount(rider string, provider model.Provider, label stri
 // caller that needs it: providerlink.Secret(garminProvider, rider) returns the
 // JSON above. It is not here yet because nothing pushes yet, and a decrypt
 // path with no caller is a decrypt path nothing exercises.
+
+// handleGarminDevices lists the head units on the caller's own account.
+//
+// Informational, and worth being clear about why it exists: linking a Garmin
+// account tells a rider nothing about whether their Edge will actually see a
+// course. Their devices, named, answer that. A course is pushed to the
+// account and Connect syncs it to whichever units can take it — so this is
+// not a list to choose from, it is a list of who is listening.
+func (s *Server) handleGarminDevices(w http.ResponseWriter, r *http.Request) {
+	if !s.require(w, r, auth.PermManageAccounts) {
+		return
+	}
+	if s.Garmin == nil || s.Links == nil {
+		writeJSON(w, http.StatusOK, []garmin.Device{})
+		return
+	}
+
+	rider := auth.FromContext(r.Context()).User
+	if rider == "" {
+		writeJSON(w, http.StatusOK, []garmin.Device{})
+		return
+	}
+
+	_, secret, err := s.Links.Secret(garminProvider, rider)
+	if err != nil {
+		// Not connected, or nothing readable. Neither is an error worth a
+		// screenful: there is simply nothing to list.
+		writeJSON(w, http.StatusOK, []garmin.Device{})
+		return
+	}
+
+	var session garmin.Session
+	if err := json.Unmarshal([]byte(secret), &session); err != nil {
+		s.logger().Warn("stored garmin session is unreadable", "rider", rider, "err", err)
+		writeJSON(w, http.StatusOK, []garmin.Device{})
+		return
+	}
+
+	consumer, _ := s.garminConsumer()
+	devices, err := s.Garmin.Devices(consumer, session)
+	if err != nil {
+		// An undocumented endpoint that moved is Garmin's problem, not a
+		// fault in the connection — which still works for everything else.
+		s.logger().Warn("garmin device list failed", "rider", rider, "err", err)
+		writeJSON(w, http.StatusBadGateway, map[string]string{
+			"error": "Garmin would not list the devices on this account just now.",
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, devices)
+}

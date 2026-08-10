@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useToast } from '@nuxt/ui/composables'
 import { api } from '@/api/client'
-import type { Account, GarminConnection, Me, Provider } from '@/api/types'
+import type { Account, GarminConnection, GarminDevice, Me, Provider } from '@/api/types'
 import GarminSignIn from '@/components/GarminSignIn.vue'
 
 const props = defineProps<{
@@ -20,6 +20,36 @@ const emit = defineEmits<{ changed: []; garminChanged: [GarminConnection] }>()
 const signingIn = ref(false)
 
 const toast = useToast()
+
+// The head units on the connected Garmin account.
+//
+// Linking an account does not tell a rider whether their Edge will see a
+// course; naming their devices does. Fetched separately from the account list
+// because it is a live call to Garmin, and a slow or unhappy Connect must not
+// hold up the rest of the panel.
+const devices = ref<GarminDevice[]>([])
+const devicesError = ref('')
+
+async function loadDevices() {
+  if (!props.garmin.connected) {
+    devices.value = []
+    return
+  }
+  devicesError.value = ''
+  try {
+    devices.value = await api.garminDevices()
+  } catch (err) {
+    devicesError.value = err instanceof Error ? err.message : String(err)
+  }
+}
+
+onMounted(loadDevices)
+watch(() => props.garmin.connected, loadDevices)
+
+function lastSync(device: GarminDevice): string {
+  if (!device.lastSync) return 'never synced'
+  return `last synced ${new Date(device.lastSync).toLocaleDateString()}`
+}
 
 const linking = ref<Provider | null>(null)
 const unlinking = ref('')
@@ -131,6 +161,17 @@ async function unlink(account: Account) {
       class="mb-4"
     />
 
+    <!-- Garmin declining to list devices is not a broken connection: courses
+         still sync. Said quietly, so it does not read as a failure. -->
+    <UAlert
+      v-if="devicesError"
+      color="warning"
+      variant="subtle"
+      icon="i-lucide-info"
+      :description="devicesError"
+      class="mb-4"
+    />
+
     <div v-if="accounts.length" class="flex flex-col divide-y divide-default">
       <div
         v-for="account in accounts"
@@ -160,6 +201,28 @@ async function unlink(account: Account) {
           aria-label="Unlink"
           @click="unlink(account)"
         />
+
+        <!-- The units Connect will sync a pushed course to. Shown under the
+             account they belong to rather than as separate rows: they are not
+             things to link or unlink, they are who is listening. -->
+        <div
+          v-if="account.provider === 'garmin' && isMine(account) && devices.length"
+          class="w-full pl-7"
+        >
+          <div class="flex flex-wrap gap-1.5">
+            <UBadge
+              v-for="device in devices"
+              :key="device.id"
+              color="neutral"
+              variant="subtle"
+              size="sm"
+              icon="i-lucide-watch"
+            >
+              {{ device.name }}
+              <span class="ml-1 text-dimmed">· {{ lastSync(device) }}</span>
+            </UBadge>
+          </div>
+        </div>
       </div>
     </div>
 

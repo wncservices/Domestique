@@ -3,6 +3,7 @@ import type {
   AppConfig,
   GarminConnection,
   GarminConsumer,
+  GarminDevice,
   KomootImportResult,
   KomootConnection,
   KomootTour,
@@ -87,6 +88,7 @@ export const api = {
     }),
   garminDisconnect: () =>
     request<GarminConnection>('/api/garmin/connection', { method: 'DELETE' }),
+  garminDevices: () => request<GarminDevice[]>('/api/garmin/devices'),
 
   garminConsumer: () => request<GarminConsumer>('/api/garmin/consumer'),
   setGarminConsumer: (key: string, secret: string) =>
