@@ -54,8 +54,18 @@ auth:
   # in but this app has no opinion about.
   # default_role: viewer
   #
-  # Refuse anyone outside this Authelia group entirely.
+  # Refuse anyone outside this Authelia group entirely — with one exception:
+  # a group named in `roles` above is itself a way in. The gate is here to
+  # stop every account your IdP knows about arriving as a `default_role`
+  # viewer, not to make an admin you named explicitly also join a second
+  # group before they are let in.
   # required_group: cyclists
+  #
+  # Where "Sign out" goes. This app holds no session — the proxy does — so it
+  # cannot end one, and only your identity provider knows the address. With
+  # Authelia's portal on a path of the same host that is /auth/logout; on its
+  # own hostname, https://auth.example.com/logout. Unset hides the button.
+  # logout_url: /auth/logout
 
 # Import routes from a Komoot account.
 #

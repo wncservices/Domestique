@@ -149,3 +149,39 @@ func TestEmptyModeDefaultsToNone(t *testing.T) {
 		t.Errorf("mode = %q, enabled = %v; want none/false", a.Mode(), a.Enabled())
 	}
 }
+
+// An explicit role grant gets you in on its own.
+//
+// required_group is there to stop unmapped accounts falling through to
+// default_role. Applying it to somebody the operator named in roles.admin
+// meant the app worked out you were an admin and then refused you, which is
+// the sort of rule that reads as a bug because it is one.
+func TestARoleGroupSatisfiesTheRequiredGroup(t *testing.T) {
+	a := mustNew(t, Config{
+		Mode:          ModeProxy,
+		RequiredGroup: "domestique-users",
+		Roles:         RoleMapping{Admin: []string{"domestique-admins"}, Rider: []string{"cyclists"}},
+	})
+
+	admin := Identity{User: "wilant", Groups: []string{"domestique-admins"}}
+	if err := a.Authorize(admin); err != nil {
+		t.Errorf("an admin was refused entry: %v", err)
+	}
+	rider := Identity{User: "someone", Groups: []string{"cyclists"}}
+	if err := a.Authorize(rider); err != nil {
+		t.Errorf("a mapped rider was refused entry: %v", err)
+	}
+
+	// The gate still does its job: an account with no mapped group and no
+	// membership would otherwise arrive as a viewer.
+	stranger := Identity{User: "stranger", Groups: []string{"some-other-team"}}
+	if err := a.Authorize(stranger); !errors.Is(err, ErrForbidden) {
+		t.Errorf("unmapped stranger: err = %v, want ErrForbidden", err)
+	}
+
+	// And membership alone is still enough, with no role group at all.
+	member := Identity{User: "member", Groups: []string{"domestique-users"}}
+	if err := a.Authorize(member); err != nil {
+		t.Errorf("a member of the required group was refused: %v", err)
+	}
+}

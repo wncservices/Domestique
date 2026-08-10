@@ -57,6 +57,13 @@ type Config struct {
 	// in Roles. Empty means "viewer" — read-only is the safe default for
 	// someone Authelia let in but this app has no opinion about.
 	DefaultRole string `yaml:"default_role,omitempty"`
+	// LogoutURL is where "Sign out" goes. The app holds no session of its
+	// own — the proxy does — so it cannot end one; only the identity provider
+	// can. That address is deployment-specific (Authelia's portal is at
+	// /auth/logout here, somewhere else entirely for another operator), so it
+	// is configuration rather than something to derive. Empty hides the
+	// button, which is right for mode "none": there is nothing to sign out of.
+	LogoutURL string `yaml:"logout_url,omitempty"`
 }
 
 // Identity is who is making a request, and what they may do.
@@ -96,6 +103,7 @@ type Authenticator struct {
 	trusted       []*net.IPNet
 	roles         RoleMapping
 	defaultRole   Role
+	logoutURL     string
 }
 
 // New validates the config and builds an Authenticator.
@@ -105,6 +113,7 @@ func New(cfg Config) (*Authenticator, error) {
 		requiredGroup: cfg.RequiredGroup,
 		roles:         cfg.Roles,
 		defaultRole:   RoleViewer,
+		logoutURL:     cfg.LogoutURL,
 	}
 	if a.mode == "" {
 		a.mode = ModeNone
@@ -201,10 +210,35 @@ func (a *Authenticator) Authorize(id Identity) error {
 	if id.Anonymous() {
 		return ErrUnauthenticated
 	}
-	if a.requiredGroup != "" && !id.InGroup(a.requiredGroup) {
-		return fmt.Errorf("%w: not a member of %q", ErrForbidden, a.requiredGroup)
+	// An explicit role grant is a way in, not something the gate overrides.
+	//
+	// required_group exists to stop every account the IdP knows about falling
+	// through to default_role — it is about the unmapped, not about people
+	// somebody deliberately named. Checking it first meant an account in
+	// domestique-admins was given the admin role and then refused entry,
+	// which is not a position this app can coherently hold: it had already
+	// decided who they were.
+	if a.requiredGroup != "" && !id.InGroup(a.requiredGroup) && !a.hasRoleGroup(id.Groups) {
+		return fmt.Errorf("%w: not a member of %q and no group granting a role",
+			ErrForbidden, a.requiredGroup)
 	}
 	return nil
+}
+
+// hasRoleGroup reports whether any of these groups is named in the role
+// mapping — that is, whether this identity's role was granted rather than
+// defaulted.
+func (a *Authenticator) hasRoleGroup(groups []string) bool {
+	for _, mapped := range [][]string{a.roles.Admin, a.roles.Rider, a.roles.Viewer} {
+		for _, name := range mapped {
+			for _, g := range groups {
+				if strings.EqualFold(g, name) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func (a *Authenticator) peerTrusted(r *http.Request) bool {
@@ -263,4 +297,13 @@ func FromContext(ctx context.Context) Identity {
 		return id
 	}
 	return Identity{}
+}
+
+// LogoutURL is where the UI should send someone signing out, or empty when
+// there is nothing to sign out of.
+func (a *Authenticator) LogoutURL() string {
+	if a.mode == ModeNone {
+		return ""
+	}
+	return a.logoutURL
 }

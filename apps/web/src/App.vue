@@ -82,6 +82,22 @@ onMounted(refresh)
               </UBadge>
             </UTooltip>
 
+            <!-- A plain link, not a fetch: signing out is the identity
+                 provider ending its own session and redirecting, which an
+                 XHR cannot do. -->
+            <UButton
+              v-if="me?.authenticated && me.logoutUrl"
+              :to="me.logoutUrl"
+              external
+              icon="i-lucide-log-out"
+              color="neutral"
+              variant="ghost"
+              size="sm"
+              aria-label="Sign out"
+            >
+              <span class="hidden sm:inline">Sign out</span>
+            </UButton>
+
             <ColorModeToggle />
           </div>
         </div>
