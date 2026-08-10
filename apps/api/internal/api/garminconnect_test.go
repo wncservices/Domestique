@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -26,6 +27,18 @@ type fakeGarmin struct {
 	// err, when set, is what Connect returns instead of a session — the three
 	// sign-in failures are the point of most of these tests.
 	err error
+
+	// devices is what Devices hands back, and devicesErr what it fails with.
+	devices    []garmin.Device
+	devicesErr error
+	// devicesSession records the session it was resumed from, so a test can
+	// assert the stored one was used rather than a fresh sign-in.
+	devicesSession garmin.Session
+}
+
+func (f *fakeGarmin) Devices(_ api.GarminConsumer, session garmin.Session) ([]garmin.Device, error) {
+	f.devicesSession = session
+	return f.devices, f.devicesErr
 }
 
 func (f *fakeGarmin) Connect(consumer api.GarminConsumer, email, password string) (garmin.Session, error) {
@@ -405,4 +418,87 @@ func noAuth(t *testing.T) *auth.Authenticator {
 		t.Fatal(err)
 	}
 	return a
+}
+
+// Devices come from the session that was stored at sign-in. No password is
+// involved, which is the whole reason a session is kept in its place.
+func TestDevicesUseTheStoredSession(t *testing.T) {
+	h := newConnectHarness(t, true)
+	h.garmin.devices = []garmin.Device{
+		{ID: "1", Name: "Edge 530"},
+		{ID: "2", Name: "Forerunner 165"},
+	}
+
+	h.as("wilant", "cyclists", http.MethodPost, "/api/garmin/connection",
+		`{"email":"r@example.com","password":"pw"}`)
+
+	resp := h.as("wilant", "cyclists", http.MethodGet, "/api/garmin/devices", "")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	var got []garmin.Device
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Name != "Edge 530" || got[1].Name != "Forerunner 165" {
+		t.Errorf("devices = %+v, want both units", got)
+	}
+	if h.garmin.devicesSession.OAuth1Token != "garmin-token-1" {
+		t.Errorf("resumed with %q, want the stored token",
+			h.garmin.devicesSession.OAuth1Token)
+	}
+}
+
+// A rider who has not connected has no devices, and that is not an error —
+// the panel simply has nothing to show.
+func TestDevicesWithoutAConnectionAreEmpty(t *testing.T) {
+	h := newConnectHarness(t, true)
+
+	resp := h.as("wilant", "cyclists", http.MethodGet, "/api/garmin/devices", "")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var got []garmin.Device
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Errorf("devices = %+v, want none", got)
+	}
+}
+
+// One rider's devices are not another's. Same rule as every other thing keyed
+// by rider here.
+func TestDevicesAreTheCallersOwn(t *testing.T) {
+	h := newConnectHarness(t, true)
+	h.garmin.devices = []garmin.Device{{ID: "1", Name: "Edge 530"}}
+
+	h.as("wilant", "cyclists", http.MethodPost, "/api/garmin/connection",
+		`{"email":"r@example.com","password":"pw"}`)
+
+	resp := h.as("someone", "cyclists", http.MethodGet, "/api/garmin/devices", "")
+	var got []garmin.Device
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Errorf("another rider saw %+v", got)
+	}
+}
+
+// Garmin moving the endpoint is an upstream problem. It must not read as a
+// broken connection: courses still sync, and the rider can do nothing about
+// a URL.
+func TestDeviceListFailureIsUpstream(t *testing.T) {
+	h := newConnectHarness(t, true)
+	h.garmin.devicesErr = errors.New("garmin: the device list returned 404")
+
+	h.as("wilant", "cyclists", http.MethodPost, "/api/garmin/connection",
+		`{"email":"r@example.com","password":"pw"}`)
+
+	resp := h.as("wilant", "cyclists", http.MethodGet, "/api/garmin/devices", "")
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502", resp.StatusCode)
+	}
 }

@@ -28,6 +28,9 @@ type GarminConnector interface {
 	// Connect signs in with a password. The password is used here and nowhere
 	// else — what comes back is a session to store in its place.
 	Connect(consumer GarminConsumer, email, password string) (garmin.Session, error)
+	// Devices lists the head units on an account, from a stored session. No
+	// password: this is what the session is for.
+	Devices(consumer GarminConsumer, session garmin.Session) ([]garmin.Device, error)
 }
 
 // LiveGarmin is the real connector: it talks to Garmin.
@@ -70,4 +73,20 @@ func (l LiveGarmin) Connect(consumer GarminConsumer, email, password string) (ga
 		l.Log("garmin profile lookup failed; the connection is kept without a name", "err", err)
 	}
 	return session, nil
+}
+
+// Devices lists the head units registered to a connected account.
+//
+// Resumed from the stored session, so it costs no password and no sign-in.
+// The consumer is still needed: the OAuth1 token is exchanged for a bearer on
+// every call, and that exchange is signed with it.
+func (l LiveGarmin) Devices(consumer GarminConsumer, session garmin.Session) ([]garmin.Device, error) {
+	if !consumer.Configured() {
+		return nil, garmin.ErrNoConsumer
+	}
+
+	client := garmin.New()
+	client.SetConsumer(consumer.Key, consumer.Secret)
+	client.Resume(session)
+	return client.Devices()
 }

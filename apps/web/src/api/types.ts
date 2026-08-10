@@ -179,6 +179,18 @@ export interface GarminConnection {
   consumer?: GarminConsumer
 }
 
+/** A head unit registered to a connected Garmin account.
+ *
+ *  Informational: a course is pushed to the account and Connect syncs it to
+ *  whichever units can take it, so this is not a list to choose from — it is
+ *  the answer to "will this reach my Edge?". */
+export interface GarminDevice {
+  id: string
+  name: string
+  /** When Connect last heard from the unit. Absent if it never has. */
+  lastSync?: string
+}
+
 /** One rider's connection to their own Komoot account. */
 export interface KomootConnection {
   connected: boolean
