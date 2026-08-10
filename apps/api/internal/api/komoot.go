@@ -8,6 +8,7 @@ import (
 
 	"github.com/wncservices/domestique/apps/api/internal/auth"
 	"github.com/wncservices/domestique/apps/api/internal/komoot"
+	"github.com/wncservices/domestique/apps/api/internal/secrets"
 	"github.com/wncservices/domestique/apps/api/internal/source"
 )
 
@@ -240,14 +241,33 @@ func parseKomootTag(tag string) (string, bool) {
 	return "", false
 }
 
+// komootDisabled explains why there is no client for this rider.
+//
+// Three different situations reach here and they need different answers. The
+// message used to name KOMOOT_EMAIL and KOMOOT_PASSWORD in all of them, which
+// was true when one deployment-wide account did every import. Riders now sign
+// in from Settings, so that advice sends someone to edit a Deployment for a
+// problem they can fix in the UI in ten seconds — and on a multi-rider
+// deployment there is no environment answer at all, because the credentials
+// are per rider.
 func (s *Server) komootDisabled(w http.ResponseWriter) {
-	msg := "Komoot import is not configured — set komoot.enabled and " +
-		"provide KOMOOT_EMAIL and KOMOOT_PASSWORD"
-	if s.KomootEnabled {
-		// Enabled but no client: the credentials are what is missing, and
-		// saying so saves rereading the config that is already correct.
-		msg = "Komoot import is enabled but could not sign in — set " +
-			"KOMOOT_EMAIL and KOMOOT_PASSWORD in the environment"
+	switch {
+	case !s.KomootEnabled:
+		writeJSON(w, http.StatusNotImplemented, map[string]string{
+			"error": "Komoot import is not enabled for this deployment — set komoot.enabled",
+		})
+	case s.Links.CanStore():
+		// The rider can fix this themselves, so this is not a server-side
+		// gap: nothing is missing except a sign-in that has not happened yet.
+		writeJSON(w, http.StatusPreconditionFailed, map[string]string{
+			"error": "Not signed in to Komoot — connect your account in Settings",
+		})
+	default:
+		// No encryption key, so the store refuses to hold a sign-in and the
+		// UI route is closed. The environment is genuinely the only way in.
+		writeJSON(w, http.StatusNotImplemented, map[string]string{
+			"error": "Komoot is enabled but this deployment cannot store sign-ins — set " +
+				secrets.EnvKey + ", or provide KOMOOT_EMAIL and KOMOOT_PASSWORD",
+		})
 	}
-	writeJSON(w, http.StatusNotImplemented, map[string]string{"error": msg})
 }
