@@ -1,0 +1,24 @@
+<!-- The header mark, as a tab icon: the same lucide `bike` glyph in the same
+     primary teal (--color-primary-500). Solid fill rather than the header's
+     10% tint, because a favicon is 16px on somebody else's background and a
+     tinted one disappears against a dark tab strip.
+
+     Inline rather than a build-time export so the two cannot drift: if the
+     brand colour changes in styles.css, this is the one other place to
+     change, and it is a plain file anybody can open. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <rect width="32" height="32" rx="8" fill="#16b8ab" />
+  <g
+    transform="translate(4 4)"
+    fill="none"
+    stroke="#ffffff"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    stroke-width="2"
+  >
+    <circle cx="18.5" cy="17.5" r="3.5" />
+    <circle cx="5.5" cy="17.5" r="3.5" />
+    <circle cx="15" cy="5" r="1" />
+    <path d="M12 17.5V14l-3-3l4-3l2 3h2" />
+  </g>
+</svg>

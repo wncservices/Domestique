@@ -880,17 +880,15 @@ func (s *Server) failLookup(w http.ResponseWriter, err error) {
 	s.fail(w, err)
 }
 
-// isLandingRequest reports whether this request should get the logged-out
-// page rather than the app.
+// isLandingHost reports whether this request arrived on the host that gets
+// the logged-out page.
 //
-// Matched on the Host header, and only for the root path: a request for
-// /assets/... on the apex is still a real asset, and the landing page has none
-// of its own anyway.
-func (s *Server) isLandingRequest(r *http.Request) bool {
+// Host only. Which *path* gets the landing page is a separate question, and
+// conflating them is what let /settings on the apex serve the app: matching
+// the root path here meant every other path fell through to the SPA
+// fallback, and the SPA fallback is index.html.
+func (s *Server) isLandingHost(r *http.Request) bool {
 	if s.LandingHost == "" {
-		return false
-	}
-	if p := filepath.Clean(r.URL.Path); p != "/" && p != "." {
 		return false
 	}
 
@@ -912,16 +910,39 @@ func (s *Server) spaHandler() http.Handler {
 		if clean == "." || clean == "" {
 			clean = "index.html"
 		}
-		if s.isLandingRequest(r) {
-			// Falls through to the app when the file is missing, so an
-			// unbuilt frontend degrades rather than 404s the front door.
-			if _, err := fs.Stat(s.WebFS, "landing.html"); err == nil {
-				clean = "landing.html"
-				r = r.Clone(r.Context())
-				r.URL.Path = "/landing.html"
+
+		// Real files are served as themselves on either host: /assets/... is
+		// shared by both pages, and the landing page has none of its own.
+		//
+		// A directory counts as missing. http.FileServer lists one otherwise,
+		// so /assets/ answered with an index of every file in the build — on
+		// the public host as well. Nothing secret is in those names, but a
+		// listing is not something anyone asked this server to publish, and
+		// treating a directory as "not a file" both removes it and leaves the
+		// path handled by the same fallback as any other unknown one.
+		info, statErr := fs.Stat(s.WebFS, clean)
+		missing := errors.Is(statErr, os.ErrNotExist) || (statErr == nil && info.IsDir())
+
+		// On the landing host every path that is not a real file is the
+		// logged-out page — not just "/". The app is a different host, and
+		// serving its shell here put a UI on the one address that is meant to
+		// be public. Nothing behind it was reachable (every API call arrives
+		// without Remote-User and is refused), but a logged-out front door
+		// that renders the application is not a front door.
+		landing := s.isLandingHost(r)
+		if landing {
+			// Fall through to the app when the file is missing, so an unbuilt
+			// frontend degrades rather than 404s the front door.
+			if _, err := fs.Stat(s.WebFS, "landing.html"); err != nil {
+				landing = false
 			}
 		}
-		if _, err := fs.Stat(s.WebFS, clean); errors.Is(err, os.ErrNotExist) {
+
+		switch {
+		case landing && (missing || clean == "index.html"):
+			r = r.Clone(r.Context())
+			r.URL.Path = "/landing.html"
+		case missing:
 			r = r.Clone(r.Context())
 			r.URL.Path = "/"
 		}
