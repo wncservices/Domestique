@@ -171,8 +171,10 @@ func TestPermissionsListing(t *testing.T) {
 	if len(RoleViewer.Permissions()) != 1 {
 		t.Errorf("viewer permissions = %v, want just read", RoleViewer.Permissions())
 	}
+	// Every permission there is. The count is deliberate: adding one without
+	// deciding which roles hold it is exactly the mistake worth catching.
 	admin := RoleAdmin.Permissions()
-	if len(admin) != 7 {
-		t.Errorf("admin permissions = %v, want all seven", admin)
+	if len(admin) != len(minimumRole) {
+		t.Errorf("admin permissions = %v, want all %d", admin, len(minimumRole))
 	}
 }

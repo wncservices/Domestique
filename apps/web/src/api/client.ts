@@ -2,6 +2,7 @@ import type {
   Account,
   AppConfig,
   GarminConnection,
+  GarminConsumer,
   KomootImportResult,
   KomootConnection,
   KomootTour,
@@ -86,6 +87,16 @@ export const api = {
     }),
   garminDisconnect: () =>
     request<GarminConnection>('/api/garmin/connection', { method: 'DELETE' }),
+
+  garminConsumer: () => request<GarminConsumer>('/api/garmin/consumer'),
+  setGarminConsumer: (key: string, secret: string) =>
+    request<GarminConsumer>('/api/garmin/consumer', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key, secret }),
+    }),
+  clearGarminConsumer: () =>
+    request<GarminConsumer>('/api/garmin/consumer', { method: 'DELETE' }),
 
   komootTours: () => request<KomootTour[]>('/api/komoot/tours'),
   komootImport: (tourIds: string[]) =>

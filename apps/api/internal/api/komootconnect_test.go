@@ -16,9 +16,11 @@ import (
 	"github.com/wncservices/domestique/apps/api/internal/api"
 	"github.com/wncservices/domestique/apps/api/internal/auth"
 	"github.com/wncservices/domestique/apps/api/internal/config"
+	"github.com/wncservices/domestique/apps/api/internal/garmin"
 	"github.com/wncservices/domestique/apps/api/internal/komoot"
 	"github.com/wncservices/domestique/apps/api/internal/providerlink"
 	"github.com/wncservices/domestique/apps/api/internal/secrets"
+	"github.com/wncservices/domestique/apps/api/internal/settings"
 	"github.com/wncservices/domestique/apps/api/internal/source"
 	"github.com/wncservices/domestique/apps/api/internal/state"
 )
@@ -70,6 +72,7 @@ type connectHarness struct {
 	links     *providerlink.Store
 	connector *fakeConnector
 	garmin    *fakeGarmin
+	settings  *settings.Store
 	accounts  *accounts.Store
 	db        *source.DB
 }
@@ -114,6 +117,18 @@ func newConnectHarness(t *testing.T, withKey bool) *connectHarness {
 		t.Fatal(err)
 	}
 
+	appSettings, err := settings.UseDB(db.Conn(), db.DSN(), box)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A consumer pair in the environment, so the default harness is a
+	// deployment where Garmin sign-in is available. Set explicitly rather than
+	// inherited: whether these tests pass must not depend on whether the
+	// machine running them has real Garmin credentials exported.
+	t.Setenv(garmin.EnvConsumerKey, "test-consumer-key")
+	t.Setenv(garmin.EnvConsumerSecret, "test-consumer-secret")
+
 	connector := &fakeConnector{}
 	garminConnector := &fakeGarmin{}
 	accountStore := seedRoleAccounts(t, db)
@@ -125,6 +140,7 @@ func newConnectHarness(t *testing.T, withKey bool) *connectHarness {
 		Links:         links,
 		Connector:     connector,
 		Garmin:        garminConnector,
+		Settings:      appSettings,
 		KomootEnabled: true,
 		Config:        &config.Config{Komoot: config.KomootConfig{Enabled: true}},
 	}
@@ -134,7 +150,7 @@ func newConnectHarness(t *testing.T, withKey bool) *connectHarness {
 
 	return &connectHarness{t: t, client: server.Client(), base: server.URL,
 		links: links, connector: connector, garmin: garminConnector,
-		accounts: accountStore, db: db}
+		settings: appSettings, accounts: accountStore, db: db}
 }
 
 func (h *connectHarness) as(user, groups, method, path, body string) *http.Response {

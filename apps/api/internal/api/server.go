@@ -24,6 +24,7 @@ import (
 	"github.com/wncservices/domestique/apps/api/internal/gpx"
 	"github.com/wncservices/domestique/apps/api/internal/model"
 	"github.com/wncservices/domestique/apps/api/internal/providerlink"
+	"github.com/wncservices/domestique/apps/api/internal/settings"
 	"github.com/wncservices/domestique/apps/api/internal/source"
 	"github.com/wncservices/domestique/apps/api/internal/state"
 	syncer "github.com/wncservices/domestique/apps/api/internal/sync"
@@ -55,6 +56,11 @@ type Server struct {
 	// Garmin signs riders in to Garmin Connect. Nil means the deployment
 	// cannot offer it — see GarminConnector.
 	Garmin GarminConnector
+
+	// Settings holds deployment-wide configuration an admin sets from the UI,
+	// today the Garmin OAuth1 consumer. Nil falls back to the environment for
+	// everything.
+	Settings *settings.Store
 
 	// KomootEnabled is what the operator asked for, which is not the same as
 	// what they got: the config can turn Komoot on while the credentials are
@@ -115,6 +121,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/garmin/connection", s.handleGarminConnection)
 	mux.HandleFunc("POST /api/garmin/connection", s.handleGarminConnect)
 	mux.HandleFunc("DELETE /api/garmin/connection", s.handleGarminDisconnect)
+	mux.HandleFunc("GET /api/garmin/consumer", s.handleGarminConsumer)
+	mux.HandleFunc("PUT /api/garmin/consumer", s.handleSetGarminConsumer)
+	mux.HandleFunc("DELETE /api/garmin/consumer", s.handleClearGarminConsumer)
 
 	// Anything else under /api is a 404 in JSON, not the SPA shell.
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {

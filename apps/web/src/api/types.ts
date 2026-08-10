@@ -140,6 +140,24 @@ export interface TrackResponse {
   points: [number, number][]
 }
 
+/**
+ * The OAuth1 consumer Garmin sign-in is signed with.
+ *
+ * One pair for the whole deployment, not one per rider — it identifies the
+ * app to Garmin. The value itself never reaches the browser.
+ */
+export interface GarminConsumer {
+  configured: boolean
+  /** Where the pair in use came from. */
+  source?: 'settings' | 'environment'
+  updatedBy?: string
+  updatedAt?: string
+  /** Whether this viewer may set it here — admin, with somewhere to keep it. */
+  canManage: boolean
+  /** Why they may not, when that is worth saying. */
+  unavailable?: string
+}
+
 /** One rider's sign-in to their own Garmin Connect account. */
 export interface GarminConnection {
   connected: boolean
@@ -153,6 +171,8 @@ export interface GarminConnection {
   canConnect: boolean
   /** Why signing in is not on offer, in words worth showing. */
   unavailable?: string
+  /** Set when what is missing is the consumer, which an admin can supply. */
+  consumer?: GarminConsumer
 }
 
 /** One rider's connection to their own Komoot account. */

@@ -82,7 +82,7 @@ onMounted(async () => {
         class="mb-4"
       />
 
-      <GarminConnect :connection="garmin" @changed="garminChanged" />
+      <GarminConnect :connection="garmin" @changed="garminChanged" @setup="loadGarmin" />
     </UCard>
 
     <UCard v-if="canImportKomoot && komootEnabled" variant="outline">

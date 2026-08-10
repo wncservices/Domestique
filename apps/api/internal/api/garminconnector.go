@@ -4,6 +4,21 @@ import (
 	"github.com/wncservices/domestique/apps/api/internal/garmin"
 )
 
+// GarminConsumer is the OAuth1 consumer pair a sign-in is signed with.
+//
+// One pair per deployment, not per rider: it identifies the *application* to
+// Garmin, and every rider's sign-in is signed with the same one. Where it
+// comes from is the Server's business (see garminConsumer); the connector is
+// handed one and uses it.
+type GarminConsumer struct {
+	Key    string
+	Secret string
+}
+
+// Configured reports whether both halves are present. One without the other
+// signs nothing, so it counts as absent.
+func (c GarminConsumer) Configured() bool { return c.Key != "" && c.Secret != "" }
+
 // GarminConnector signs riders in to Garmin Connect.
 //
 // An interface for the same reason KomootConnector is one: it is the seam
@@ -12,11 +27,7 @@ import (
 type GarminConnector interface {
 	// Connect signs in with a password. The password is used here and nowhere
 	// else — what comes back is a session to store in its place.
-	Connect(email, password string) (garmin.Session, error)
-	// Ready reports why sign-in cannot be offered, or nil when it can. The UI
-	// asks before showing a form, so nobody types a password into something
-	// that was never going to work.
-	Ready() error
+	Connect(consumer GarminConsumer, email, password string) (garmin.Session, error)
 }
 
 // LiveGarmin is the real connector: it talks to Garmin.
@@ -30,14 +41,6 @@ type LiveGarmin struct {
 	Log func(msg string, args ...any)
 }
 
-// Ready reports whether the OAuth1 consumer is configured.
-func (LiveGarmin) Ready() error {
-	if !garmin.HasConsumer() {
-		return garmin.ErrNoConsumer
-	}
-	return nil
-}
-
 // Connect signs in and returns the session to keep in the password's place.
 //
 // The profile lookup afterwards is deliberately not fatal. It is what puts a
@@ -46,8 +49,16 @@ func (LiveGarmin) Ready() error {
 // endpoint, and refusing a sign-in that otherwise worked because Garmin moved
 // a profile URL would be the wrong trade. The connection is kept; the name is
 // the email until the rider reconnects.
-func (l LiveGarmin) Connect(email, password string) (garmin.Session, error) {
+func (l LiveGarmin) Connect(consumer GarminConsumer, email, password string) (garmin.Session, error) {
+	if !consumer.Configured() {
+		return garmin.Session{}, garmin.ErrNoConsumer
+	}
+
 	client := garmin.New()
+	// Supplied rather than read from the environment by the client, so the
+	// pair an admin pasted into the UI is the one that signs the request.
+	client.SetConsumer(consumer.Key, consumer.Secret)
+
 	if err := client.Login(email, password); err != nil {
 		return garmin.Session{}, err
 	}

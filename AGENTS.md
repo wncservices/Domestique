@@ -70,8 +70,8 @@ Roles come from Authelia groups, most-privileged match wins:
 | Role | Can |
 |---|---|
 | `viewer` | read routes, download GPX, see the plan |
-| `rider` | + upload, Komoot import, push, edit/delete **their own** routes |
-| `admin` | + edit/delete **anyone's** routes |
+| `rider` | + upload, Komoot import, push, edit/delete **their own** routes, link **their own** head units |
+| `admin` | + edit/delete **anyone's** routes, and deployment settings (`settings:manage`) |
 
 Two rules that are easy to break:
 
@@ -137,21 +137,43 @@ reconnection is never overwritten by the fossil. The old table is left behind
 deliberately, so rolling back to the previous image does not lose every Komoot
 connection. Drop it once no deployment runs that image.
 
+## Settings
+
+`internal/settings` is deployment-wide configuration an admin sets from the UI,
+sealed with the same key as a rider's sign-in. It exists for one shape:
+a credential the *deployment* needs, which would otherwise have to be in an
+env file before the app is usable at all. Today that is the Garmin consumer;
+`settings:manage` (admin only) gates it, because a bad value breaks the
+feature for everybody rather than for the person who set it.
+
+Most configuration does **not** belong here — the config file and the
+environment are version-controlled and arrive from Vault, and that stays the
+default. Reach for this only when requiring a file edit would leave a first-run
+deployment with a dead button.
+
 ## Garmin sign-in
 
 `internal/garmin` does the four-step handshake (CSRF page → credentials →
 OAuth1 token → OAuth2 bearer); `api.LiveGarmin` is the seam between it and
-the store. Three things are easy to get wrong:
+the store. Four things are easy to get wrong:
 
 - **Two-factor gets its own answer.** `ErrMFARequired` returns 409 with
   `"mfa": true`, not "wrong password" — this flow cannot complete a code
   challenge, and saying otherwise sends a rider round in circles. The UI keys
   off the flag, not off the message text.
-- **The consumer pair is not in this repository.** `GARMIN_OAUTH_CONSUMER_KEY`
-  and `_SECRET` are Connect's own OAuth1 consumer. Without them `Ready()`
-  fails and the UI says the sign-in is unavailable rather than offering a form
-  that cannot work. Do not hardcode them and do not fetch them at runtime from
-  the bucket the Python reference implementation reads.
+- **The consumer pair is deployment-wide, not per rider.** One OAuth1 consumer
+  signs every rider's sign-in; it identifies the *application* to Garmin. It
+  comes from `internal/settings` (an admin pastes it in the UI, stored
+  encrypted) or from `GARMIN_OAUTH_CONSUMER_KEY` / `_SECRET`, and **what is
+  set in the UI wins** — the person who has just pressed Save should not be
+  silently overruled. `Server.garminConsumer` is the only place that decides;
+  the connector is handed a pair. Without one the UI offers the setup panel to
+  an admin and an explanation to everyone else, rather than a sign-in form
+  that cannot work.
+- **The pair is not in this repository**, and is not fetched at runtime from
+  the bucket the Python reference implementation reads. The value never leaves
+  the process either: the API reports *whether* it is configured and where
+  from, never what it is.
 - **Signing in *is* linking the head unit.** The handler links the account
   too, and disconnecting unlinks it. A head unit with no session behind it is
   a push target that can only fail.

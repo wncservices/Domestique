@@ -20,16 +20,16 @@ import (
 type fakeGarmin struct {
 	email    string
 	password string
+	// consumer is what the server resolved and handed over — the tests that
+	// care where a pair came from assert on this.
+	consumer api.GarminConsumer
 	// err, when set, is what Connect returns instead of a session — the three
 	// sign-in failures are the point of most of these tests.
 	err error
-	// notReady stands in for a deployment with no OAuth1 consumer.
-	notReady error
 }
 
-func (f *fakeGarmin) Ready() error { return f.notReady }
-
-func (f *fakeGarmin) Connect(email, password string) (garmin.Session, error) {
+func (f *fakeGarmin) Connect(consumer api.GarminConsumer, email, password string) (garmin.Session, error) {
+	f.consumer = consumer
 	f.email, f.password = email, password
 	if f.err != nil {
 		return garmin.Session{}, f.err
@@ -40,6 +40,13 @@ func (f *fakeGarmin) Connect(email, password string) (garmin.Session, error) {
 		DisplayName:  "Wilant N",
 		ObtainedAt:   time.Now().UTC(),
 	}, nil
+}
+
+// noConsumer makes the deployment one where Garmin has not been set up.
+func noConsumer(t *testing.T) {
+	t.Helper()
+	t.Setenv(garmin.EnvConsumerKey, "")
+	t.Setenv(garmin.EnvConsumerSecret, "")
 }
 
 func TestGarminConnectStoresTheSessionAndNotThePassword(t *testing.T) {
@@ -178,7 +185,7 @@ func TestGarminConnectRefusedWithoutAnEncryptionKey(t *testing.T) {
 
 func TestGarminConnectRefusedWithoutAConsumer(t *testing.T) {
 	h := newConnectHarness(t, true)
-	h.garmin.notReady = garmin.ErrNoConsumer
+	noConsumer(t)
 
 	resp := h.as("wilant", "cyclists", http.MethodPost, "/api/garmin/connection",
 		`{"email":"r@example.com","password":"pw"}`)
@@ -206,7 +213,7 @@ func TestGarminConnectionReportsWhySigningInIsUnavailable(t *testing.T) {
 
 	t.Run("no consumer", func(t *testing.T) {
 		h := newConnectHarness(t, true)
-		h.garmin.notReady = garmin.ErrNoConsumer
+		noConsumer(t)
 		body := decodeConnection(t, h.as("wilant", "cyclists", http.MethodGet, "/api/garmin/connection", ""))
 		if body["canConnect"] != false {
 			t.Errorf("canConnect = %v, want false", body["canConnect"])

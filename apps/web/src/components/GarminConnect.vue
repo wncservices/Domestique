@@ -2,9 +2,10 @@
 import { computed, ref } from 'vue'
 import { ApiError, api } from '@/api/client'
 import type { GarminConnection } from '@/api/types'
+import GarminSetup from '@/components/GarminSetup.vue'
 
 const props = defineProps<{ connection: GarminConnection }>()
-const emit = defineEmits<{ changed: [GarminConnection] }>()
+const emit = defineEmits<{ changed: [GarminConnection]; setup: [] }>()
 
 const email = ref('')
 const password = ref('')
@@ -117,9 +118,9 @@ async function disconnect() {
       </UButton>
     </div>
 
-    <!-- Nothing can be stored or completed, so nothing is asked for. -->
+    <!-- Something else is in the way, and nothing on this page can fix it. -->
     <UAlert
-      v-else-if="!props.connection.canConnect"
+      v-else-if="!props.connection.canConnect && !props.connection.consumer"
       color="neutral"
       variant="subtle"
       icon="i-lucide-key-round"
@@ -160,5 +161,15 @@ async function disconnect() {
         sent.
       </p>
     </form>
+
+    <!-- The deployment-level setup. Below the sign-in because it is done once
+         and by one person, but always reachable for them: a consumer that
+         turned out to be wrong has to be replaceable without a file edit. -->
+    <GarminSetup
+      v-if="props.connection.consumer"
+      :consumer="props.connection.consumer"
+      :class="{ 'mt-6': props.connection.canConnect || props.connection.connected }"
+      @changed="emit('setup')"
+    />
   </div>
 </template>

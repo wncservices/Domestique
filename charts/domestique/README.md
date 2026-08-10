@@ -120,7 +120,7 @@ for instance. Keys the app reads:
 |---|---|
 | `KOMOOT_EMAIL` | one shared Komoot account, as an alternative to riders signing in themselves |
 | `KOMOOT_PASSWORD` | |
-| `GARMIN_OAUTH_CONSUMER_KEY` | the OAuth1 consumer Garmin Connect's own clients use. Without the pair, riders are told the Garmin sign-in is unavailable rather than shown a form that cannot work. Not shipped with this chart or its source |
+| `GARMIN_OAUTH_CONSUMER_KEY` | the OAuth1 consumer Garmin Connect's own clients use — one pair for the whole deployment. **Optional**: an admin can paste the pair into Settings instead, stored encrypted, which takes precedence. Supply it here to keep it in Vault rather than in the database. Not shipped with this chart or its source |
 | `GARMIN_OAUTH_CONSUMER_SECRET` | |
 
 `DOMESTIQUE_SOURCE_DSN` and `DOMESTIQUE_ENCRYPTION_KEY` are set by the chart

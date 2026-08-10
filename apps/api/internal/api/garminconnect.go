@@ -32,6 +32,10 @@ type garminConnectionDTO struct {
 	CanConnect bool `json:"canConnect"`
 	// Unavailable says which of those it is, in words a person can act on.
 	Unavailable string `json:"unavailable,omitempty"`
+	// Consumer is set when the thing standing in the way is the missing
+	// OAuth1 consumer, which an admin can supply from the UI. Absent
+	// otherwise, so the form appears only where it would help.
+	Consumer *garminConsumerDTO `json:"consumer,omitempty"`
 }
 
 // handleGarminConnection reports the caller's own connection.
@@ -46,17 +50,26 @@ func (s *Server) handleGarminConnection(w http.ResponseWriter, r *http.Request) 
 func (s *Server) garminConnectionDTO(r *http.Request) garminConnectionDTO {
 	dto := garminConnectionDTO{}
 
+	consumer, _ := s.garminConsumer()
 	switch {
 	case s.Garmin == nil:
 		dto.Unavailable = "this deployment has no Garmin sign-in configured"
 	case !s.Links.CanStore():
 		dto.Unavailable = "this deployment cannot store a Garmin connection: " + secrets.ErrNoKey.Error()
+	case !consumer.Configured():
+		dto.Unavailable = "Garmin has not been set up on this deployment yet"
 	default:
-		if err := s.Garmin.Ready(); err != nil {
-			dto.Unavailable = err.Error()
-		} else {
-			dto.CanConnect = true
-		}
+		dto.CanConnect = true
+	}
+
+	// The consumer travels with the connection in two cases: it is what is
+	// standing in the way, so the UI can offer the fix instead of an apology;
+	// or the caller is an admin, who needs to be able to replace a pair that
+	// turned out to be wrong. Attaching it only in the first case would make
+	// setting a bad key a one-way door.
+	if !consumer.Configured() || auth.FromContext(r.Context()).Role.Can(auth.PermManageSettings) {
+		consumerDTO := s.garminConsumerDTOFor(r)
+		dto.Consumer = &consumerDTO
 	}
 
 	rider := auth.FromContext(r.Context()).User
@@ -93,9 +106,12 @@ func (s *Server) handleGarminConnect(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	if err := s.Garmin.Ready(); err != nil {
+	consumer, _ := s.garminConsumer()
+	if !consumer.Configured() {
 		// Before the password is asked for, let alone sent.
-		writeJSON(w, http.StatusPreconditionFailed, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusPreconditionFailed, map[string]string{
+			"error": garmin.ErrNoConsumer.Error(),
+		})
 		return
 	}
 	if !s.Links.CanStore() {
@@ -133,7 +149,7 @@ func (s *Server) handleGarminConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	session, err := s.Garmin.Connect(body.Email, body.Password)
+	session, err := s.Garmin.Connect(consumer, body.Email, body.Password)
 	if err != nil {
 		s.writeGarminLoginError(w, rider, err)
 		return

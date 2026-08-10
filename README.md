@@ -103,7 +103,7 @@ auth:
 |---|---|
 | `viewer` | read routes, download GPX, see what would be pushed |
 | `rider` | + upload, import from Komoot, link **their own** head units, push, edit and delete **their own** routes |
-| `admin` | + edit and delete **anyone's** routes and head units |
+| `admin` | + edit and delete **anyone's** routes and head units, and set up Garmin for the deployment |
 
 > **The app must not be reachable except through the proxy.** With `mode: proxy`
 > it believes the `Remote-User` header — and so would anyone who can talk to it
@@ -122,19 +122,25 @@ of its own goes to every linked head unit.
 
 **Garmin is linked by signing in.** Enter your Garmin Connect email and
 password on the Settings page: the password is used for that one sign-in and
-discarded, and what Garmin gives back is stored encrypted in its place. That
-needs an encryption key (`domestique keygen`, as below) and the OAuth1
-consumer pair Connect's own clients use:
+discarded, and what Garmin gives back is stored encrypted in its place.
 
-```bash
-GARMIN_OAUTH_CONSUMER_KEY=...
-GARMIN_OAUTH_CONSUMER_SECRET=...
-```
+Before anyone can do that, the deployment needs one pair of Garmin **app
+keys** — the OAuth1 consumer Connect's own clients use. This is *not* a
+per-rider credential: one pair signs everybody's sign-in, and an admin sets it
+once. Two ways, and the first needs no file:
 
-Those are deliberately **not in this repository** — baking scraped credentials
-into a source-available project invites them to be treated as ours to publish.
-Without them the Settings page says the sign-in is unavailable instead of
-offering a form that cannot work.
+- **Paste them into Settings.** An admin sees a "Garmin app keys" panel under
+  the Garmin card; saving there stores them encrypted in the database and the
+  sign-in form appears for every rider. Replaceable and removable from the
+  same panel.
+- **Supply them in the environment**, if you would rather keep them in Vault:
+  `GARMIN_OAUTH_CONSUMER_KEY` and `GARMIN_OAUTH_CONSUMER_SECRET`. Anything set
+  in Settings wins over these, and removing it falls back to them.
+
+Either way needs an encryption key (`domestique keygen`, as below). The keys
+themselves are deliberately **not in this repository** — baking scraped
+credentials into a source-available project invites them to be treated as ours
+to publish.
 
 Two limits worth knowing before you try:
 
