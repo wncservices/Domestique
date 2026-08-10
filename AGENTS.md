@@ -85,6 +85,13 @@ The frontend mirrors these rules to decide what to *show*. That is a courtesy,
 not a control — the server enforces, the UI only avoids offering buttons that
 would 403.
 
+**Opening this beyond our LDAP** — social logins, people who are not in
+Authelia — needs the app to speak OIDC itself rather than trust a header. That
+is designed but not built: see `docs/oidc.md`, including the one hard part
+(what a `rider` string means once identities come from an issuer). Do not build
+it speculatively; `mode: proxy` is less code and less surface until there is a
+third person.
+
 ## Komoot
 
 `internal/komoot` speaks Komoot's undocumented v006/v007 API: there is no
