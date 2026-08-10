@@ -298,7 +298,12 @@ func (c *Client) submitCredentials(email, password, csrf string) (ticket string,
 	case mfaPattern.Match(body):
 		return "", ErrMFARequired
 	case status == http.StatusOK, status == http.StatusUnauthorized:
-		return "", ErrBadCredentials
+		// Carry the status. Both codes mean "no ticket", and which one it was
+		// is the only cheap signal separating a rejected password from Garmin
+		// having changed the flow under us again — a 200 with a page we no
+		// longer parse looks identical to a wrong password from here. The
+		// body is deliberately still not included: it can echo the request.
+		return "", fmt.Errorf("%w (sign-in returned %d)", ErrBadCredentials, status)
 	default:
 		return "", fmt.Errorf("garmin: sign-in returned %d and no ticket", status)
 	}
