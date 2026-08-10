@@ -140,8 +140,24 @@ serviceAccount:
 # ids it records, and a route library is not a workload that needs scaling.
 replicaCount: 1
 
+# A new pod is ready before the old one goes away.
+#
+# `Recreate` stopped the old pod first, so every deploy had a gap where the
+# app was simply gone — and with one replica that gap is the whole service.
+# maxUnavailable 0 means the rollout may never drop below the desired count;
+# maxSurge 1 gives it the one extra pod it needs to honour that.
+#
+# The cost, stated plainly: for a few seconds during a rollout there are two
+# pods, and replicaCount is 1 precisely because two of these can race on the
+# remote ids a push records. A push landing inside that window could reach a
+# head unit twice. That is a narrow window against a gap on every single
+# deploy, which is why it is worth taking — but it is a real trade, not a
+# free win, and it is the reason to leave replicaCount at 1 outside rollouts.
 strategy:
-  type: Recreate
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 0
+    maxSurge: 1
 
 revisionHistoryLimit: 3
 
