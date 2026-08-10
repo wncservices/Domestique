@@ -181,6 +181,12 @@ func (s *Store) tableExists(name string) bool {
 // CanStore reports whether a connection can be saved at all. The UI asks
 // before offering the form, so a rider is not invited to type a password that
 // cannot be kept.
+//
+// **Nil-safe on purpose**, and handlers rely on it: a Server with no store is
+// a valid configuration, and every caller would otherwise need a nil check
+// before this one. Do not "simplify" the receiver check away — it reads like a
+// redundant guard and is the reason `s.Links.CanStore()` cannot panic.
+// TestGarminHandlersSurviveNoStore fails if it goes.
 func (s *Store) CanStore() bool { return s != nil && s.box != nil }
 
 // Save records a connection, replacing any the rider already had.

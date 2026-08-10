@@ -3,10 +3,14 @@ package api_test
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/wncservices/domestique/apps/api/internal/accounts"
+	"github.com/wncservices/domestique/apps/api/internal/api"
+	"github.com/wncservices/domestique/apps/api/internal/auth"
 	"github.com/wncservices/domestique/apps/api/internal/garmin"
 	"github.com/wncservices/domestique/apps/api/internal/model"
 )
@@ -340,4 +344,58 @@ func TestGarminConnectionNeedsAccountPermission(t *testing.T) {
 	if h.garmin.password != "" {
 		t.Error("a viewer's password was sent to Garmin")
 	}
+}
+
+// A Server with no connection store at all must refuse, not panic.
+//
+// providerlink.Store.CanStore has a nil-safe receiver on purpose, which is
+// what lets every handler call it without a nil check first. That is subtle
+// enough that two reviewers have now read it as a crash, so it is pinned here:
+// if someone ever gives CanStore a body that dereferences, this fails rather
+// than 500ing in production.
+func TestGarminHandlersSurviveNoStore(t *testing.T) {
+	srv := &api.Server{
+		Auth:   noAuth(t),
+		Garmin: &fakeGarmin{},
+	}
+	server := httptest.NewServer(srv.Handler())
+	t.Cleanup(server.Close)
+
+	for _, tc := range []struct {
+		method, body string
+		want         int
+	}{
+		{http.MethodGet, "", http.StatusOK},
+		{http.MethodPost, `{"email":"r@example.com","password":"pw"}`, http.StatusPreconditionFailed},
+		{http.MethodDelete, "", http.StatusOK},
+	} {
+		req, err := http.NewRequest(tc.method, server.URL+"/api/garmin/connection",
+			strings.NewReader(tc.body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tc.body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+
+		resp, err := server.Client().Do(req)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.method, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != tc.want {
+			t.Errorf("%s status = %d, want %d", tc.method, resp.StatusCode, tc.want)
+		}
+	}
+}
+
+// noAuth is a server with authentication off, where every caller is an admin —
+// the only way to reach these handlers without a store to seed a rider in.
+func noAuth(t *testing.T) *auth.Authenticator {
+	t.Helper()
+	a, err := auth.New(auth.Config{Mode: auth.ModeNone})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a
 }
