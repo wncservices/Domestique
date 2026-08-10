@@ -297,10 +297,11 @@ func TestToursUseTheCallersOwnConnection(t *testing.T) {
 	}
 
 	// A different rider has connected nothing, and there is no shared
-	// account, so there is nothing to import from.
+	// account, so there is nothing to import from. 412 rather than 501: this
+	// deployment can store a sign-in, so what is missing is theirs to supply.
 	other := h.as("someone", "cyclists", http.MethodGet, "/api/komoot/tours", "")
-	if other.StatusCode != http.StatusNotImplemented {
-		t.Errorf("status for an unconnected rider = %d, want 501", other.StatusCode)
+	if other.StatusCode != http.StatusPreconditionFailed {
+		t.Errorf("status for an unconnected rider = %d, want 412", other.StatusCode)
 	}
 }
 
@@ -462,5 +463,54 @@ func TestImportSurvivesOneBadTour(t *testing.T) {
 	}
 	if _, ok := body.Skipped["tour-1"]; !ok {
 		t.Errorf("skipped = %v, want tour-1 reported", body.Skipped)
+	}
+}
+
+// A rider who has not connected Komoot yet is not a broken deployment. The
+// message they get has to send them to Settings, where they can fix it, and
+// must not name KOMOOT_EMAIL — that advice predates per-rider sign-in and
+// points at a Deployment nobody needs to edit. Per-rider credentials have no
+// environment equivalent at all once there is more than one rider.
+func TestKomootNotSignedInPointsAtSettings(t *testing.T) {
+	h := newConnectHarness(t, true)
+
+	resp := h.as("wilant", "cyclists", http.MethodGet, "/api/komoot/tours", "")
+	if resp.StatusCode != http.StatusPreconditionFailed {
+		t.Errorf("status = %d, want 412 for a rider who has not signed in", resp.StatusCode)
+	}
+
+	var body struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body.Error, "Settings") {
+		t.Errorf("error = %q, want it to send the rider to Settings", body.Error)
+	}
+	if strings.Contains(body.Error, "KOMOOT_EMAIL") {
+		t.Errorf("error = %q, still names an environment variable the rider cannot set", body.Error)
+	}
+}
+
+// Without an encryption key the store refuses to hold a sign-in, so the UI
+// route really is closed and the environment is the only way in. This is the
+// one case where naming the variables is still the right answer.
+func TestKomootWithoutAKeyStillNamesTheEnvironment(t *testing.T) {
+	h := newConnectHarness(t, false)
+
+	resp := h.as("wilant", "cyclists", http.MethodGet, "/api/komoot/tours", "")
+	if resp.StatusCode != http.StatusNotImplemented {
+		t.Errorf("status = %d, want 501 when nothing can be stored", resp.StatusCode)
+	}
+
+	var body struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body.Error, "KOMOOT_EMAIL") {
+		t.Errorf("error = %q, want the environment named when it is the only way in", body.Error)
 	}
 }
