@@ -116,10 +116,36 @@ so in the header.
 
 ## Linking a head unit
 
-Nothing about riders or devices is configured. Each rider signs in and links
-their own Garmin or Wahoo from the web UI; the link is stored in the database,
-keyed to their Authelia username. A route with no targets of its own goes to
-every linked head unit.
+Nothing about riders or devices is configured. Each rider links their own head
+unit from Settings, keyed to their Authelia username. A route with no targets
+of its own goes to every linked head unit.
+
+**Garmin is linked by signing in.** Enter your Garmin Connect email and
+password on the Settings page: the password is used for that one sign-in and
+discarded, and what Garmin gives back is stored encrypted in its place. That
+needs an encryption key (`domestique keygen`, as below) and the OAuth1
+consumer pair Connect's own clients use:
+
+```bash
+GARMIN_OAUTH_CONSUMER_KEY=...
+GARMIN_OAUTH_CONSUMER_SECRET=...
+```
+
+Those are deliberately **not in this repository** — baking scraped credentials
+into a source-available project invites them to be treated as ours to publish.
+Without them the Settings page says the sign-in is unavailable instead of
+offering a form that cannot work.
+
+Two limits worth knowing before you try:
+
+- **An account with two-factor authentication cannot be signed in to this
+  way.** There is no code challenge to answer — Garmin offers no other route
+  for an app like this one, and the UI says so rather than blaming your
+  password.
+- **The sign-in lasts about a year**, then it stops working and Settings shows
+  when that will be. Signing in again replaces it.
+
+Wahoo is still a stub — see [Roadmap](#roadmap).
 
 ## Importing from Komoot
 
@@ -241,7 +267,7 @@ none. Naming targets is what keeps one rider's private routes off the other's de
 |---|---|---|
 | 1 | Library, diff engine, CLI, API, web UI | ✅ |
 | 2 | GPX → FIT course conversion, with inferred turn cues | ✅ |
-| 3 | Garmin push (unofficial Connect session) | ⬜ stub |
+| 3 | Garmin: sign-in ✅, FIT course upload ✅, push not wired to the library yet | 🟡 |
 | 4 | Wahoo push (Cloud API) | ⬜ stub, needs approved API access |
 | 5 | Deploy: Helm chart ✅, scheduled reconcile, Vault-backed tokens | 🟡 |
 | 6 | Metrics + staleness alerting | ⬜ |

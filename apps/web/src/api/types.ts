@@ -140,6 +140,21 @@ export interface TrackResponse {
   points: [number, number][]
 }
 
+/** One rider's sign-in to their own Garmin Connect account. */
+export interface GarminConnection {
+  connected: boolean
+  email?: string
+  displayName?: string
+  updatedAt?: string
+  /** When the stored sign-in stops working — about a year after it was made. */
+  expiresAt?: string
+  expired?: boolean
+  /** False when signing in could not be stored or completed; see `unavailable`. */
+  canConnect: boolean
+  /** Why signing in is not on offer, in words worth showing. */
+  unavailable?: string
+}
+
 /** One rider's connection to their own Komoot account. */
 export interface KomootConnection {
   connected: boolean

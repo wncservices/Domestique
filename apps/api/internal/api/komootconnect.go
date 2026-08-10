@@ -7,9 +7,12 @@ import (
 	"strings"
 
 	"github.com/wncservices/domestique/apps/api/internal/auth"
-	"github.com/wncservices/domestique/apps/api/internal/komootlink"
+	"github.com/wncservices/domestique/apps/api/internal/providerlink"
 	"github.com/wncservices/domestique/apps/api/internal/secrets"
 )
+
+// komootProvider is this provider's key in the shared connection store.
+const komootProvider = "komoot"
 
 // KomootSession is what a signed-in Komoot client exposes about itself, so a
 // connection can be stored and later resumed.
@@ -51,7 +54,7 @@ func (s *Server) handleKomootConnection(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	dto := komootConnectionDTO{CanConnect: s.KomootLinks.CanStore()}
+	dto := komootConnectionDTO{CanConnect: s.Links.CanStore()}
 
 	if link, err := s.riderLink(r); err == nil {
 		dto.Connected = true
@@ -78,7 +81,7 @@ func (s *Server) handleKomootConnect(w http.ResponseWriter, r *http.Request) {
 		s.komootDisabled(w)
 		return
 	}
-	if !s.KomootLinks.CanStore() {
+	if !s.Links.CanStore() {
 		// Refusing is the whole point: without a key the only way to honour
 		// this request would be to write the session somewhere readable.
 		writeJSON(w, http.StatusPreconditionFailed, map[string]string{
@@ -124,7 +127,12 @@ func (s *Server) handleKomootConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	link, err := s.KomootLinks.Save(rider, body.Email, session.DisplayName, session.UserID, session.Token)
+	link, err := s.Links.Save(komootProvider, rider, providerlink.Connection{
+		Email:       body.Email,
+		DisplayName: session.DisplayName,
+		ExternalID:  session.UserID,
+		Secret:      session.Token,
+	})
 	if err != nil {
 		s.logger().Error("storing komoot connection failed", "rider", rider, "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
@@ -154,30 +162,30 @@ func (s *Server) handleKomootDisconnect(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "no rider in the session"})
 		return
 	}
-	if s.KomootLinks == nil {
+	if s.Links == nil {
 		writeJSON(w, http.StatusOK, komootConnectionDTO{})
 		return
 	}
 
-	if err := s.KomootLinks.Delete(rider); err != nil {
+	if err := s.Links.Delete(komootProvider, rider); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
 
 	s.logger().Info("komoot disconnected", "rider", rider)
-	writeJSON(w, http.StatusOK, komootConnectionDTO{CanConnect: s.KomootLinks.CanStore()})
+	writeJSON(w, http.StatusOK, komootConnectionDTO{CanConnect: s.Links.CanStore()})
 }
 
 // riderLink is the caller's stored connection, if any.
-func (s *Server) riderLink(r *http.Request) (komootlink.Link, error) {
-	if s.KomootLinks == nil {
-		return komootlink.Link{}, komootlink.ErrNotFound
+func (s *Server) riderLink(r *http.Request) (providerlink.Link, error) {
+	if s.Links == nil {
+		return providerlink.Link{}, providerlink.ErrNotFound
 	}
 	rider := auth.FromContext(r.Context()).User
 	if rider == "" {
-		return komootlink.Link{}, komootlink.ErrNotFound
+		return providerlink.Link{}, providerlink.ErrNotFound
 	}
-	return s.KomootLinks.Get(rider)
+	return s.Links.Get(komootProvider, rider)
 }
 
 // komootFor returns the importer to use for this request.
@@ -186,14 +194,14 @@ func (s *Server) riderLink(r *http.Request) (komootlink.Link, error) {
 // environment: if somebody went to the trouble of connecting their account,
 // importing from a different account would be a surprising thing to do.
 func (s *Server) komootFor(r *http.Request) KomootImporter {
-	if s.KomootLinks != nil && s.Connector != nil {
+	if s.Links != nil && s.Connector != nil {
 		rider := auth.FromContext(r.Context()).User
 		if rider != "" {
-			userID, token, err := s.KomootLinks.Credentials(rider)
+			userID, token, err := s.Links.Secret(komootProvider, rider)
 			switch {
 			case err == nil:
 				return s.Connector.Resume(userID, token)
-			case errors.Is(err, komootlink.ErrNotFound), errors.Is(err, secrets.ErrNoKey):
+			case errors.Is(err, providerlink.ErrNotFound), errors.Is(err, secrets.ErrNoKey):
 				// Nothing stored, or nothing readable. Fall through to the
 				// shared client rather than failing the request.
 			default:

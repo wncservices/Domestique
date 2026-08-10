@@ -22,8 +22,8 @@ import (
 	"github.com/wncservices/domestique/apps/api/internal/config"
 	"github.com/wncservices/domestique/apps/api/internal/fitcourse"
 	"github.com/wncservices/domestique/apps/api/internal/gpx"
-	"github.com/wncservices/domestique/apps/api/internal/komootlink"
 	"github.com/wncservices/domestique/apps/api/internal/model"
+	"github.com/wncservices/domestique/apps/api/internal/providerlink"
 	"github.com/wncservices/domestique/apps/api/internal/source"
 	"github.com/wncservices/domestique/apps/api/internal/state"
 	syncer "github.com/wncservices/domestique/apps/api/internal/sync"
@@ -44,12 +44,17 @@ type Server struct {
 	// Komoot imports routes from a Komoot account. Nil disables the feature.
 	Komoot KomootImporter
 
-	// KomootLinks holds each rider's own Komoot connection, made through the
-	// UI. Nil disables connecting, but not the environment-configured client.
-	KomootLinks *komootlink.Store
+	// Links holds each rider's own sign-ins — Komoot, Garmin — made through
+	// the UI. Nil disables connecting, but not the environment-configured
+	// Komoot client.
+	Links *providerlink.Store
 
 	// Connector signs riders in to Komoot and resumes their stored sessions.
 	Connector KomootConnector
+
+	// Garmin signs riders in to Garmin Connect. Nil means the deployment
+	// cannot offer it — see GarminConnector.
+	Garmin GarminConnector
 
 	// KomootEnabled is what the operator asked for, which is not the same as
 	// what they got: the config can turn Komoot on while the credentials are
@@ -106,6 +111,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/komoot/connection", s.handleKomootDisconnect)
 	mux.HandleFunc("GET /api/komoot/tours", s.handleKomootTours)
 	mux.HandleFunc("POST /api/komoot/import", s.handleKomootImport)
+
+	mux.HandleFunc("GET /api/garmin/connection", s.handleGarminConnection)
+	mux.HandleFunc("POST /api/garmin/connection", s.handleGarminConnect)
+	mux.HandleFunc("DELETE /api/garmin/connection", s.handleGarminDisconnect)
 
 	// Anything else under /api is a 404 in JSON, not the SPA shell.
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
@@ -273,7 +282,7 @@ func (s *Server) komootState() string {
 	switch {
 	case !s.KomootEnabled:
 		return "disabled"
-	case s.Komoot != nil || s.KomootLinks.CanStore():
+	case s.Komoot != nil || s.Links.CanStore():
 		// Either the deployment has an account, or a rider can connect their
 		// own. Both are usable, and the panel belongs on screen.
 		return "ready"

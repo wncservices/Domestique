@@ -95,24 +95,70 @@ Riders sign in from the UI; `KOMOOT_EMAIL` / `KOMOOT_PASSWORD` are the
 alternative, one shared account for the whole deployment, and a rider's own
 connection wins over it.
 
-**The password is never stored.** Komoot's login returns a user id and a
-session token, and the token is what the API wants afterwards — so the
-password is used for one request and discarded. The token is encrypted with
-`DOMESTIQUE_ENCRYPTION_KEY` (`internal/secrets`, AES-256-GCM) and kept in
-`komoot_links`, one row per rider. Three rules hold this together:
+**The password is never stored** — see *Provider sign-ins* below, which is the
+same machinery Garmin uses.
 
-- **No key, no storing.** `komootlink.Store.CanStore` is false without one,
+Imported routes carry a `komoot:<id>` tag, which is how re-imports are
+detected; without it a second import silently duplicates every route and the
+rider cannot tell which copy their device follows.
+
+## Provider sign-ins
+
+Komoot and Garmin are both signed in to from the UI, and both go through
+`internal/providerlink`: one table, `provider_links`, keyed on
+`(provider, rider)`. One package rather than one per provider because the
+rules below have to hold for all of them, and three copies is three places to
+get them wrong. Wahoo joins it when its adapter lands.
+
+**The password is never stored.** Signing in returns something reusable — a
+Komoot session token, a Garmin OAuth1 token pair — so the password is used for
+one request and discarded. What comes back is encrypted with
+`DOMESTIQUE_ENCRYPTION_KEY` (`internal/secrets`, AES-256-GCM). `Secret` is
+opaque to the store: Komoot keeps a token, Garmin keeps a JSON-encoded
+`garmin.Session`. Four rules hold this together:
+
+- **No key, no storing.** `providerlink.Store.CanStore` is false without one,
   `Save` refuses, and the UI does not offer the form. There is no path that
   writes a session in clear.
 - **The rider comes from the session**, never the request body — same rule as
   linking a head unit.
-- **Refuse before signing in.** With no key the handler returns 412 without
-  calling Komoot, so a password is not sent somewhere useless.
+- **Refuse before signing in.** With no key — or, for Garmin, no OAuth1
+  consumer — the handler returns 412 without contacting the provider, so a
+  password is not sent somewhere useless.
+- **Reads for display never decrypt.** `Get` returns the connection; `Secret`
+  is called only where the session is about to be used.
 
-An expired or undecryptable token is not an error to work around: the rider
-reconnects. That is why `Save` is an upsert. Imported routes carry a `komoot:<id>` tag, which is how
-re-imports are detected; without it a second import silently duplicates every
-route and the rider cannot tell which copy their device follows.
+An expired or undecryptable session is not an error to work around: the rider
+reconnects. That is why `Save` is an upsert.
+
+Rows made before this table existed are copied from `komoot_links` on start,
+sealed bytes and all, and only where nothing is already there — so a
+reconnection is never overwritten by the fossil. The old table is left behind
+deliberately, so rolling back to the previous image does not lose every Komoot
+connection. Drop it once no deployment runs that image.
+
+## Garmin sign-in
+
+`internal/garmin` does the four-step handshake (CSRF page → credentials →
+OAuth1 token → OAuth2 bearer); `api.LiveGarmin` is the seam between it and
+the store. Three things are easy to get wrong:
+
+- **Two-factor gets its own answer.** `ErrMFARequired` returns 409 with
+  `"mfa": true`, not "wrong password" — this flow cannot complete a code
+  challenge, and saying otherwise sends a rider round in circles. The UI keys
+  off the flag, not off the message text.
+- **The consumer pair is not in this repository.** `GARMIN_OAUTH_CONSUMER_KEY`
+  and `_SECRET` are Connect's own OAuth1 consumer. Without them `Ready()`
+  fails and the UI says the sign-in is unavailable rather than offering a form
+  that cannot work. Do not hardcode them and do not fetch them at runtime from
+  the bucket the Python reference implementation reads.
+- **Signing in *is* linking the head unit.** The handler links the account
+  too, and disconnecting unlinks it. A head unit with no session behind it is
+  a push target that can only fail.
+
+The profile lookup after sign-in is best-effort: it names the account and is
+the first call that proves the OAuth1 token exchanges for a bearer, but an
+undocumented endpoint moving must not fail a sign-in that otherwise worked.
 
 ## FIT courses
 
@@ -391,10 +437,11 @@ makes the UI say "not wired up" instead of offering a push that always fails. Fl
 entry only when its adapter genuinely works.
 
 - **Garmin (Phase 3)** — there is no self-serve API. The official Courses API is Connect
-  Developer Program only (commercial partners). The planned path is the unofficial Connect web
-  session: the Garmin SSO handshake plus the call the *Training → Courses → Import* button makes.
-  Confirm the `course-service` path with devtools first; it is undocumented and moves. Grey-area
-  and breakable — fine for two personal accounts, not for anything shared more widely.
+  Developer Program only (commercial partners), so this uses the unofficial Connect web session.
+  The SSO handshake, the course upload (`course-service`, the call *Training → Courses → Import*
+  makes) and the per-rider sign-in all exist; what is missing is the `targets.Target` adapter
+  wiring them to the library, which is why `targets.Implemented` still says false. Grey-area and
+  breakable — fine for two personal accounts, not for anything shared more widely.
 - **Wahoo (Phase 4)** — the Cloud API is documented and clean, but access is approval-gated and
   `POST /v1/routes` takes a **base64 FIT file, not GPX**. Requesting API access is the long pole.
 

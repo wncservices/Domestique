@@ -18,10 +18,22 @@ const providers: { id: Provider; name: string; icon: string }[] = [
   { id: 'wahoo', name: 'Wahoo', icon: 'i-lucide-gauge' },
 ]
 
+/**
+ * Providers you link by signing in rather than by pressing a button here.
+ *
+ * Garmin used to be in this list, and pressing "Link Garmin" created a head
+ * unit with no account behind it — a push target that could only ever fail.
+ * Signing in on the card below does both, so the button would be a second,
+ * worse way to do the same thing. Wahoo joins this list when its adapter does.
+ */
+const signInProviders: Provider[] = ['garmin']
+
 /** One account per rider per provider, so hide what is already linked. */
 const linkable = computed(() =>
   providers.filter(
-    (p) => !props.accounts.some((a) => a.provider === p.id && isMine(a)),
+    (p) =>
+      !signInProviders.includes(p.id) &&
+      !props.accounts.some((a) => a.provider === p.id && isMine(a)),
   ),
 )
 
@@ -140,7 +152,7 @@ async function unlink(account: Account) {
       title="No head units linked"
       :description="
         canManage
-          ? 'Link a Garmin or Wahoo account above. Until then there is nowhere to push routes.'
+          ? 'Sign in to Garmin below to add one. Until then there is nowhere to push routes.'
           : 'Nothing is linked yet, so there is nowhere to push routes.'
       "
     />

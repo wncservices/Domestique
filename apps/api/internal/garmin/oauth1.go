@@ -47,6 +47,15 @@ func (c *Client) loadConsumer() error {
 	return nil
 }
 
+// HasConsumer reports whether the environment carries the consumer pair.
+//
+// For the UI, which has to decide whether to offer a sign-in form at all. A
+// deployment without the pair cannot complete step 3 of the handshake, and
+// finding that out after typing a password is a poor way to learn it.
+func HasConsumer() bool {
+	return os.Getenv(EnvConsumerKey) != "" && os.Getenv(EnvConsumerSecret) != ""
+}
+
 // SetConsumer supplies the OAuth1 consumer directly, for tests and for callers
 // that hold it somewhere other than the environment.
 func (c *Client) SetConsumer(key, secret string) {

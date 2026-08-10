@@ -25,10 +25,11 @@ import (
 	"github.com/wncservices/domestique/apps/api/internal/auth"
 	"github.com/wncservices/domestique/apps/api/internal/config"
 	"github.com/wncservices/domestique/apps/api/internal/fitcourse"
+	"github.com/wncservices/domestique/apps/api/internal/garmin"
 	"github.com/wncservices/domestique/apps/api/internal/gpx"
 	"github.com/wncservices/domestique/apps/api/internal/komoot"
-	"github.com/wncservices/domestique/apps/api/internal/komootlink"
 	"github.com/wncservices/domestique/apps/api/internal/model"
+	"github.com/wncservices/domestique/apps/api/internal/providerlink"
 	"github.com/wncservices/domestique/apps/api/internal/secrets"
 	"github.com/wncservices/domestique/apps/api/internal/source"
 	"github.com/wncservices/domestique/apps/api/internal/state"
@@ -613,22 +614,33 @@ func runServe(src *source.DB, cfg *config.Config, store state.Store, addr, webDi
 	srv.KomootEnabled = cfg.Komoot.Enabled
 	srv.Connector = api.LiveKomoot{}
 
-	// Riders connect their own Komoot from the UI. Without an encryption key
-	// the store refuses to save anything, which is the intended outcome: a
-	// session token belongs in the database encrypted or not at all.
+	// Riders connect their own Komoot and Garmin from the UI. Without an
+	// encryption key the store refuses to save anything, which is the intended
+	// outcome: a session belongs in the database encrypted or not at all.
 	box, err := secrets.FromEnv()
 	switch {
 	case errors.Is(err, secrets.ErrNoKey):
-		log.Warn("no encryption key: riders cannot connect Komoot from the UI",
+		log.Warn("no encryption key: riders cannot sign in to Komoot or Garmin from the UI",
 			"hint", "set "+secrets.EnvKey+" (generate one with `domestique keygen`)")
 	case err != nil:
 		return err
 	}
-	links, err := komootlink.UseDB(src.Conn(), src.DSN(), box)
+	links, err := providerlink.UseDB(src.Conn(), src.DSN(), box)
 	if err != nil {
 		return err
 	}
-	srv.KomootLinks = links
+	srv.Links = links
+
+	// Garmin needs no config of its own: a rider signs in from the UI, and the
+	// connector reports why it cannot be offered when the OAuth1 consumer is
+	// missing. Wiring it unconditionally is what makes that message reachable
+	// — a nil connector would look the same as a deployment that never wanted
+	// Garmin at all.
+	srv.Garmin = api.LiveGarmin{Log: log.Warn}
+	if !garmin.HasConsumer() {
+		log.Warn("garmin sign-in unavailable: no OAuth1 consumer configured",
+			"hint", "set "+garmin.EnvConsumerKey+" and "+garmin.EnvConsumerSecret)
+	}
 
 	if cfg.Komoot.Enabled {
 		client, err := komootClient()
