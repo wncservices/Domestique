@@ -51,7 +51,6 @@ spec:
             - serve
             - --addr=:8080
             - --config=/app/domestique.yaml
-            - --state=/app/data/domestique-state.json
             - --web-dir=/app/web
           ports:
             - name: http

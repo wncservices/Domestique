@@ -5,7 +5,7 @@ type: application
 
 # The chart version. Bumped on every chart change; chart-releaser publishes a
 # release per version, so this must go up or the release is skipped.
-version: 0.2.0
+version: 0.2.1
 
 # The application version, which is also the default image tag.
 appVersion: "0.1.0"
