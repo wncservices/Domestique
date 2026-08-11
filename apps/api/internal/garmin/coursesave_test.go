@@ -1,6 +1,7 @@
 package garmin
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -63,10 +64,13 @@ func TestImportSavesTheParsedCourse(t *testing.T) {
 	if !strings.HasSuffix(paths[0], "/import") || strings.HasSuffix(paths[1], "/import") {
 		t.Errorf("calls were %v, want import first then the service", paths)
 	}
-	// Posted verbatim: rewriting it would mean guessing at fields Connect
-	// filled in for a reason.
-	if savedBody != parsedCourse {
-		t.Errorf("saved %q, want what the parse returned", savedBody)
+	// coursePrivacy is injected (Garmin rejects the DTO without it); all other
+	// fields come from what /import returned.
+	if !strings.Contains(savedBody, `"coursePrivacy":2`) {
+		t.Errorf("saved %q, want coursePrivacy injected", savedBody)
+	}
+	if !strings.Contains(savedBody, `"courseName":"Abdij van Vlierbeek"`) {
+		t.Errorf("saved %q, want the parsed course fields preserved", savedBody)
 	}
 }
 
@@ -123,5 +127,41 @@ func TestImportReportsARefusedSessionOnSave(t *testing.T) {
 	_, err := newTestClient(t, srv).ImportCourse("ride.fit", []byte("FIT"))
 	if err == nil || !strings.Contains(err.Error(), "sign in again") {
 		t.Errorf("err = %v, want it to say to sign in again", err)
+	}
+}
+
+// /import never populates coursePrivacy; the save endpoint rejects anything
+// outside {1,2,4}. The fix is to inject 2 (Private) before posting.
+func TestSaveInjectsPrivacyWhenMissing(t *testing.T) {
+	var savedBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/import") {
+			io.WriteString(w, parsedCourse)
+			return
+		}
+		b, _ := io.ReadAll(r.Body)
+		savedBody = string(b)
+		io.WriteString(w, `{"courseId":1}`)
+	}))
+	defer srv.Close()
+
+	if _, err := newTestClient(t, srv).ImportCourse("r.fit", []byte("FIT")); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(savedBody, `"coursePrivacy":2`) {
+		t.Errorf("saved body = %s, want coursePrivacy:2", savedBody)
+	}
+}
+
+func TestWithPrivacyKeepsAValidValue(t *testing.T) {
+	for _, v := range []int{1, 2, 4} {
+		in := []byte(fmt.Sprintf(`{"courseId":null,"coursePrivacy":%d}`, v))
+		out, err := withPrivacy(in)
+		if err != nil {
+			t.Fatalf("privacy %d: %v", v, err)
+		}
+		if !strings.Contains(string(out), fmt.Sprintf(`"coursePrivacy":%d`, v)) {
+			t.Errorf("privacy %d was changed: %s", v, out)
+		}
 	}
 }
