@@ -10,13 +10,20 @@ import (
 	"strings"
 )
 
-// coursePath is the endpoint Connect's own Training → Courses → Import uses.
+// coursePath is the course service. Connect's own Training → Courses → Import
+// reaches it as `https://connect.garmin.com/gc-api/course-service/course`; the
+// `/gc-api` prefix is the web app's proxy onto the same service, and with an
+// OAuth2 bearer the service is reached directly on connectapi.
 //
-// Observed in the browser as
-// `POST https://connect.garmin.com/gc-api/course-service/course/import`,
-// multipart, `Accept: application/json`. The `/gc-api` prefix is the web
-// app's proxy onto the same service; with an OAuth2 bearer the service is
-// reached directly on connectapi, so the prefix is not used here.
+// Importing is **two calls**, which is not obvious and cost a full library's
+// worth of failed pushes to discover:
+//
+//  1. POST /import with the file. This only *parses* it. The response is a
+//     course object with the name read out of the file and `courseId: null` —
+//     nothing has been saved, and the 200 says nothing about whether it will
+//     be.
+//  2. POST that object back to the service. This is what creates the course,
+//     and this is the response that carries the id.
 //
 // Undocumented and liable to move. When it does, the failure is one push
 // returning an error — the route stays in the library and nothing else stops.
@@ -72,9 +79,46 @@ func (c *Client) ImportCourse(filename string, data []byte) (string, error) {
 		return "", fmt.Errorf("garmin: course import returned %d: %s", status, snippet(raw))
 	}
 
-	id, err := courseID(raw)
+	// A parse that already carries an id would mean Connect had folded the
+	// two calls into one. It does not today, but taking the id when it is
+	// there costs nothing and means this keeps working if that changes.
+	if id, err := courseID(raw); err == nil {
+		return id, nil
+	}
+	return c.saveCourse(raw)
+}
+
+// saveCourse turns a parsed course into a saved one.
+//
+// The body is what /import handed back, posted verbatim: it is Connect's own
+// representation of the file we uploaded, and rewriting it here would mean
+// guessing at fields the service filled in for a reason.
+func (c *Client) saveCourse(parsed []byte) (string, error) {
+	bearer, err := c.bearerToken()
 	if err != nil {
 		return "", err
+	}
+
+	raw, status, err := c.do(http.MethodPost, c.APIBase+coursePath, bytes.NewReader(parsed),
+		"application/json",
+		header{"Authorization", "Bearer " + bearer},
+		header{"Accept", "application/json"},
+		header{"X-Requested-With", "XMLHttpRequest"},
+	)
+	if err != nil {
+		return "", err
+	}
+
+	switch {
+	case status == http.StatusUnauthorized, status == http.StatusForbidden:
+		return "", errors.New("garmin: the session was refused — sign in again")
+	case status >= 300:
+		return "", fmt.Errorf("garmin: saving the course returned %d: %s", status, snippet(raw))
+	}
+
+	id, err := courseID(raw)
+	if err != nil {
+		return "", fmt.Errorf("garmin: the course was saved but no id came back: %w", err)
 	}
 	return id, nil
 }
