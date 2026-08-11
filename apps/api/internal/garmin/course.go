@@ -90,16 +90,20 @@ func (c *Client) ImportCourse(filename string, data []byte) (string, error) {
 
 // saveCourse turns a parsed course into a saved one.
 //
-// The body is what /import handed back, posted verbatim: it is Connect's own
-// representation of the file we uploaded, and rewriting it here would mean
-// guessing at fields the service filled in for a reason.
+// The body is what /import handed back with one addition: /import never sets
+// coursePrivacy, but the save endpoint rejects the DTO without a valid value.
 func (c *Client) saveCourse(parsed []byte) (string, error) {
 	bearer, err := c.bearerToken()
 	if err != nil {
 		return "", err
 	}
 
-	raw, status, err := c.do(http.MethodPost, c.APIBase+coursePath, bytes.NewReader(parsed),
+	body, err := withPrivacy(parsed)
+	if err != nil {
+		return "", err
+	}
+
+	raw, status, err := c.do(http.MethodPost, c.APIBase+coursePath, bytes.NewReader(body),
 		"application/json",
 		header{"Authorization", "Bearer " + bearer},
 		header{"Accept", "application/json"},
@@ -151,6 +155,28 @@ func (c *Client) DeleteCourse(id string) error {
 		return fmt.Errorf("garmin: deleting course %s returned %d: %s", id, status, snippet(raw))
 	}
 	return nil
+}
+
+// withPrivacy ensures the DTO has a valid coursePrivacy value.
+//
+// /import never populates it, but the save endpoint rejects values outside
+// {1=Public, 2=Private, 4=Group}. Default to Private (2).
+func withPrivacy(parsed []byte) ([]byte, error) {
+	var dto map[string]any
+	if err := json.Unmarshal(parsed, &dto); err != nil {
+		return nil, fmt.Errorf("garmin: unreadable course response: %s", snippet(parsed))
+	}
+	switch dto["coursePrivacy"] {
+	case float64(1), float64(2), float64(4):
+		// already valid
+	default:
+		dto["coursePrivacy"] = float64(2)
+	}
+	out, err := json.Marshal(dto)
+	if err != nil {
+		return nil, fmt.Errorf("garmin: could not re-encode course: %w", err)
+	}
+	return out, nil
 }
 
 // courseID digs the new course's id out of the response.
