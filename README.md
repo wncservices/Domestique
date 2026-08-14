@@ -294,5 +294,5 @@ Garmin has none at all, and Wahoo's is approval-gated and wants FIT rather than 
 ## Contributing
 
 `just check` runs the typecheck, vet and tests. Keep the Go side close to the standard library —
-the dependencies today are a YAML parser, a pure-Go SQLite driver and a FIT SDK, and that is the
-budget.
+the dependencies today are a YAML parser, a pure-Go SQLite driver, a FIT SDK and an OIDC client
+(discovery, JWKS, ID-token verification), and that is the budget.
