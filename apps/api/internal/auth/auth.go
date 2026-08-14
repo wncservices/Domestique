@@ -15,9 +15,12 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
+	"slices"
 	"strings"
 )
 
@@ -32,6 +35,20 @@ const (
 	ModeNone Mode = "none"
 	// ModeProxy trusts Authelia's forwardAuth headers.
 	ModeProxy Mode = "proxy"
+	// ModeOIDC authenticates the rider itself, against any OIDC issuer —
+	// Auth0, Keycloak, Zitadel, whatever the operator points it at. Identity
+	// comes from a server-side session the app created at login, not from a
+	// header a proxy is trusted to set.
+	ModeOIDC Mode = "oidc"
+)
+
+// SessionCookieName holds the opaque token a ModeOIDC login is looked up by.
+// OIDCStateCookie holds the sealed PKCE verifier, nonce and CSRF state
+// between /sso/login and /sso/callback — short-lived, cleared once the
+// callback consumes it.
+const (
+	SessionCookieName = "domestique_session"
+	OIDCStateCookie   = "domestique_oidc_state"
 )
 
 // Header names Authelia sets and Traefik copies onto the upstream request.
@@ -64,6 +81,40 @@ type Config struct {
 	// is configuration rather than something to derive. Empty hides the
 	// button, which is right for mode "none": there is nothing to sign out of.
 	LogoutURL string `yaml:"logout_url,omitempty"`
+	// OIDC configures ModeOIDC. Ignored, and left unvalidated, in every other
+	// mode — an operator experimenting with the block before flipping mode
+	// over should not have it rejected for a typo in a section that is not
+	// active yet.
+	OIDC OIDCConfig `yaml:"oidc,omitempty"`
+}
+
+// OIDCConfig is the auth.oidc section of domestique.yaml.
+//
+// The client secret is deliberately not a field here: this struct is
+// unmarshaled straight from a config file meant to be readable, and a secret
+// belongs in the environment — DOMESTIQUE_OIDC_CLIENT_SECRET, the same rule
+// KOMOOT_EMAIL/PASSWORD and the encryption key already follow.
+type OIDCConfig struct {
+	// Issuer is the base URL discovery is run against —
+	// "<issuer>/.well-known/openid-configuration" must resolve.
+	Issuer string `yaml:"issuer"`
+	// ClientID identifies this app to the issuer. Not a secret.
+	ClientID string `yaml:"client_id"`
+	// RedirectURL is where the issuer sends the browser back after login —
+	// must equal what is registered with the issuer, exactly, including
+	// scheme and path.
+	RedirectURL string `yaml:"redirect_url"`
+	// Scopes requested at login. "openid" is required by the spec and is
+	// added automatically if the operator forgot it, rather than failing
+	// startup for an easy mistake with an unhelpful downstream error.
+	Scopes []string `yaml:"scopes,omitempty"`
+	// GroupsClaim is the ID-token claim role mapping reads groups from.
+	// Issuers disagree on this — Authelia sends "groups", Auth0 needs a
+	// custom claim added by an Action and namespaced, Google sends none at
+	// all — so it is configurable. Empty means "groups". An issuer with no
+	// groups claim at all is not a misconfiguration: every rider falls
+	// through to default_role, which is the point of that setting existing.
+	GroupsClaim string `yaml:"groups_claim,omitempty"`
 }
 
 // Identity is who is making a request, and what they may do.
@@ -96,6 +147,17 @@ func (i Identity) InGroup(group string) bool {
 	return false
 }
 
+// SessionLookup resolves a ModeOIDC session cookie to who it belongs to.
+//
+// An interface rather than a concrete type from internal/sessions: that
+// package needs Identity, and this package must not import it back —
+// *sessions.Store satisfies this structurally, wired in with UseSessions
+// after construction rather than through New's parameter list, so no
+// existing caller of New(cfg) changes.
+type SessionLookup interface {
+	Lookup(token string) (Identity, bool)
+}
+
 // Authenticator turns requests into identities.
 type Authenticator struct {
 	mode          Mode
@@ -104,6 +166,54 @@ type Authenticator struct {
 	roles         RoleMapping
 	defaultRole   Role
 	logoutURL     string
+	sessions      SessionLookup
+	oidc          OIDCConfig
+}
+
+// UseSessions wires the session store ModeOIDC reads from. Nil is a valid
+// state — Identify treats it the same as a session nobody can find — because
+// a server built before its sessions store exists (or without one at all, in
+// a mode that never needs it) must not panic on the first request.
+func (a *Authenticator) UseSessions(s SessionLookup) { a.sessions = s }
+
+// OIDC returns the validated, defaulted OIDC config — "openid" present in
+// Scopes, GroupsClaim never empty — for whatever builds the discovery client
+// in ModeOIDC. Zero value in every other mode.
+func (a *Authenticator) OIDC() OIDCConfig { return a.oidc }
+
+// validatedOIDC checks the shape of an OIDC config and fills in its
+// defaults. Pure — no network call, no I/O. Discovery (an issuer actually
+// being reachable) is a separate, later step; config.Validate runs this for
+// every CLI subcommand, not only serve, and must never touch the network to
+// do it.
+func validatedOIDC(cfg OIDCConfig) (OIDCConfig, error) {
+	if cfg.Issuer == "" {
+		return OIDCConfig{}, errors.New("auth.oidc.issuer is required for mode oidc")
+	}
+	u, err := url.Parse(cfg.Issuer)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return OIDCConfig{}, fmt.Errorf("auth.oidc.issuer: %q is not a URL with a scheme and host", cfg.Issuer)
+	}
+	if cfg.ClientID == "" {
+		return OIDCConfig{}, errors.New("auth.oidc.client_id is required for mode oidc")
+	}
+	if cfg.RedirectURL == "" {
+		return OIDCConfig{}, errors.New("auth.oidc.redirect_url is required for mode oidc")
+	}
+	if _, err := url.Parse(cfg.RedirectURL); err != nil {
+		return OIDCConfig{}, fmt.Errorf("auth.oidc.redirect_url: %q is not a URL: %w", cfg.RedirectURL, err)
+	}
+
+	if cfg.GroupsClaim == "" {
+		cfg.GroupsClaim = "groups"
+	}
+	if !slices.Contains(cfg.Scopes, "openid") {
+		// Required by the spec. Forgetting it is an easy mistake to make and
+		// a confusing one to debug from the far side — the issuer's error
+		// looks nothing like "you forgot a scope".
+		cfg.Scopes = append([]string{"openid"}, cfg.Scopes...)
+	}
+	return cfg, nil
 }
 
 // New validates the config and builds an Authenticator.
@@ -134,8 +244,14 @@ func New(cfg Config) (*Authenticator, error) {
 				"nothing would enforce it", a.mode)
 		}
 	case ModeProxy:
+	case ModeOIDC:
+		oidcCfg, err := validatedOIDC(cfg.OIDC)
+		if err != nil {
+			return nil, err
+		}
+		a.oidc = oidcCfg
 	default:
-		return nil, fmt.Errorf("unknown auth mode %q (want none or proxy)", a.mode)
+		return nil, fmt.Errorf("unknown auth mode %q (want none, proxy or oidc)", a.mode)
 	}
 
 	for _, cidr := range cfg.TrustedProxies {
@@ -166,16 +282,28 @@ func (a *Authenticator) Enabled() bool { return a.mode != ModeNone }
 
 // Identify extracts the identity from a request.
 //
-// In ModeNone the headers are ignored entirely and everyone is the local
-// admin. In ModeProxy the headers are read only
-// when the peer is a trusted proxy; headers from anywhere else are discarded
-// rather than trusted, because that is exactly what a spoofing attempt looks
-// like.
+// A real per-mode branch, not one early return with a case tacked on: modes
+// disagree about where an identity comes from (a trusted proxy's headers, a
+// session this app issued itself), not just about whether to trust one more
+// source layered on the same check.
 func (a *Authenticator) Identify(r *http.Request) Identity {
-	if a.mode == ModeNone {
+	switch a.mode {
+	case ModeNone:
 		return LocalIdentity()
+	case ModeProxy:
+		return a.identifyFromProxy(r)
+	case ModeOIDC:
+		return a.identifyFromSession(r)
+	default:
+		return Identity{}
 	}
-	if a.mode != ModeProxy || !a.peerTrusted(r) {
+}
+
+// identifyFromProxy trusts Authelia's forwardAuth headers, and only when the
+// peer is a trusted proxy — headers from anywhere else are discarded rather
+// than trusted, because that is exactly what a spoofing attempt looks like.
+func (a *Authenticator) identifyFromProxy(r *http.Request) Identity {
+	if !a.peerTrusted(r) {
 		return Identity{}
 	}
 
@@ -192,6 +320,27 @@ func (a *Authenticator) Identify(r *http.Request) Identity {
 		Groups: groups,
 		Role:   a.resolveRole(groups),
 	}
+}
+
+// identifyFromSession looks up the session cookie a successful /sso/callback
+// set. Role is recomputed from the stored Groups on every call rather than
+// cached at login, so editing roles: in config takes effect for an
+// already-signed-in rider immediately — the same as ModeProxy, where the
+// header is re-read and re-resolved on every request too.
+func (a *Authenticator) identifyFromSession(r *http.Request) Identity {
+	if a.sessions == nil {
+		return Identity{}
+	}
+	cookie, err := r.Cookie(SessionCookieName)
+	if err != nil || cookie.Value == "" {
+		return Identity{}
+	}
+	id, ok := a.sessions.Lookup(cookie.Value)
+	if !ok {
+		return Identity{}
+	}
+	id.Role = a.resolveRole(id.Groups)
+	return id
 }
 
 // LocalIdentity is who you are when authentication is off. Running without a
