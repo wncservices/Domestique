@@ -7,6 +7,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -29,8 +30,10 @@ import (
 	"github.com/wncservices/domestique/apps/api/internal/gpx"
 	"github.com/wncservices/domestique/apps/api/internal/komoot"
 	"github.com/wncservices/domestique/apps/api/internal/model"
+	"github.com/wncservices/domestique/apps/api/internal/oidcflow"
 	"github.com/wncservices/domestique/apps/api/internal/providerlink"
 	"github.com/wncservices/domestique/apps/api/internal/secrets"
+	"github.com/wncservices/domestique/apps/api/internal/sessions"
 	"github.com/wncservices/domestique/apps/api/internal/settings"
 	"github.com/wncservices/domestique/apps/api/internal/source"
 	"github.com/wncservices/domestique/apps/api/internal/state"
@@ -639,6 +642,48 @@ func runServe(src *source.DB, cfg *config.Config, store state.Store, addr, webDi
 		return err
 	}
 	srv.Settings = appSettings
+
+	// OIDC sessions live in the database the same way, and are wired
+	// unconditionally like Links/Settings above — a mode-none or mode-proxy
+	// deployment simply never reads from this table. Auth needs it too, since
+	// identifying a mode-oidc request means looking a session cookie up.
+	sessionStore, err := sessions.UseDB(src.Conn(), src.DSN(), box)
+	if err != nil {
+		return err
+	}
+	srv.Sessions = sessionStore
+	srv.Box = box
+	authenticator.UseSessions(sessionStore)
+
+	if cfg.Auth.Mode == auth.ModeOIDC {
+		// Unlike Komoot/Garmin, mode oidc cannot run degraded without a
+		// client secret — there is no "the sign-in button is just hidden"
+		// fallback when the mode itself is what the operator asked for, so
+		// this fails startup rather than warning.
+		clientSecret := os.Getenv(oidcflow.EnvClientSecret)
+		if clientSecret == "" {
+			return fmt.Errorf("auth.mode is oidc but %s is not set", oidcflow.EnvClientSecret)
+		}
+
+		// Bounded so a DNS hiccup against the issuer does not hang `serve`
+		// forever — this is the one network call anything in auth.mode oidc
+		// makes before the server can start answering requests at all.
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		oidcCfg := authenticator.OIDC()
+		flow, err := oidcflow.New(ctx, oidcflow.Config{
+			Issuer:       oidcCfg.Issuer,
+			ClientID:     oidcCfg.ClientID,
+			ClientSecret: clientSecret,
+			GroupsClaim:  oidcCfg.GroupsClaim,
+			Scopes:       oidcCfg.Scopes,
+		})
+		cancel()
+		if err != nil {
+			return fmt.Errorf("oidc discovery: %w", err)
+		}
+		srv.OIDC = flow
+		log.Info("oidc discovery complete", "issuer", oidcCfg.Issuer)
+	}
 
 	// Garmin needs no config of its own: a rider signs in from the UI, and the
 	// OAuth1 consumer comes either from the environment or from an admin
