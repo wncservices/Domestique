@@ -46,16 +46,18 @@ const usage = `Domestique — fetch-and-carry for cycling routes
 usage: domestique <command> [flags]
 
 commands:
-  validate   read the library and report problems
-  plan       show what would change on each account
-  push       apply the plan (use --dry-run to preview)
-  state      list what each account is recorded as holding
-  import     load a directory of .gpx files into the database
-  komoot     list or import routes from a Komoot account
-  fit        export a route as a Garmin FIT course
-  serve      run the HTTP API and the web UI
-  keygen     print a new DOMESTIQUE_ENCRYPTION_KEY
-  version    print the version
+  validate      read the library and report problems
+  plan          show what would change on each account
+  push          apply the plan (use --dry-run to preview)
+  state         list what each account is recorded as holding
+  import        load a directory of .gpx files into the database
+  komoot        list or import routes from a Komoot account
+  fit           export a route as a Garmin FIT course
+  serve         run the HTTP API and the web UI
+  rename-rider  move one rider's routes, accounts and sign-ins to a new identity
+                (see docs/rider-migration.md before running this for real)
+  keygen        print a new DOMESTIQUE_ENCRYPTION_KEY
+  version       print the version
 
 common flags:
   --config PATH    app config (default domestique.yaml)
@@ -116,7 +118,7 @@ func run(args []string) error {
 	var positional []string
 
 	switch cmd {
-	case "validate", "plan", "push", "state", "serve", "import", "komoot", "fit", "keygen":
+	case "validate", "plan", "push", "state", "serve", "import", "komoot", "fit", "rename-rider", "keygen":
 		// Go's flag package stops at the first positional argument, so
 		// `fit <slug> --cues` would silently ignore --cues. Parse in a loop,
 		// peeling off positionals, so flags and arguments can interleave in
@@ -182,6 +184,8 @@ func run(args []string) error {
 		return runKomoot(src, cfg, positional)
 	case "fit":
 		return runFIT(src, positional, *out, *cues)
+	case "rename-rider":
+		return runRenameRider(src, positional, *dryRun)
 	}
 	return nil
 }

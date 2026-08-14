@@ -1,0 +1,296 @@
+package main
+
+import (
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/wncservices/domestique/apps/api/internal/accounts"
+	"github.com/wncservices/domestique/apps/api/internal/model"
+	"github.com/wncservices/domestique/apps/api/internal/providerlink"
+	"github.com/wncservices/domestique/apps/api/internal/secrets"
+	"github.com/wncservices/domestique/apps/api/internal/source"
+	"github.com/wncservices/domestique/apps/api/internal/state"
+)
+
+// seedRider gives a rider one route, one Garmin account with sync state
+// behind it, and one provider sign-in — the whole shape a rename has to
+// carry across correctly, in one place so every test below starts from the
+// same known state.
+func seedRider(t *testing.T, dsn, rider string) {
+	t.Helper()
+
+	db, err := source.OpenDB(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if _, err := db.Create(source.CreateRequest{
+		Filename: "ride.gpx", Name: "A Ride", UploadedBy: rider, GPX: []byte(exampleGPX),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	acctStore, err := accounts.UseDB(db.Conn(), db.DSN())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := acctStore.Link(model.ProviderGarmin, rider, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	stateStore, err := state.UseDB(db.Conn(), db.DSN())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stateStore.Record(state.Entry{
+		AccountID: accounts.ID(model.ProviderGarmin, rider), Slug: "a-ride",
+		RemoteID: "remote-1", ContentHash: "hash-1", UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	key, err := secrets.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	box, err := secrets.New(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	links, err := providerlink.UseDB(db.Conn(), db.DSN(), box)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := links.Save(string(model.ProviderGarmin), rider, providerlink.Connection{
+		Email: rider + "@example.com", DisplayName: rider, Secret: "token",
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// assertGone confirms nothing under the old rider name survives — a rename
+// that copied without deleting would double-count everything on the next run.
+func assertGone(t *testing.T, dsn, oldRider string) {
+	t.Helper()
+	db, err := source.OpenDB(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	acctStore, err := accounts.UseDB(db.Conn(), db.DSN())
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := acctStore.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range list {
+		if a.Rider == oldRider {
+			t.Errorf("account %s still carries the old rider %q", a.ID, oldRider)
+		}
+	}
+}
+
+func TestRenameRiderMovesEveryTable(t *testing.T) {
+	dir := workspace(t)
+	dsn := dir + "/data/domestique.db"
+	seedRider(t, dsn, "wilant")
+
+	out := mustRun(t, "rename-rider", "wilant", "auth0|64f2a1b2c3d4e5f6")
+	for _, want := range []string{"routes:", "1", "accounts:", "sync state rows:", "provider sign-ins:",
+		`renamed "wilant" to "auth0|64f2a1b2c3d4e5f6"`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+
+	db, err := source.OpenDB(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// routes.uploaded_by
+	routes, _, err := db.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != 1 || routes[0].Owner != "auth0|64f2a1b2c3d4e5f6" {
+		t.Fatalf("routes = %+v, want the one route reassigned", routes)
+	}
+
+	// accounts.id and accounts.rider
+	acctStore, err := accounts.UseDB(db.Conn(), db.DSN())
+	if err != nil {
+		t.Fatal(err)
+	}
+	newID := accounts.ID(model.ProviderGarmin, "auth0|64f2a1b2c3d4e5f6")
+	account, err := acctStore.Get(newID)
+	if err != nil {
+		t.Fatalf("Get(%s): %v", newID, err)
+	}
+	if account.Rider != "auth0|64f2a1b2c3d4e5f6" {
+		t.Errorf("account.Rider = %q", account.Rider)
+	}
+
+	// sync_state.account_id, carried by the same key the account now has
+	stateStore, err := state.UseDB(db.Conn(), db.DSN())
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := stateStore.All()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].AccountID != newID {
+		t.Fatalf("sync state = %+v, want one row keyed to %s", entries, newID)
+	}
+
+	// provider_links.rider
+	key, err := secrets.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	box, err := secrets.New(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	links, err := providerlink.UseDB(db.Conn(), db.DSN(), box)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := links.Get(string(model.ProviderGarmin), "auth0|64f2a1b2c3d4e5f6"); err != nil {
+		t.Errorf("provider link not found under the new rider: %v", err)
+	}
+
+	assertGone(t, dsn, "wilant")
+}
+
+// A target that already has an account must abort the whole rename rather
+// than silently overwrite it — and abort means nothing at all was written,
+// proven by reading the old rider's data back afterward.
+func TestRenameRiderAbortsOnConflictAndWritesNothing(t *testing.T) {
+	dir := workspace(t)
+	dsn := dir + "/data/domestique.db"
+	seedRider(t, dsn, "wilant")
+	seedRider(t, dsn, "friend") // already owns a garmin:friend account
+
+	_, err := capture(t, "rename-rider", "wilant", "friend")
+	if err == nil {
+		t.Fatal("a rename onto an existing account succeeded")
+	}
+	if !strings.Contains(err.Error(), "already has a") {
+		t.Errorf("err = %v, want it to name the conflict", err)
+	}
+
+	// Nothing moved: wilant's account, and its sync state, are both still
+	// exactly where they were.
+	db, err := source.OpenDB(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	acctStore, err := accounts.UseDB(db.Conn(), db.DSN())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := acctStore.Get(accounts.ID(model.ProviderGarmin, "wilant")); err != nil {
+		t.Errorf("wilant's account is gone after an aborted rename: %v", err)
+	}
+	stateStore, err := state.UseDB(db.Conn(), db.DSN())
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := stateStore.All()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stillWilant bool
+	for _, e := range entries {
+		if e.AccountID == accounts.ID(model.ProviderGarmin, "wilant") {
+			stillWilant = true
+		}
+	}
+	if !stillWilant {
+		t.Error("wilant's sync state is gone after an aborted rename")
+	}
+}
+
+func TestRenameRiderDryRunWritesNothing(t *testing.T) {
+	dir := workspace(t)
+	dsn := dir + "/data/domestique.db"
+	seedRider(t, dsn, "wilant")
+
+	out := mustRun(t, "rename-rider", "--dry-run", "wilant", "auth0|abc")
+	if !strings.Contains(out, "dry run") {
+		t.Errorf("output does not say dry run:\n%s", out)
+	}
+	// The counts should still be accurate, even though nothing was written.
+	for _, want := range []string{"routes:", "accounts:", "sync state rows:", "provider sign-ins:"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("dry run output missing %q:\n%s", want, out)
+		}
+	}
+
+	db, err := source.OpenDB(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	acctStore, err := accounts.UseDB(db.Conn(), db.DSN())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := acctStore.Get(accounts.ID(model.ProviderGarmin, "wilant")); err != nil {
+		t.Errorf("dry run moved the account: %v", err)
+	}
+	if _, err := acctStore.Get(accounts.ID(model.ProviderGarmin, "auth0|abc")); err == nil {
+		t.Error("dry run created the new account")
+	}
+}
+
+// A second run after a successful rename finds nothing left under the old
+// name and does nothing — the retry-safety a partial-failure recovery
+// depends on.
+func TestRenameRiderIsIdempotent(t *testing.T) {
+	dir := workspace(t)
+	dsn := dir + "/data/domestique.db"
+	seedRider(t, dsn, "wilant")
+
+	mustRun(t, "rename-rider", "wilant", "auth0|abc")
+	out := mustRun(t, "rename-rider", "wilant", "auth0|abc")
+
+	for _, want := range []string{"routes:              0", "accounts:            0",
+		"sync state rows:     0", "provider sign-ins:   0"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("second run output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestRenameRiderRejectsBadInput(t *testing.T) {
+	dir := workspace(t)
+	dsn := dir + "/data/domestique.db"
+	seedRider(t, dsn, "wilant")
+
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"no arguments", []string{"rename-rider"}},
+		{"one argument", []string{"rename-rider", "wilant"}},
+		{"same rider twice", []string{"rename-rider", "wilant", "wilant"}},
+		{"new rider has an illegal character", []string{"rename-rider", "wilant", "has space"}},
+		{"empty new rider", []string{"rename-rider", "wilant", "  "}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := capture(t, tc.args...); err == nil {
+				t.Errorf("%v was accepted", tc.args)
+			}
+		})
+	}
+}

@@ -148,6 +148,18 @@ func TestLinkRejectsUnusableRiders(t *testing.T) {
 	}
 }
 
+// A `|` is not a character a Remote-User header from Authelia ever carries,
+// but it is exactly how Auth0's default sub is shaped — "auth0|<hex id>" —
+// since that issuer's database connection does not populate
+// preferred_username at all. Rejecting it would work fine right up until
+// somebody linked an account under mode: oidc.
+func TestLinkAcceptsAnOIDCSubShape(t *testing.T) {
+	store := sqliteStore(t)
+	if _, err := store.Link(model.ProviderGarmin, "auth0|64f2a1b2c3d4e5f6", ""); err != nil {
+		t.Errorf("an Auth0-shaped rider was rejected: %v", err)
+	}
+}
+
 func TestLinkRejectsUnknownProvider(t *testing.T) {
 	store := sqliteStore(t)
 	if _, err := store.Link(model.Provider("strava"), "one", ""); err == nil {

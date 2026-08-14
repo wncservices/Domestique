@@ -71,7 +71,17 @@ func ID(provider model.Provider, rider string) string {
 	return fmt.Sprintf("%s:%s", provider, strings.ToLower(strings.TrimSpace(rider)))
 }
 
-var riderPattern = regexp.MustCompile(`^[a-zA-Z0-9._@-]+$`)
+// RiderPattern is what a rider string is allowed to be — it lands in an
+// account id used across the API and in a URL, so it has to survive both.
+// Exported so anything else that has to validate a rider string (the
+// rename-rider CLI command, notably) shares this one definition rather than
+// duplicating the regex and risking the two drifting apart.
+//
+// Admits `|`: an OIDC subject from an issuer like Auth0 is commonly shaped
+// "auth0|64f2a1b2c3d4e5f6" — that pipe would otherwise be rejected the first
+// time such a rider tried to link an account, one step after signing in
+// worked fine.
+var RiderPattern = regexp.MustCompile(`^[a-zA-Z0-9._@|-]+$`)
 
 // Link records a rider's connection to a provider.
 func (s *Store) Link(provider model.Provider, rider, label string) (model.Account, error) {
@@ -79,9 +89,9 @@ func (s *Store) Link(provider model.Provider, rider, label string) (model.Accoun
 	if rider == "" {
 		return model.Account{}, errors.New("accounts: no rider — who is linking this?")
 	}
-	// The rider comes from Authelia, but it lands in an id used across the
-	// API, so keep it to something that survives a URL.
-	if !riderPattern.MatchString(rider) {
+	// The rider comes from Authelia or an OIDC issuer, but it lands in an id
+	// used across the API, so keep it to something that survives a URL.
+	if !RiderPattern.MatchString(rider) {
 		return model.Account{}, fmt.Errorf("accounts: rider %q has characters that cannot appear in an id", rider)
 	}
 	switch provider {
