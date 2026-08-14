@@ -1,16 +1,16 @@
-// Package auth identifies the rider making a request.
+// Package auth identifies the rider making a request, in one of three modes.
 //
-// Domestique does not authenticate anyone itself. It sits behind a reverse
-// proxy that does — Traefik with an Authelia forwardAuth middleware — and
-// Authelia hands the identity down as response headers the proxy copies onto
-// the request: Remote-User, Remote-Name, Remote-Email, Remote-Groups.
+// Everything downstream — Identity, role resolution, Authorize — is the same
+// regardless of which mode supplied the identity. Only Identify's source
+// differs per mode; see its own doc comment and each Mode's.
 //
-// The whole scheme rests on one assumption: those headers came from the proxy
-// and not from the client. A browser can set "Remote-User: someone-else" just
-// as easily as the proxy can. So header trust is **opt-in** — Mode must be set
-// to "proxy" explicitly, and the deployment must guarantee the app is not
-// reachable except through the proxy. Running Mode "proxy" on a directly
-// reachable port is the same as having no authentication at all.
+//   - ModeNone: nobody is authenticated, everyone is the local admin. Right
+//     for a laptop.
+//   - ModeProxy: trusts a reverse proxy's headers — Traefik with an Authelia
+//     forwardAuth middleware, typically. See ModeProxy's own doc comment for
+//     the trust model this rests on and what has to stay true for it to hold.
+//   - ModeOIDC: the app authenticates riders itself, against any OIDC issuer.
+//     See ModeOIDC's own doc comment, and docs/oidc.md for the full design.
 package auth
 
 import (
@@ -33,12 +33,36 @@ const (
 	// proxy means running on your own machine. Right for a laptop, wrong for
 	// anything reachable.
 	ModeNone Mode = "none"
-	// ModeProxy trusts Authelia's forwardAuth headers.
+	// ModeProxy trusts Authelia's forwardAuth headers: Remote-User,
+	// Remote-Name, Remote-Email, Remote-Groups.
+	//
+	// The whole scheme rests on one assumption: those headers came from the
+	// proxy and not from the client. A browser can set "Remote-User:
+	// someone-else" just as easily as the proxy can. So header trust is
+	// **opt-in** — Mode must be set to "proxy" explicitly — and the
+	// deployment must guarantee the app is not reachable except through the
+	// proxy. Running ModeProxy on a directly reachable port is the same as
+	// having no authentication at all. trusted_proxies narrows who the
+	// headers are trusted from, but does not replace this requirement — it
+	// only helps when the app is reachable from more places than the proxy
+	// alone, which should not be true in the first place.
+	//
+	// This constraint is specific to ModeProxy. ModeOIDC does not share it —
+	// see its own comment.
 	ModeProxy Mode = "proxy"
 	// ModeOIDC authenticates the rider itself, against any OIDC issuer —
 	// Auth0, Keycloak, Zitadel, whatever the operator points it at. Identity
-	// comes from a server-side session the app created at login, not from a
-	// header a proxy is trusted to set.
+	// comes from a server-side session the app created at login (see
+	// internal/sessions), not from a header a proxy is trusted to set.
+	//
+	// ModeProxy's "must be unreachable except through the proxy" constraint
+	// does not apply here: the app verifies a signed token itself rather than
+	// trusting a header, so ModeOIDC is the mode for a deployment that faces
+	// the public directly. What has to stay true instead: the client secret
+	// only ever comes from oidcflow.EnvClientSecret, and an encryption key
+	// (secrets.EnvKey) must be set — without one there is nowhere safe to
+	// hold the session or the short-lived sign-in state, and /sso/login
+	// refuses outright rather than run degraded.
 	ModeOIDC Mode = "oidc"
 )
 

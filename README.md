@@ -93,8 +93,12 @@ just push -- --dry-run           # same, in push's own words
 
 ## Logging in
 
-Domestique has no login of its own. Put it behind Traefik with an Authelia
-forwardAuth middleware and it reads the identity Authelia passes down.
+Domestique has two ways to identify a rider — pick one, they are mutually
+exclusive.
+
+**`mode: proxy`** trusts a reverse proxy in front of it. Put it behind
+Traefik with an Authelia forwardAuth middleware and it reads the identity
+Authelia passes down.
 
 ```yaml
 auth:
@@ -106,16 +110,47 @@ auth:
     viewer: [guests]
 ```
 
+> **The app must not be reachable except through the proxy.** It believes the
+> `Remote-User` header — and so would anyone who can talk to it directly.
+> `trusted_proxies` narrows that; leave it empty only for a ClusterIP-only
+> service. This warning is specific to `mode: proxy`: it is what "trust a
+> header" costs, and it is why `mode: proxy` is the right shape for a
+> deployment sitting behind SSO you already run, not for one facing the
+> public internet directly.
+
+**`mode: oidc`** authenticates riders itself, against any OpenID Connect
+issuer — Auth0, Keycloak, Zitadel, whatever you already have. Riders sign in
+at `/sso/login`; the app verifies what comes back and holds its own
+server-side session. See [`docs/oidc.md`](docs/oidc.md) for the full design.
+
+```yaml
+auth:
+  mode: oidc
+  oidc:
+    issuer: https://your-tenant.example.com/
+    client_id: domestique
+    # client_secret from DOMESTIQUE_OIDC_CLIENT_SECRET, never the config file
+    redirect_url: https://app.example.com/sso/callback
+    scopes: [openid, profile, email]
+    groups_claim: groups   # empty if your issuer sends no groups at all
+  roles:
+    admin: [domestique-admins]
+    rider: [cyclists]
+```
+
+This mode's version of "what must stay true": `client_secret` only ever
+comes from `DOMESTIQUE_OIDC_CLIENT_SECRET`, and the session cookie needs
+`DOMESTIQUE_ENCRYPTION_KEY` set — without it there is nowhere safe to put
+either the session or the short-lived sign-in state, and `/sso/login` refuses
+outright rather than degrade. The proxy-mode warning above does not apply
+here: the app is verifying signed tokens itself, not trusting a header, so it
+is the mode for a deployment that faces the public directly.
+
 | Role | Can |
 |---|---|
 | `viewer` | read routes, download GPX, see what would be pushed |
 | `rider` | + upload, import from Komoot, link **their own** head units, push, edit and delete **their own** routes |
 | `admin` | + edit and delete **anyone's** routes and head units, and set up Garmin for the deployment |
-
-> **The app must not be reachable except through the proxy.** With `mode: proxy`
-> it believes the `Remote-User` header — and so would anyone who can talk to it
-> directly. `trusted_proxies` narrows that; leave it empty only for a
-> ClusterIP-only service.
 
 With `mode: none` (the default) there is no login at all and every visitor is
 an admin. That is right for a laptop and wrong for anything else; the UI says
@@ -220,7 +255,9 @@ helm install domestique domestique/domestique \
 
 Out of the box that is one pod, a SQLite library on a volume, no ingress and
 **no authentication** — every visitor an admin. Set `config.auth.mode: proxy`
-and put it behind Authelia before exposing it. For PostgreSQL, supply
+and put it behind Authelia before exposing it, or `config.auth.mode: oidc`
+pointed at an issuer if you want the app to authenticate people itself — see
+[Logging in](#logging-in) for both. For PostgreSQL, supply
 `DOMESTIQUE_SOURCE_DSN` from a Secret rather than writing a password into
 values.
 
