@@ -24,7 +24,10 @@ import (
 	"github.com/wncservices/domestique/apps/api/internal/garmin"
 	"github.com/wncservices/domestique/apps/api/internal/gpx"
 	"github.com/wncservices/domestique/apps/api/internal/model"
+	"github.com/wncservices/domestique/apps/api/internal/oidcflow"
 	"github.com/wncservices/domestique/apps/api/internal/providerlink"
+	"github.com/wncservices/domestique/apps/api/internal/secrets"
+	"github.com/wncservices/domestique/apps/api/internal/sessions"
 	"github.com/wncservices/domestique/apps/api/internal/settings"
 	"github.com/wncservices/domestique/apps/api/internal/source"
 	"github.com/wncservices/domestique/apps/api/internal/state"
@@ -85,6 +88,20 @@ type Server struct {
 	// a successful push would otherwise be unreachable.
 	TargetFactory func(model.Account) (targets.Target, error)
 
+	// OIDC drives the authorization-code exchange and ID-token verification
+	// for mode oidc. Nil in every other mode — the /sso/* endpoints 404
+	// rather than reach for it.
+	OIDC *oidcflow.Flow
+	// Sessions holds a rider's login for mode oidc, the same store
+	// auth.Authenticator.Identify reads from. Wired here too so /sso/login
+	// and /sso/callback can create and delete sessions without a second path
+	// back into internal/auth.
+	Sessions *sessions.Store
+	// Box seals the short-lived OIDC state cookie (PKCE verifier, nonce,
+	// CSRF state) between /sso/login and /sso/callback. The same key as
+	// Links/Settings/Sessions — one key, everything this app keeps sealed.
+	Box *secrets.Box
+
 	// pushMu serialises pushes: two concurrent reconciles against the same
 	// account would race on remote ids and on the state file.
 	pushMu sync.Mutex
@@ -127,6 +144,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/garmin/consumer", s.handleSetGarminConsumer)
 	mux.HandleFunc("DELETE /api/garmin/consumer", s.handleClearGarminConsumer)
 
+	// Not under /api: these are browser navigations (redirects, a form post
+	// from the SPA), not JSON calls, so they sit outside the /api/ 404
+	// catch-all below and outside anything that assumes a JSON body.
+	mux.HandleFunc("GET /sso/login", s.handleSSOLogin)
+	mux.HandleFunc("GET /sso/callback", s.handleSSOCallback)
+	mux.HandleFunc("POST /sso/logout", s.handleSSOLogout)
+
 	// Anything else under /api is a 404 in JSON, not the SPA shell.
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{
@@ -145,6 +169,15 @@ func (s *Server) Handler() http.Handler {
 // not what you may do.
 //
 // /api/health stays open so a liveness probe does not need credentials.
+// /api/me stays open for a different reason: it is how the frontend finds
+// out whether anyone is signed in, and gating it the same as every other
+// route means an anonymous visitor cannot even ask the question — they get a
+// 401 instead of "you are not signed in", which is not the same thing. This
+// was invisible under mode: proxy, where Traefik's forwardAuth blocks
+// anonymous traffic before it ever reaches this app; mode: oidc is the first
+// mode where the app itself is the front door, so it is the first mode where
+// an anonymous request to /api/me is a real, expected case rather than one
+// that never happens in practice.
 func (s *Server) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/health" {
@@ -153,7 +186,7 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 		}
 
 		id := s.authenticator().Identify(r)
-		if err := s.authenticator().Authorize(id); err != nil {
+		if err := s.authenticator().Authorize(id); err != nil && r.URL.Path != "/api/me" {
 			// Only gate the API. The SPA itself must still load, or the
 			// browser gets a JSON blob instead of a page explaining itself.
 			if strings.HasPrefix(r.URL.Path, "/api/") {
@@ -321,7 +354,13 @@ type meDTO struct {
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	id := auth.FromContext(r.Context())
 	writeJSON(w, http.StatusOK, meDTO{
-		Authenticated: s.authenticator().Enabled(),
+		// Enabled() alone used to be enough, because under mode: proxy an
+		// anonymous request never reached this handler at all — Traefik's
+		// forwardAuth stopped it first, so "auth is on" and "this visitor is
+		// signed in" were the same fact by construction. mode: oidc breaks
+		// that: /api/me is now reachable while anonymous (see authenticate),
+		// on purpose, so the two questions have to be asked separately.
+		Authenticated: s.authenticator().Enabled() && !id.Anonymous(),
 		AuthMode:      string(s.authenticator().Mode()),
 		User:          id.User,
 		Name:          id.Name,
