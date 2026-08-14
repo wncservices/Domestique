@@ -262,13 +262,52 @@ func courseID(raw []byte) (string, error) {
 // longSnippet keeps far more of a body than snippet, for the one case where
 // the body is the documentation: a validation failure from an undocumented
 // service lists the fields it was given, and nothing else does.
+//
+// geoPoints is dropped first. A course-privacy rejection dumps the whole
+// CourseDTO, and geoPoints — one entry per track point, hundreds of them —
+// is both the first field and, on its own, longer than any limit worth
+// logging. Every other field sits after it, so a fixed character limit never
+// reached them: 2000 characters covered perhaps a dozen points and nothing
+// else. That is what made the real cause a guess instead of a lookup.
 func longSnippet(raw []byte) string {
 	const limit = 2000
-	text := strings.TrimSpace(string(raw))
+	text := strings.TrimSpace(withoutGeoPoints(string(raw)))
 	if len(text) > limit {
 		return text[:limit] + "…"
 	}
 	return text
+}
+
+// withoutGeoPoints replaces a `geoPoints=[...]` array with a placeholder,
+// tracking bracket depth rather than assuming the array has no nested
+// brackets of its own — a GeoPointDTO entry does not today, but a size limit
+// should not depend on that staying true.
+//
+// Text with no such array — any response that is not this one specific
+// rejection — is returned unchanged.
+func withoutGeoPoints(text string) string {
+	const marker = "geoPoints=["
+	start := strings.Index(text, marker)
+	if start < 0 {
+		return text
+	}
+	open := start + len(marker) - 1 // index of the marker's own '['
+
+	depth := 0
+	for i := open; i < len(text); i++ {
+		switch text[i] {
+		case '[':
+			depth++
+		case ']':
+			depth--
+			if depth == 0 {
+				return text[:open+1] + "…" + text[i:]
+			}
+		}
+	}
+	// No matching close within the body: it was cut off mid-array by some
+	// earlier truncation. Nothing after it would be readable either.
+	return text[:open+1] + "…"
 }
 
 // snippet keeps an error readable when the body is an HTML error page.

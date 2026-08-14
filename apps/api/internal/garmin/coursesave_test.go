@@ -234,9 +234,15 @@ func TestSaveKeepsAPrivacyConnectAlreadySet(t *testing.T) {
 // The rejection body names every field of the DTO, and that is the only
 // description of the shape that exists. Truncating it is what turned this
 // into guesswork.
+//
+// A real route is hundreds of points: geoPoints alone runs well past 2000
+// characters on its own, in front of every other field. 40 repeats — the
+// count this test used before — stays under that limit by accident and would
+// have passed even without stripping the array. 400 does not, which is the
+// scale where the old fixed limit actually failed in production.
 func TestSaveFailureKeepsEnoughOfTheBodyToBeUseful(t *testing.T) {
 	long := `{"errors":["'createCourse.arg3' Course privacy can be 1-Public, 2-Private or 4-Group ` +
-		`(provided value: CourseDTO(geoPoints=[` + strings.Repeat("GeoPointDTO(lat=50.0), ", 40) +
+		`(provided value: CourseDTO(geoPoints=[` + strings.Repeat("GeoPointDTO(latitude=50.89, longitude=4.71, elevation=17.2, distance=23.9, timestamp=1155635443), ", 400) +
 		`], coursePrivacyTypeId=null, courseName=X))"]}`
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -253,9 +259,49 @@ func TestSaveFailureKeepsEnoughOfTheBodyToBeUseful(t *testing.T) {
 	if err == nil {
 		t.Fatal("a rejected save reported success")
 	}
-	// The field names come after the geoPoints dump; a 200-character error
-	// stops long before them.
 	if !strings.Contains(err.Error(), "coursePrivacyTypeId") {
 		t.Errorf("the error stops before the field names:\n%v", err)
+	}
+	if strings.Contains(err.Error(), "latitude=50.89") {
+		t.Errorf("the geoPoints dump survived instead of being stripped:\n%v", err)
+	}
+}
+
+// withoutGeoPoints is what makes the size limit reachable at all, at any
+// route length: it removes the array rather than budgeting for it.
+func TestWithoutGeoPointsRemovesOnlyTheArray(t *testing.T) {
+	in := `CourseDTO(geoPoints=[GeoPointDTO(lat=1), GeoPointDTO(lat=2)], coursePrivacyTypeId=null, courseName=X)`
+	got := withoutGeoPoints(in)
+
+	if strings.Contains(got, "GeoPointDTO") {
+		t.Errorf("a point survived: %q", got)
+	}
+	for _, want := range []string{"CourseDTO(geoPoints=[", "coursePrivacyTypeId=null", "courseName=X)"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("got %q, missing %q", got, want)
+		}
+	}
+}
+
+// A nested bracket inside an entry must not end the scan early — the whole
+// array has to be skipped, not just up to its first inner ']'.
+func TestWithoutGeoPointsHandlesNestedBrackets(t *testing.T) {
+	in := `CourseDTO(geoPoints=[Point(tags=[a, b]), Point(tags=[c])], courseName=X)`
+	got := withoutGeoPoints(in)
+
+	if strings.Contains(got, "tags=") {
+		t.Errorf("stopped at an inner bracket: %q", got)
+	}
+	if !strings.Contains(got, "courseName=X)") {
+		t.Errorf("dropped what came after the array: %q", got)
+	}
+}
+
+// Text without a geoPoints array — every response that is not this one
+// specific rejection — passes through untouched.
+func TestWithoutGeoPointsLeavesOrdinaryTextAlone(t *testing.T) {
+	in := `{"courseId":123,"courseName":"X"}`
+	if got := withoutGeoPoints(in); got != in {
+		t.Errorf("got %q, want it unchanged", got)
 	}
 }
