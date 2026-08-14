@@ -657,6 +657,11 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	selected, ok := readPushSelection(w, r)
+	if !ok {
+		return
+	}
+
 	s.pushMu.Lock()
 	defer s.pushMu.Unlock()
 
@@ -691,6 +696,7 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
+	plan = plan.Select(selected)
 
 	changes := plan.Changes()
 	failures := syncer.Apply(plan, s.Store, byAccount)
@@ -723,6 +729,41 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 		Failures: messages,
 		Items:    toPlanDTOs(changes),
 	})
+}
+
+// readPushSelection reads the optional {"items": [{"accountId","slug"}, ...]}
+// body that narrows a push to specific plan items. No body at all — the
+// shape every push sent before this existed, and what a scripted client
+// still sends today — means "everything", the same as before.
+func readPushSelection(w http.ResponseWriter, r *http.Request) (map[model.PlanKey]bool, bool) {
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return nil, false
+	}
+	if len(raw) == 0 {
+		return nil, true
+	}
+
+	var body struct {
+		Items []struct {
+			AccountID string `json:"accountId"`
+			Slug      string `json:"slug"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return nil, false
+	}
+	if len(body.Items) == 0 {
+		return nil, true
+	}
+
+	selected := make(map[model.PlanKey]bool, len(body.Items))
+	for _, item := range body.Items {
+		selected[model.PlanKey{AccountID: item.AccountID, Slug: item.Slug}] = true
+	}
+	return selected, true
 }
 
 // ---------- write handlers (writable sources only) ----------

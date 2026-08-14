@@ -12,7 +12,7 @@ const props = defineProps<{
   writable: boolean
   me?: Me | null
 }>()
-const emit = defineEmits<{ deleted: [] }>()
+const emit = defineEmits<{ deleted: []; updated: [] }>()
 
 const toast = useToast()
 
@@ -24,11 +24,11 @@ const confirming = ref(false)
 const deleting = ref(false)
 
 /**
- * Mirrors the server's rule: riders may only remove what they uploaded,
- * admins anything. The server enforces it — this just avoids offering a
- * button that would come back 403.
+ * Mirrors the server's rule: riders may only edit what they uploaded, admins
+ * anything. Delete and target editing share the same rule server-side
+ * (`mayEdit`) — this just avoids offering buttons that would come back 403.
  */
-const canDelete = computed(() => {
+const canEdit = computed(() => {
   if (!props.writable) return false
   const me = props.me
   if (!me) return false
@@ -39,6 +39,45 @@ const canDelete = computed(() => {
 
 function accountFor(id: string): Account | undefined {
   return props.accounts.find((a) => a.id === id)
+}
+
+const editingTargets = ref(false)
+const draftTargets = ref<string[]>([])
+const savingTargets = ref(false)
+
+const targetOptions = computed(() =>
+  props.accounts.map((a) => ({ label: a.label || a.id, value: a.id })),
+)
+
+function openTargets() {
+  draftTargets.value = [...props.route.targets]
+  editingTargets.value = true
+}
+
+async function saveTargets() {
+  savingTargets.value = true
+  try {
+    await api.updateTargets(props.route.slug, draftTargets.value)
+    toast.add({
+      title: 'Targets updated',
+      description: draftTargets.value.length
+        ? `“${props.route.name}” will sync to ${draftTargets.value.length} account${draftTargets.value.length === 1 ? '' : 's'}.`
+        : `“${props.route.name}” will not sync anywhere until targets are set again.`,
+      icon: 'i-lucide-check',
+      color: 'success',
+    })
+    editingTargets.value = false
+    emit('updated')
+  } catch (err) {
+    toast.add({
+      title: 'Could not update targets',
+      description: err instanceof Error ? err.message : String(err),
+      icon: 'i-lucide-triangle-alert',
+      color: 'error',
+    })
+  } finally {
+    savingTargets.value = false
+  }
 }
 
 async function remove() {
@@ -137,7 +176,16 @@ async function remove() {
         aria-label="Download GPX"
       />
       <UButton
-        v-if="canDelete"
+        v-if="canEdit && targetOptions.length"
+        icon="i-lucide-watch"
+        color="neutral"
+        variant="ghost"
+        size="xs"
+        aria-label="Choose target devices"
+        @click="openTargets"
+      />
+      <UButton
+        v-if="canEdit"
         icon="i-lucide-trash-2"
         color="error"
         variant="ghost"
@@ -146,6 +194,34 @@ async function remove() {
         @click="confirming = true"
       />
     </div>
+
+    <UModal v-model:open="editingTargets" title="Choose target devices">
+      <template #body>
+        <div class="flex flex-col gap-3">
+          <p class="text-sm text-toned">
+            Which head units should “{{ route.name }}” sync to?
+          </p>
+          <UCheckboxGroup v-model="draftTargets" :items="targetOptions" />
+          <p v-if="!draftTargets.length" class="text-xs text-dimmed">
+            Nothing selected — this route will not sync to any account until targets are set
+            again.
+          </p>
+        </div>
+      </template>
+      <template #footer>
+        <div class="flex justify-end gap-2">
+          <UButton
+            color="neutral"
+            variant="ghost"
+            :disabled="savingTargets"
+            @click="editingTargets = false"
+          >
+            Cancel
+          </UButton>
+          <UButton :loading="savingTargets" @click="saveTargets">Save</UButton>
+        </div>
+      </template>
+    </UModal>
 
     <UModal v-model:open="confirming" title="Delete this route?">
       <template #body>

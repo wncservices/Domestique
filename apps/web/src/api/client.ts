@@ -127,7 +127,18 @@ export const api = {
   routes: () => request<LibraryResponse>('/api/routes'),
   plan: () => request<PlanResponse>('/api/plan'),
   track: (slug: string) => request<TrackResponse>(`/api/tracks/${encodeSlug(slug)}`),
-  push: () => request<PushResponse>('/api/push', { method: 'POST' }),
+  /** Omitting `items` (or passing all of them) pushes everything, same as
+   *  before per-item selection existed. */
+  push: (items?: { accountId: string; slug: string }[]) =>
+    request<PushResponse>('/api/push', {
+      method: 'POST',
+      ...(items
+        ? {
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ items }),
+          }
+        : {}),
+    }),
 
   gpxUrl: (slug: string) => `/api/gpx/${encodeSlug(slug)}`,
 
@@ -145,4 +156,16 @@ export const api = {
 
   remove: (slug: string) =>
     request<void>(`/api/routes/${encodeSlug(slug)}`, { method: 'DELETE' }),
+
+  /** Always sends an explicit list — an empty one means "push nowhere", not
+   *  "use the library default". The server has no way to ask for the default
+   *  back through this field: `targets: null` decodes identically to the
+   *  field being absent (Go's `encoding/json` collapses both into a nil
+   *  pointer), which this endpoint already treats as "leave unchanged". */
+  updateTargets: (slug: string, targets: string[]) =>
+    request<Route>(`/api/routes/${encodeSlug(slug)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ targets }),
+    }),
 }
