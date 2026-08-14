@@ -666,8 +666,14 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 	// help when the push was a scheduled one, and little help when it was
 	// not. Thirty failures are usually one cause thirty times, so the
 	// distinct reasons are what is worth having.
+	//
+	// Error, not Warn: a route that was supposed to reach a head unit and
+	// did not is a failed push, not a degraded one. Today's own case is why
+	// that distinction matters — this exact line sat at Warn through several
+	// deploys where every single push failed, which reads as noise rather
+	// than as the incident it was.
 	if len(failures) > 0 {
-		s.logger().Warn("push finished with failures",
+		s.logger().Error("push finished with failures",
 			"changes", len(changes), "failures", len(failures),
 			"reasons", distinctReasons(messages))
 	} else {
