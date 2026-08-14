@@ -41,18 +41,22 @@ export type Permission =
   | 'accounts:manage'
 
 export interface Me {
-  /** False when the app runs without authentication (everyone is admin). */
+  /** Whether *this* request is signed in — not whether the deployment has
+   *  auth turned on. Under mode oidc these can differ: an anonymous visitor
+   *  reaches this endpoint too, so it has to say which one it means. */
   authenticated: boolean
-  authMode: 'none' | 'proxy'
+  authMode: 'none' | 'proxy' | 'oidc'
   user?: string
   name?: string
   email?: string
   groups: string[]
   role: Role
   permissions: Permission[]
-  /** Where signing out goes. The identity provider's address, not ours — the
-   *  session belongs to the proxy, so this app cannot end it. Absent when
-   *  there is nothing to sign out of. */
+  /** Where signing out goes, for authMode proxy only — the identity
+   *  provider's address, not ours, since the session belongs to the proxy
+   *  and this app cannot end it. Absent when there is nothing to sign out of,
+   *  and always absent under authMode oidc, which signs out through
+   *  api.logout() instead: the app holds that session and ends it itself. */
   logoutUrl?: string
 }
 

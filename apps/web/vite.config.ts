@@ -19,6 +19,15 @@ export default defineConfig({
         target: process.env.DOMESTIQUE_API ?? 'http://localhost:8080',
         changeOrigin: true,
       },
+      // /sso/* (mode: oidc's login/callback/logout) is a real backend route,
+      // not something Vite's SPA fallback should ever serve. Without this a
+      // dev session run as `just api` + `just web` would send the Sign in
+      // link and the logout fetch nowhere — both would silently hit Vite's
+      // own index.html instead of the API.
+      '/sso': {
+        target: process.env.DOMESTIQUE_API ?? 'http://localhost:8080',
+        changeOrigin: true,
+      },
     },
   },
   build: {
