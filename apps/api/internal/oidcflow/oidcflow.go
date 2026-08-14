@@ -39,11 +39,16 @@ import (
 const EnvClientSecret = "DOMESTIQUE_OIDC_CLIENT_SECRET"
 
 // Config is what Flow needs to talk to one issuer.
+//
+// No RedirectURL here, deliberately: AuthCodeURL and Exchange both take it as
+// an explicit parameter instead, since it names a route in the caller's own
+// app (api.Server's /sso/callback), not anything about the issuer. A field
+// that is only ever assigned and never read by this package is worse than no
+// field.
 type Config struct {
 	Issuer       string
 	ClientID     string
 	ClientSecret string
-	RedirectURL  string
 	GroupsClaim  string
 	Scopes       []string
 }

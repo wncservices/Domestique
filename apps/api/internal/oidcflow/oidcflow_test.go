@@ -121,7 +121,6 @@ func newFlow(t *testing.T, f *fakeIssuer) *Flow {
 		Issuer:       f.server.URL,
 		ClientID:     testClientID,
 		ClientSecret: "test-secret",
-		RedirectURL:  "https://app.example.test/sso/callback",
 		Scopes:       []string{"openid", "profile", "email"},
 	})
 	if err != nil {
@@ -318,7 +317,7 @@ func TestStateAndNonceAreRandomAndDistinct(t *testing.T) {
 func TestNewFailsWithoutAClientSecret(t *testing.T) {
 	f := newFakeIssuer(t)
 	_, err := New(context.Background(), Config{
-		Issuer: f.server.URL, ClientID: testClientID, RedirectURL: "https://app.example.test/sso/callback",
+		Issuer: f.server.URL, ClientID: testClientID,
 	})
 	if err == nil {
 		t.Fatal("New accepted a config with no client secret")
