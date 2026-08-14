@@ -65,10 +65,13 @@ func TestImportSavesTheParsedCourse(t *testing.T) {
 	if !strings.HasSuffix(paths[0], "/import") || strings.HasSuffix(paths[1], "/import") {
 		t.Errorf("calls were %v, want import first then the service", paths)
 	}
-	// coursePrivacy is injected (Garmin rejects the DTO without it); all other
-	// fields come from what /import returned.
-	if !strings.Contains(savedBody, `"coursePrivacy":2`) {
-		t.Errorf("saved %q, want coursePrivacy injected", savedBody)
+	// rulePK and sourceTypeId are injected (Garmin rejects the DTO without
+	// them); all other fields come from what /import returned.
+	if !strings.Contains(savedBody, `"rulePK":2`) {
+		t.Errorf("saved %q, want rulePK injected", savedBody)
+	}
+	if !strings.Contains(savedBody, `"sourceTypeId":3`) {
+		t.Errorf("saved %q, want sourceTypeId injected", savedBody)
 	}
 	if !strings.Contains(savedBody, `"courseName":"Abdij van Vlierbeek"`) {
 		t.Errorf("saved %q, want the parsed course fields preserved", savedBody)
@@ -131,55 +134,62 @@ func TestImportReportsARefusedSessionOnSave(t *testing.T) {
 	}
 }
 
-// /import never populates coursePrivacy; the save endpoint rejects anything
-// outside {1,2,4}. The fix is to inject 2 (Private) before posting.
-func TestSaveInjectsPrivacyWhenMissing(t *testing.T) {
-	var savedBody string
+// /import never populates rulePK or sourceTypeId; the save endpoint rejects
+// the course without both. The names are confirmed against a real request:
+// captured from Connect's own web app creating a course through Training →
+// Courses → Create and saving it Private, which sent rulePK 2 — the same
+// integer the class-level rejection already used for "Private" — and
+// sourceTypeId 3.
+func TestSaveSetsTheConfirmedPrivacyFields(t *testing.T) {
+	var saved map[string]any
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/import") {
 			io.WriteString(w, parsedCourse)
 			return
 		}
-		b, _ := io.ReadAll(r.Body)
-		savedBody = string(b)
+		if err := json.NewDecoder(r.Body).Decode(&saved); err != nil {
+			t.Fatal(err)
+		}
 		io.WriteString(w, `{"courseId":1}`)
 	}))
 	defer srv.Close()
 
-	if _, err := newTestClient(t, srv).ImportCourse("r.fit", []byte("FIT")); err != nil {
+	if _, err := newTestClient(t, srv).ImportCourse("ride.fit", []byte("FIT")); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(savedBody, `"coursePrivacy":2`) {
-		t.Errorf("saved body = %s, want coursePrivacy:2", savedBody)
+
+	// Private, not public: a push must not publish somebody's routes.
+	if saved["rulePK"] != float64(privacyPrivate) {
+		t.Errorf("rulePK = %v, want %d (private)", saved["rulePK"], privacyPrivate)
+	}
+	if saved["sourceTypeId"] != float64(sourceTypeIDCourse) {
+		t.Errorf("sourceTypeId = %v, want %d", saved["sourceTypeId"], sourceTypeIDCourse)
 	}
 }
 
-func TestWithPrivacyKeepsAValidValue(t *testing.T) {
+func TestWithPrivacyKeepsAValidRulePK(t *testing.T) {
 	for _, v := range []int{1, 2, 4} {
-		in := []byte(fmt.Sprintf(`{"courseId":null,"coursePrivacy":%d}`, v))
+		in := []byte(fmt.Sprintf(`{"courseId":null,"rulePK":%d}`, v))
 		out, err := withPrivacy(in)
 		if err != nil {
-			t.Fatalf("privacy %d: %v", v, err)
+			t.Fatalf("rulePK %d: %v", v, err)
 		}
-		if !strings.Contains(string(out), fmt.Sprintf(`"coursePrivacy":%d`, v)) {
-			t.Errorf("privacy %d was changed: %s", v, out)
+		if !strings.Contains(string(out), fmt.Sprintf(`"rulePK":%d`, v)) {
+			t.Errorf("rulePK %d was changed: %s", v, out)
 		}
 	}
 }
 
-// The save rejects a course with no privacy:
-//
-//	'createCourse.arg3' Course privacy can be 1-Public, 2-Private or 4-Group
-//
-// Which field carries it is not known, so every candidate is set. This test
-// pins the values rather than the names: whichever one Connect reads, it must
-// find Private.
-func TestSaveSetsPrivacyOnEveryCandidateField(t *testing.T) {
+// A course that already carries a valid rulePK keeps it — Connect saying
+// what it wants beats this package's default. sourceTypeId is not a choice,
+// so it is always set regardless of what /import returned.
+func TestSaveKeepsARulePKConnectAlreadySet(t *testing.T) {
 	var saved map[string]any
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/import") {
-			io.WriteString(w, parsedCourse)
+			io.WriteString(w, `{"courseId":null,"courseName":"X","rulePK":1}`)
 			return
 		}
 		if err := json.NewDecoder(r.Body).Decode(&saved); err != nil {
@@ -192,42 +202,11 @@ func TestSaveSetsPrivacyOnEveryCandidateField(t *testing.T) {
 	if _, err := newTestClient(t, srv).ImportCourse("ride.fit", []byte("FIT")); err != nil {
 		t.Fatal(err)
 	}
-
-	for _, field := range privacyFields {
-		if !valid(saved[field]) {
-			t.Errorf("%s = %v, want a privacy the service accepts", field, saved[field])
-		}
+	if saved["rulePK"] != float64(1) {
+		t.Errorf("rulePK = %v, want the value Connect set", saved["rulePK"])
 	}
-	// Private, not public: a push must not publish somebody's routes.
-	if rule, ok := saved["privacyRule"].(map[string]any); ok {
-		if rule["typeId"] != float64(privacyPrivate) {
-			t.Errorf("privacyRule = %v, want private", rule)
-		}
-	}
-}
-
-// A course that already carries a privacy keeps it. Connect saying what it
-// wants is worth more than this package's default.
-func TestSaveKeepsAPrivacyConnectAlreadySet(t *testing.T) {
-	var saved map[string]any
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/import") {
-			io.WriteString(w, `{"courseId":null,"courseName":"X","coursePrivacy":1}`)
-			return
-		}
-		if err := json.NewDecoder(r.Body).Decode(&saved); err != nil {
-			t.Fatal(err)
-		}
-		io.WriteString(w, `{"courseId":1}`)
-	}))
-	defer srv.Close()
-
-	if _, err := newTestClient(t, srv).ImportCourse("ride.fit", []byte("FIT")); err != nil {
-		t.Fatal(err)
-	}
-	if saved["coursePrivacy"] != float64(1) {
-		t.Errorf("coursePrivacy = %v, want the value Connect set", saved["coursePrivacy"])
+	if saved["sourceTypeId"] != float64(sourceTypeIDCourse) {
+		t.Errorf("sourceTypeId = %v, want %d regardless", saved["sourceTypeId"], sourceTypeIDCourse)
 	}
 }
 
