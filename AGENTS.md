@@ -52,20 +52,37 @@ private route off the other rider's head unit.
 
 ## Authentication and roles
 
-The app authenticates nobody. It sits behind Traefik with an Authelia
-forwardAuth middleware and reads `Remote-User` / `Remote-Groups` /
-`Remote-Name` / `Remote-Email`. `internal/auth` owns all of it.
+`internal/auth` owns identifying a rider, in one of three modes. `Identity`,
+role resolution and everything downstream of "who is this" are the same
+regardless of which mode supplied the identity — only *where it comes from*
+differs.
 
-**The entire scheme rests on the app being unreachable except through the
-proxy.** A browser can set `Remote-User` as easily as Traefik can. Two things
-protect that, and both must stay:
+**`mode: proxy`** sits behind Traefik with an Authelia forwardAuth middleware
+and reads `Remote-User` / `Remote-Groups` / `Remote-Name` / `Remote-Email`.
+
+**This mode's entire scheme rests on the app being unreachable except through
+the proxy.** A browser can set `Remote-User` as easily as Traefik can. Two
+things protect that, and both must stay, and both are specific to this mode:
 
 1. Header trust is opt-in — `auth.mode` must be `proxy`. The default is `none`,
    which ignores the headers completely and treats everyone as a local admin.
 2. `auth.trusted_proxies` discards headers from any other peer. Leave it empty
    only when the service is genuinely unreachable (ClusterIP-only).
 
-Roles come from Authelia groups, most-privileged match wins:
+**`mode: oidc`** authenticates riders itself against an OIDC issuer —
+`internal/oidcflow` handles discovery, the authorization-code exchange and
+ID-token verification; `internal/sessions` holds the resulting server-side
+session behind an opaque cookie. See `docs/oidc.md` for the design and
+`docs/rider-migration.md` for moving an existing rider onto it. Because the
+app verifies signed tokens itself rather than trusting a header, the
+unreachable-except-through-the-proxy constraint above **does not apply** to
+this mode — it is the mode for a deployment that faces the public directly.
+What has to stay true here instead: `DOMESTIQUE_OIDC_CLIENT_SECRET` is the
+only place the client secret lives, and `DOMESTIQUE_ENCRYPTION_KEY` must be
+set, or there is nowhere safe to hold the session or the short-lived sign-in
+state and `/sso/login` refuses outright.
+
+Roles come from groups — Authelia's or the OIDC issuer's `groups_claim` — most-privileged match wins:
 
 | Role | Can |
 |---|---|

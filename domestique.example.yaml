@@ -20,24 +20,51 @@ source:
 
 # Who may use the app, and what they may do.
 #
-# Domestique authenticates nobody itself. It sits behind Traefik with an
-# Authelia forwardAuth middleware, and reads the identity Authelia passes down
-# (Remote-User / Remote-Groups / Remote-Name / Remote-Email).
+# Three modes, pick one:
 #
-# THE APP MUST NOT BE REACHABLE EXCEPT THROUGH THAT PROXY. Anyone who can
-# reach it directly can set those headers themselves and be whoever they like.
-# trusted_proxies narrows that further; leave it empty only when the service is
-# ClusterIP-only.
+#   none   no login, and every visitor is an admin. Right for a laptop, wrong
+#          for anything reachable by anyone else.
+#   proxy  trust a reverse proxy's headers (Remote-User / Remote-Groups /
+#          Remote-Name / Remote-Email) — Authelia's forwardAuth, typically.
+#   oidc   authenticate riders itself against an OIDC issuer (Auth0,
+#          Keycloak, Zitadel, ...). See docs/oidc.md.
+#
+# mode: proxy's warning, and it is specific to that mode: THE APP MUST NOT BE
+# REACHABLE EXCEPT THROUGH THAT PROXY. Anyone who can reach it directly can
+# set those headers themselves and be whoever they like. trusted_proxies
+# narrows that further; leave it empty only when the service is
+# ClusterIP-only. mode: oidc does not have this problem — the app verifies
+# signed tokens itself rather than trusting a header — which is why it is the
+# mode for a deployment that faces the public directly.
 auth:
-  # none: no login, and every visitor is an admin. Right for a laptop.
-  # proxy: trust Authelia's headers.
   mode: none
 
   # mode: proxy
   # trusted_proxies:
   #   - 10.42.0.0/16          # the cluster's pod CIDR
+
+  # mode: oidc
+  # oidc:
+  #   issuer: https://your-tenant.example.com/   # discovery does the rest
+  #   client_id: domestique
+  #   # client_secret comes from DOMESTIQUE_OIDC_CLIENT_SECRET, never this file
+  #   redirect_url: https://app.example.com/sso/callback
+  #   scopes: [openid, profile, email]
+  #   # Which ID-token claim carries group membership. Issuers disagree:
+  #   # Authelia sends "groups"; Auth0 needs a custom claim added by an
+  #   # Action, namespaced; Google sends none at all — leave this unset and
+  #   # every rider falls through to default_role below, which is correct,
+  #   # not a bug to work around.
+  #   groups_claim: groups
   #
-  # Roles, mapped from Authelia groups. Most privileged match wins.
+  # mode: oidc also needs DOMESTIQUE_ENCRYPTION_KEY set (generate one with
+  # `domestique keygen`) — without it there is nowhere safe to hold the
+  # session or the short-lived sign-in state, and /sso/login refuses outright
+  # rather than degrade.
+  #
+  # Roles, mapped from groups. Most privileged match wins. The group names
+  # are Authelia's under mode: proxy, or whatever your issuer's groups_claim
+  # sends under mode: oidc — the mapping works the same either way.
   #   viewer  read routes, download GPX, see what would be pushed
   #   rider   + upload, import from Komoot, push, edit and delete their own
   #   admin   + edit and delete anyone's routes
@@ -49,22 +76,27 @@ auth:
   #   viewer:
   #     - guests
   #
-  # Applied to an authenticated user whose groups match nothing above.
-  # Defaults to viewer: read-only is the safe answer for someone Authelia let
-  # in but this app has no opinion about.
+  # Applied to an authenticated rider whose groups match nothing above.
+  # Defaults to viewer: read-only is the safe answer for someone the identity
+  # provider let in but this app has no opinion about.
   # default_role: viewer
   #
-  # Refuse anyone outside this Authelia group entirely — with one exception:
-  # a group named in `roles` above is itself a way in. The gate is here to
-  # stop every account your IdP knows about arriving as a `default_role`
-  # viewer, not to make an admin you named explicitly also join a second
-  # group before they are let in.
+  # Refuse anyone outside this group entirely — with one exception: a group
+  # named in `roles` above is itself a way in. The gate is here to stop every
+  # account your IdP knows about arriving as a `default_role` viewer, not to
+  # make an admin you named explicitly also join a second group before they
+  # are let in.
   # required_group: cyclists
   #
-  # Where "Sign out" goes. This app holds no session — the proxy does — so it
-  # cannot end one, and only your identity provider knows the address. With
-  # Authelia's portal on a path of the same host that is /auth/logout; on its
-  # own hostname, https://auth.example.com/logout. Unset hides the button.
+  # Where "Sign out" goes. Mode-specific, because who owns the session
+  # differs:
+  #   mode: proxy  this app holds no session — the proxy does — so only your
+  #                identity provider's own address can end one. With
+  #                Authelia's portal on a path of the same host that is
+  #                /auth/logout; on its own hostname,
+  #                https://auth.example.com/logout. Unset hides the button.
+  #   mode: oidc   the app ends its own session; nothing to set here — the
+  #                frontend calls POST /sso/logout instead.
   # logout_url: /auth/logout
 
 # Import routes from a Komoot account.
