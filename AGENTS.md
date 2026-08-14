@@ -480,8 +480,12 @@ conversion navigates as a breadcrumb line with no turn cues. See `docs/plan.md`.
 ## Conventions
 
 - Go: standard library first. The dependencies are `gopkg.in/yaml.v3`, `modernc.org/sqlite`
-  (pure Go, so no cgo), `github.com/jackc/pgx/v5` and `github.com/muktihari/fit`. That is the
-  budget — add to it only for something genuinely hard, as FIT encoding was.
+  (pure Go, so no cgo), `github.com/jackc/pgx/v5`, `github.com/muktihari/fit` and
+  `github.com/coreos/go-oidc/v3`. That is the budget — add to it only for something genuinely
+  hard, as FIT encoding was, and as OIDC discovery/JWKS/ID-token verification is: a spec where
+  writing it yourself means writing the vulnerabilities yourself. `golang.org/x/oauth2` appears
+  in `go.sum` only as go-oidc's own indirect dependency — the token exchange itself is one POST
+  and a JSON parse, hand-rolled rather than pulling in a second direct dependency for it.
 - `gofmt` is the formatter; `go vet` must be clean.
 - Vue: `<script setup lang="ts">`, no state-management library — the app is one screen and
   `ref`/`computed` cover it.
