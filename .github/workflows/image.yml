@@ -136,7 +136,7 @@ jobs:
       # Attested against GHCR only. Both registries hold the same digest, so
       # the attestation covers the Docker Hub copy too — but GHCR is where the
       # referrers API is dependable, so that is where it is pushed.
-      - uses: actions/attest-build-provenance@v3
+      - uses: actions/attest-build-provenance@v4
         with:
           subject-name: ghcr.io/wncservices/domestique
           subject-digest: ${{ steps.build.outputs.digest }}
