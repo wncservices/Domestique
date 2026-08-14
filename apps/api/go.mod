@@ -4,7 +4,7 @@ go 1.26.6
 
 require (
 	github.com/jackc/pgx/v5 v5.10.0
-	github.com/muktihari/fit v0.28.2
+	github.com/muktihari/fit v0.28.3
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.56.0
 )
