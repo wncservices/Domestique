@@ -119,7 +119,7 @@ jobs:
             type=sha,prefix=sha-,format=short
 
       - id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           # arm64 as well: the cluster this runs on is mixed-architecture.
