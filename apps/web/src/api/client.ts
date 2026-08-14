@@ -68,6 +68,13 @@ function encodeSlug(slug: string): string {
 export const api = {
   config: () => request<AppConfig>('/api/config'),
   me: () => request<Me>('/api/me'),
+  /** Ends an authMode oidc session. The app holds that session and ends it
+   *  itself — POST rather than a link, since signing out is a state change,
+   *  not a navigation. redirectTo is the issuer's own end-session URL when
+   *  it advertises one, empty otherwise; either way the caller navigates
+   *  there afterward, since this fetch cannot itself carry the browser to a
+   *  cross-origin page the way a plain link can. */
+  logout: () => request<{ redirectTo: string }>('/sso/logout', { method: 'POST' }),
 
   komootConnection: () => request<KomootConnection>('/api/komoot/connection'),
   komootConnect: (email: string, password: string) =>

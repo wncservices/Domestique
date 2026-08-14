@@ -1,9 +1,41 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
+import { useToast } from '@nuxt/ui/composables'
+import { api } from '@/api/client'
 import ColorModeToggle from '@/components/ColorModeToggle.vue'
 import { useLibrary } from '@/composables/useLibrary'
 
 const { me, accounts, routes, error, refresh, totalDistance, totalAscent, canUpload } = useLibrary()
+const route = useRoute()
+const toast = useToast()
+
+// Carries the rider back to where they were before signing in. Validated
+// server-side too (handleSSOLogin rejects anything that is not a same-origin
+// path) — this is only what the button offers, not the actual guarantee.
+const signInHref = computed(() => `/sso/login?return_to=${encodeURIComponent(route.fullPath)}`)
+
+const signingOut = ref(false)
+
+// authMode oidc's session belongs to this app, not a proxy, so ending it is a
+// state change (POST) rather than a navigation (a link). The redirect that
+// follows still has to be a real navigation, though — a fetch cannot carry
+// the browser to the issuer's own end-session page the way a plain link can.
+async function signOut() {
+  signingOut.value = true
+  try {
+    const { redirectTo } = await api.logout()
+    window.location.href = redirectTo || '/'
+  } catch (err) {
+    signingOut.value = false
+    toast.add({
+      title: 'Sign out failed',
+      description: err instanceof Error ? err.message : String(err),
+      icon: 'i-lucide-triangle-alert',
+      color: 'error',
+    })
+  }
+}
 
 const roleColor = computed(() => {
   switch (me.value?.role) {
@@ -72,6 +104,23 @@ onMounted(refresh)
             >
               {{ me.name || me.user }} · {{ me.role }}
             </UBadge>
+
+            <!-- authMode oidc is the first mode where the SPA genuinely
+                 loads while signed out: mode proxy's forwardAuth stops an
+                 anonymous visitor before a request reaches this app at all,
+                 so there is no equivalent case to handle for it here. -->
+            <UButton
+              v-else-if="me?.authMode === 'oidc'"
+              :to="signInHref"
+              external
+              icon="i-lucide-log-in"
+              color="primary"
+              variant="subtle"
+              size="sm"
+            >
+              Sign in
+            </UButton>
+
             <UTooltip
               v-else-if="me"
               text="Anyone who can reach this page has full access. Put it behind Authelia before exposing it."
@@ -82,11 +131,26 @@ onMounted(refresh)
               </UBadge>
             </UTooltip>
 
-            <!-- A plain link, not a fetch: signing out is the identity
-                 provider ending its own session and redirecting, which an
-                 XHR cannot do. -->
+            <!-- authMode oidc: the app holds this session and ends it
+                 itself, so signing out is a fetch, not a navigation to
+                 somewhere else. authMode proxy: a plain link, since the
+                 identity provider owns that session and this app cannot end
+                 it — an XHR could not carry the browser to the provider's own
+                 logout page even if it tried. -->
             <UButton
-              v-if="me?.authenticated && me.logoutUrl"
+              v-if="me?.authenticated && me.authMode === 'oidc'"
+              icon="i-lucide-log-out"
+              color="neutral"
+              variant="ghost"
+              size="sm"
+              :loading="signingOut"
+              aria-label="Sign out"
+              @click="signOut"
+            >
+              <span class="hidden sm:inline">Sign out</span>
+            </UButton>
+            <UButton
+              v-else-if="me?.authenticated && me.logoutUrl"
               :to="me.logoutUrl"
               external
               icon="i-lucide-log-out"
