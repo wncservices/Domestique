@@ -31,12 +31,12 @@ const visibleRoutes = computed(() => {
   )
 })
 
-async function push() {
+async function push(items: { accountId: string; slug: string }[]) {
   pushing.value = true
   failures.value = []
   try {
     const { api } = await import('@/api/client')
-    const result = await api.push()
+    const result = await api.push(items)
     failures.value = result.failures
     await refresh()
   } catch (err) {
@@ -112,6 +112,7 @@ async function push() {
           :writable="canUpload"
           :me="me"
           @deleted="refresh"
+          @updated="refresh"
         />
       </div>
     </section>

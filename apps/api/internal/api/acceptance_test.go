@@ -502,6 +502,63 @@ func TestPlanThenPushThenPlanIsEmpty(t *testing.T) {
 	}
 }
 
+// A rider can narrow a push to specific plan items — the other account's
+// change is computed but left untouched, exactly as if it had never been
+// pushed at all.
+func TestPushCanBeLimitedToASelection(t *testing.T) {
+	h, route := syncHarness(t)
+
+	body := fmt.Sprintf(`{"items":[{"accountId":"garmin:one","slug":%q}]}`, route.Slug)
+	resp := h.do(http.MethodPost, "/api/push", strings.NewReader(body), "application/json")
+	h.expectStatus(resp, http.StatusOK)
+
+	var push pushDTO
+	h.decode(resp, &push)
+	if push.Applied != 1 || len(push.Failures) != 0 {
+		t.Fatalf("push = %+v, want 1 applied and no failures", push)
+	}
+	if len(h.pushed.creates) != 1 {
+		t.Errorf("adapters saw %v, want exactly one create", h.pushed.creates)
+	}
+
+	var library libraryDTO
+	h.decode(h.get("/api/routes"), &library)
+	for _, status := range library.Routes[0].SyncState {
+		want := "pending"
+		if status.AccountID == "garmin:one" {
+			want = "synced"
+		}
+		if status.Status != want {
+			t.Errorf("%s: status = %q, want %q", status.AccountID, status.Status, want)
+		}
+	}
+
+	// A second push with no body catches the rest, matching the old
+	// push-everything behaviour.
+	resp = h.do(http.MethodPost, "/api/push", nil, "")
+	h.expectStatus(resp, http.StatusOK)
+	h.decode(resp, &push)
+	if push.Applied != 1 {
+		t.Fatalf("second push = %+v, want 1 applied (the remaining account)", push)
+	}
+}
+
+// An empty selection ({"items":[]}) behaves like no body at all, not like
+// "push nothing" — a client that always sends the field should not have its
+// pushes silently no-op.
+func TestPushWithEmptySelectionPushesEverything(t *testing.T) {
+	h, _ := syncHarness(t)
+
+	resp := h.do(http.MethodPost, "/api/push", strings.NewReader(`{"items":[]}`), "application/json")
+	h.expectStatus(resp, http.StatusOK)
+
+	var push pushDTO
+	h.decode(resp, &push)
+	if push.Applied != 2 {
+		t.Fatalf("push = %+v, want 2 applied", push)
+	}
+}
+
 // One provider failing must not stop the other rider's routes going out.
 func TestPushReportsPerAccountFailures(t *testing.T) {
 	h, _ := syncHarness(t)

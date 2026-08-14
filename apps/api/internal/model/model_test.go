@@ -57,3 +57,32 @@ func TestPlanChangesExcludesNoops(t *testing.T) {
 		}
 	}
 }
+
+func TestPlanSelectNarrowsToTheGivenKeys(t *testing.T) {
+	plan := Plan{Items: []PlanItem{
+		{Op: OpCreate, AccountID: "garmin:one", Slug: "a"},
+		{Op: OpCreate, AccountID: "wahoo:two", Slug: "a"},
+		{Op: OpUpdate, AccountID: "garmin:one", Slug: "b"},
+	}}
+
+	got := plan.Select(map[PlanKey]bool{{AccountID: "garmin:one", Slug: "a"}: true})
+	if len(got.Items) != 1 || got.Items[0].AccountID != "garmin:one" || got.Items[0].Slug != "a" {
+		t.Fatalf("Select = %+v, want only garmin:one/a", got.Items)
+	}
+}
+
+// A nil or empty set means "everything" — the shape sent by a client that
+// predates selection, and by the frontend's own push-all button.
+func TestPlanSelectWithNoKeysIsANoop(t *testing.T) {
+	plan := Plan{Items: []PlanItem{
+		{Op: OpCreate, AccountID: "garmin:one", Slug: "a"},
+		{Op: OpCreate, AccountID: "wahoo:two", Slug: "a"},
+	}}
+
+	if got := plan.Select(nil); len(got.Items) != len(plan.Items) {
+		t.Fatalf("Select(nil) = %+v, want the whole plan unchanged", got.Items)
+	}
+	if got := plan.Select(map[PlanKey]bool{}); len(got.Items) != len(plan.Items) {
+		t.Fatalf("Select({}) = %+v, want the whole plan unchanged", got.Items)
+	}
+}

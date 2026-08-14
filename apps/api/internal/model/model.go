@@ -109,6 +109,29 @@ func (p Plan) Changes() []PlanItem {
 	return out
 }
 
+// PlanKey identifies one item within a plan — the pair a rider actually picks
+// from when choosing which changes to push.
+type PlanKey struct {
+	AccountID string
+	Slug      string
+}
+
+// Select narrows a plan to only the given account/slug pairs. A nil or empty
+// set is a no-op: the caller means "everything", the same as before this
+// existed.
+func (p Plan) Select(keys map[PlanKey]bool) Plan {
+	if len(keys) == 0 {
+		return p
+	}
+	out := Plan{Items: make([]PlanItem, 0, len(p.Items))}
+	for _, item := range p.Items {
+		if keys[PlanKey{AccountID: item.AccountID, Slug: item.Slug}] {
+			out.Items = append(out.Items, item)
+		}
+	}
+	return out
+}
+
 func sanitizeEnv(s string) string {
 	b := []byte(s)
 	for i, c := range b {
