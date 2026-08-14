@@ -117,7 +117,11 @@ func (c *Client) saveCourse(parsed []byte) (string, error) {
 	case status == http.StatusUnauthorized, status == http.StatusForbidden:
 		return "", errors.New("garmin: the session was refused — sign in again")
 	case status >= 300:
-		return "", fmt.Errorf("garmin: saving the course returned %d: %s", status, snippet(raw))
+		// Not snippet(): this body is a Bean Validation dump that names every
+		// field of the DTO, which is the only description of that shape that
+		// exists anywhere. Truncating it at 200 characters is what made the
+		// privacy field a guess rather than a lookup.
+		return "", fmt.Errorf("garmin: saving the course returned %d: %s", status, longSnippet(raw))
 	}
 
 	id, err := courseID(raw)
@@ -157,26 +161,77 @@ func (c *Client) DeleteCourse(id string) error {
 	return nil
 }
 
-// withPrivacy ensures the DTO has a valid coursePrivacy value.
+// privacyPrivate is Garmin's id for a course only its owner can see.
 //
-// /import never populates it, but the save endpoint rejects values outside
-// {1=Public, 2=Private, 4=Group}. Default to Private (2).
+// The service enumerates 1=Public, 2=Private, 4=Group. Private is the right
+// default for somebody else's route library: a push should not publish a
+// rider's routes, and making a private course public later is a click, while
+// the reverse is a course strangers already saw.
+const privacyPrivate = 2
+
+// privacyFields are the names the DTO might carry the privacy under.
+//
+// Only one of these is real, and it is not yet known which: the service is
+// undocumented, `coursePrivacy` alone was rejected, and the 400 reports a
+// class-level constraint that names the whole DTO rather than the field.
+// Setting all of them is safe — the same rejection proved unknown fields are
+// ignored rather than refused — and it is one deploy instead of three.
+//
+// **When a push succeeds, come back and cut this to the one that worked.**
+// A list of guesses is a reasonable way to find an answer and a bad thing to
+// leave in place: the next person cannot tell which name matters.
+var privacyFields = []string{
+	// Nested {typeId, typeKey}, the shape Connect uses for activity privacy.
+	"privacyRule",
+	"coursePrivacyRule",
+	// Plain ids.
+	"coursePrivacy",
+	"privacyType",
+}
+
+// withPrivacy gives the parsed DTO a privacy the save endpoint will accept.
+//
+// /import never sets one, and the save rejects the course without it:
+//
+//	'createCourse.arg3' Course privacy can be 1-Public, 2-Private or 4-Group
 func withPrivacy(parsed []byte) ([]byte, error) {
 	var dto map[string]any
 	if err := json.Unmarshal(parsed, &dto); err != nil {
 		return nil, fmt.Errorf("garmin: unreadable course response: %s", snippet(parsed))
 	}
-	switch dto["coursePrivacy"] {
-	case float64(1), float64(2), float64(4):
-		// already valid
-	default:
-		dto["coursePrivacy"] = float64(2)
+
+	nested := map[string]any{"typeId": privacyPrivate, "typeKey": "private"}
+	for _, field := range privacyFields {
+		if valid(dto[field]) {
+			// Connect already said what it wants; do not argue with it.
+			continue
+		}
+		switch field {
+		case "privacyRule", "coursePrivacyRule":
+			dto[field] = nested
+		default:
+			dto[field] = privacyPrivate
+		}
 	}
+
 	out, err := json.Marshal(dto)
 	if err != nil {
 		return nil, fmt.Errorf("garmin: could not re-encode course: %w", err)
 	}
 	return out, nil
+}
+
+// valid reports whether a privacy value is already one the service accepts,
+// in either the plain or the nested shape.
+func valid(value any) bool {
+	switch v := value.(type) {
+	case float64:
+		return v == 1 || v == 2 || v == 4
+	case map[string]any:
+		id, ok := v["typeId"].(float64)
+		return ok && (id == 1 || id == 2 || id == 4)
+	}
+	return false
 }
 
 // courseID digs the new course's id out of the response.
@@ -202,6 +257,18 @@ func courseID(raw []byte) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("garmin: the course was accepted but the response named no id: %s", snippet(raw))
+}
+
+// longSnippet keeps far more of a body than snippet, for the one case where
+// the body is the documentation: a validation failure from an undocumented
+// service lists the fields it was given, and nothing else does.
+func longSnippet(raw []byte) string {
+	const limit = 2000
+	text := strings.TrimSpace(string(raw))
+	if len(text) > limit {
+		return text[:limit] + "…"
+	}
+	return text
 }
 
 // snippet keeps an error readable when the body is an HTML error page.

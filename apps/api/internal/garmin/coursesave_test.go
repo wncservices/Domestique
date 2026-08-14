@@ -1,6 +1,7 @@
 package garmin
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -163,5 +164,98 @@ func TestWithPrivacyKeepsAValidValue(t *testing.T) {
 		if !strings.Contains(string(out), fmt.Sprintf(`"coursePrivacy":%d`, v)) {
 			t.Errorf("privacy %d was changed: %s", v, out)
 		}
+	}
+}
+
+// The save rejects a course with no privacy:
+//
+//	'createCourse.arg3' Course privacy can be 1-Public, 2-Private or 4-Group
+//
+// Which field carries it is not known, so every candidate is set. This test
+// pins the values rather than the names: whichever one Connect reads, it must
+// find Private.
+func TestSaveSetsPrivacyOnEveryCandidateField(t *testing.T) {
+	var saved map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/import") {
+			io.WriteString(w, parsedCourse)
+			return
+		}
+		if err := json.NewDecoder(r.Body).Decode(&saved); err != nil {
+			t.Fatal(err)
+		}
+		io.WriteString(w, `{"courseId":1}`)
+	}))
+	defer srv.Close()
+
+	if _, err := newTestClient(t, srv).ImportCourse("ride.fit", []byte("FIT")); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, field := range privacyFields {
+		if !valid(saved[field]) {
+			t.Errorf("%s = %v, want a privacy the service accepts", field, saved[field])
+		}
+	}
+	// Private, not public: a push must not publish somebody's routes.
+	if rule, ok := saved["privacyRule"].(map[string]any); ok {
+		if rule["typeId"] != float64(privacyPrivate) {
+			t.Errorf("privacyRule = %v, want private", rule)
+		}
+	}
+}
+
+// A course that already carries a privacy keeps it. Connect saying what it
+// wants is worth more than this package's default.
+func TestSaveKeepsAPrivacyConnectAlreadySet(t *testing.T) {
+	var saved map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/import") {
+			io.WriteString(w, `{"courseId":null,"courseName":"X","coursePrivacy":1}`)
+			return
+		}
+		if err := json.NewDecoder(r.Body).Decode(&saved); err != nil {
+			t.Fatal(err)
+		}
+		io.WriteString(w, `{"courseId":1}`)
+	}))
+	defer srv.Close()
+
+	if _, err := newTestClient(t, srv).ImportCourse("ride.fit", []byte("FIT")); err != nil {
+		t.Fatal(err)
+	}
+	if saved["coursePrivacy"] != float64(1) {
+		t.Errorf("coursePrivacy = %v, want the value Connect set", saved["coursePrivacy"])
+	}
+}
+
+// The rejection body names every field of the DTO, and that is the only
+// description of the shape that exists. Truncating it is what turned this
+// into guesswork.
+func TestSaveFailureKeepsEnoughOfTheBodyToBeUseful(t *testing.T) {
+	long := `{"errors":["'createCourse.arg3' Course privacy can be 1-Public, 2-Private or 4-Group ` +
+		`(provided value: CourseDTO(geoPoints=[` + strings.Repeat("GeoPointDTO(lat=50.0), ", 40) +
+		`], coursePrivacyTypeId=null, courseName=X))"]}`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/import") {
+			io.WriteString(w, parsedCourse)
+			return
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		io.WriteString(w, long)
+	}))
+	defer srv.Close()
+
+	_, err := newTestClient(t, srv).ImportCourse("ride.fit", []byte("FIT"))
+	if err == nil {
+		t.Fatal("a rejected save reported success")
+	}
+	// The field names come after the geoPoints dump; a 200-character error
+	// stops long before them.
+	if !strings.Contains(err.Error(), "coursePrivacyTypeId") {
+		t.Errorf("the error stops before the field names:\n%v", err)
 	}
 }
