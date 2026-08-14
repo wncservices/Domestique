@@ -169,50 +169,41 @@ func (c *Client) DeleteCourse(id string) error {
 // the reverse is a course strangers already saw.
 const privacyPrivate = 2
 
-// privacyFields are the names the DTO might carry the privacy under.
-//
-// Only one of these is real, and it is not yet known which: the service is
-// undocumented, `coursePrivacy` alone was rejected, and the 400 reports a
-// class-level constraint that names the whole DTO rather than the field.
-// Setting all of them is safe — the same rejection proved unknown fields are
-// ignored rather than refused — and it is one deploy instead of three.
-//
-// **When a push succeeds, come back and cut this to the one that worked.**
-// A list of guesses is a reasonable way to find an answer and a bad thing to
-// leave in place: the next person cannot tell which name matters.
-var privacyFields = []string{
-	// Nested {typeId, typeKey}, the shape Connect uses for activity privacy.
-	"privacyRule",
-	"coursePrivacyRule",
-	// Plain ids.
-	"coursePrivacy",
-	"privacyType",
-}
+// sourceTypeIDCourse is not a privacy choice — every course carries it, and
+// every course carries the same value. It appears alongside rulePK in the
+// same validation failure and looked, before it was confirmed, like it might
+// be part of the privacy question. It is not: rulePK alone is what 1/2/4
+// means. This is closer to a discriminator saying "this row is a course" than
+// anything a rider or an operator would ever choose.
+const sourceTypeIDCourse = 3
 
-// withPrivacy gives the parsed DTO a privacy the save endpoint will accept.
+// withPrivacy gives the parsed DTO the two fields the save endpoint requires
+// and /import never sets:
 //
-// /import never sets one, and the save rejects the course without it:
+//	'createCourse.arg3.rulePK' must not be null
+//	'createCourse.arg3.sourceTypeId' must not be null
 //
-//	'createCourse.arg3' Course privacy can be 1-Public, 2-Private or 4-Group
+// Both names are confirmed, not guessed. Four prior names — coursePrivacy,
+// privacyType, and privacyRule/coursePrivacyRule nested as {typeId, typeKey}
+// — were deployed across two changes and produced the identical rejection
+// each time, which is what unrecognised JSON properties being silently
+// dropped looks like. The two names here come from capturing the request
+// Connect's own web app sends when creating a course through Training →
+// Courses → Create and saving it as Private: rulePK arrived as 2, the same
+// integer the class-level message already used for private, under a name
+// nothing in the service's own errors had said out loud until the rejection
+// started naming properties instead of the whole DTO.
 func withPrivacy(parsed []byte) ([]byte, error) {
 	var dto map[string]any
 	if err := json.Unmarshal(parsed, &dto); err != nil {
 		return nil, fmt.Errorf("garmin: unreadable course response: %s", snippet(parsed))
 	}
 
-	nested := map[string]any{"typeId": privacyPrivate, "typeKey": "private"}
-	for _, field := range privacyFields {
-		if valid(dto[field]) {
-			// Connect already said what it wants; do not argue with it.
-			continue
-		}
-		switch field {
-		case "privacyRule", "coursePrivacyRule":
-			dto[field] = nested
-		default:
-			dto[field] = privacyPrivate
-		}
+	if !validPrivacy(dto["rulePK"]) {
+		// Connect already saying what it wants beats our default.
+		dto["rulePK"] = privacyPrivate
 	}
+	dto["sourceTypeId"] = sourceTypeIDCourse
 
 	out, err := json.Marshal(dto)
 	if err != nil {
@@ -221,17 +212,11 @@ func withPrivacy(parsed []byte) ([]byte, error) {
 	return out, nil
 }
 
-// valid reports whether a privacy value is already one the service accepts,
-// in either the plain or the nested shape.
-func valid(value any) bool {
-	switch v := value.(type) {
-	case float64:
-		return v == 1 || v == 2 || v == 4
-	case map[string]any:
-		id, ok := v["typeId"].(float64)
-		return ok && (id == 1 || id == 2 || id == 4)
-	}
-	return false
+// validPrivacy reports whether a value is already one of the service's three
+// privacy ids.
+func validPrivacy(value any) bool {
+	v, ok := value.(float64)
+	return ok && (v == 1 || v == 2 || v == 4)
 }
 
 // courseID digs the new course's id out of the response.
