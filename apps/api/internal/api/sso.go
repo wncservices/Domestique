@@ -11,6 +11,7 @@ import (
 
 	"github.com/coreos/go-oidc/v3/oidc"
 
+	"github.com/wncservices/domestique/apps/api/internal/accounts"
 	"github.com/wncservices/domestique/apps/api/internal/auth"
 	"github.com/wncservices/domestique/apps/api/internal/oidcflow"
 	"github.com/wncservices/domestique/apps/api/internal/secrets"
@@ -232,11 +233,16 @@ func (s *Server) handleSSOLogout(w http.ResponseWriter, r *http.Request) {
 
 // identityFromToken builds an Identity from a verified ID token's claims.
 //
-// User is preferred_username, falling back to sub — Auth0's database
-// connection does not populate preferred_username at all, so sub (shaped
-// like "auth0|64f2a1b2c3d4e5f6") is the common case for that issuer, not the
-// exception. Normalized the same way every other rider string in this
-// codebase is (accounts.Link, providerlink.Save).
+// User is preferred_username, falling back to nickname, falling back to sub.
+// Auth0's database connection never populates preferred_username, but does
+// send nickname (defaults to the local part of the email, editable per-user
+// in the Auth0 dashboard) whenever the "profile" scope is requested — so for
+// that issuer this is the readable rider identity, and sub (shaped like
+// "auth0|64f2a1b2c3d4e5f6") is only the fallback for an issuer that sends
+// neither. nickname is skipped, not just lower-cased, if it does not survive
+// RiderPattern (an OIDC nickname can contain spaces or other characters an
+// account id and a URL cannot) — falling through to sub rather than handing
+// Link a value it will reject one step later.
 func (s *Server) identityFromToken(idToken *oidc.IDToken) (auth.Identity, error) {
 	var claims map[string]any
 	if err := idToken.Claims(&claims); err != nil {
@@ -245,10 +251,15 @@ func (s *Server) identityFromToken(idToken *oidc.IDToken) (auth.Identity, error)
 
 	user := strings.ToLower(strings.TrimSpace(stringClaim(claims, "preferred_username")))
 	if user == "" {
+		if nickname := strings.ToLower(strings.TrimSpace(stringClaim(claims, "nickname"))); accounts.RiderPattern.MatchString(nickname) {
+			user = nickname
+		}
+	}
+	if user == "" {
 		user = strings.ToLower(strings.TrimSpace(idToken.Subject))
 	}
 	if user == "" {
-		return auth.Identity{}, errors.New("neither preferred_username nor sub was present")
+		return auth.Identity{}, errors.New("neither preferred_username, nickname nor sub was present")
 	}
 
 	// Absent groups claim is not an error — every issuer that sends none
