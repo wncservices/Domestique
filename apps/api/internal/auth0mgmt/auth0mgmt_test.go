@@ -23,6 +23,7 @@ type fakeTenant struct {
 	roleMembers map[string][]string // role id -> user ids
 	users       map[string]struct{ email, name string }
 	userRoles   map[string][]string // user id -> role ids currently held
+	lastSeen    map[string]struct{ createdAt, lastLogin string }
 
 	createdUsers   []map[string]any
 	invitedEmails  []string
@@ -38,6 +39,7 @@ func newFakeTenant(t *testing.T) *fakeTenant {
 		roleMembers:  map[string][]string{},
 		users:        map[string]struct{ email, name string }{},
 		userRoles:    map[string][]string{},
+		lastSeen:     map[string]struct{ createdAt, lastLogin string }{},
 		grantedRoles: map[string][]string{},
 		revokedRoles: map[string][]string{},
 	}
@@ -59,10 +61,29 @@ func newFakeTenant(t *testing.T) *fakeTenant {
 		_ = json.NewEncoder(w).Encode([]map[string]string{{"id": id, "name": name}})
 	})
 	mux.HandleFunc("GET /api/v2/roles/{id}/users", func(w http.ResponseWriter, r *http.Request) {
+		// Deliberately no created_at/last_login here — the real endpoint
+		// does not return them either (confirmed against Auth0's own
+		// OpenAPI schema), which is the whole reason lastSeen exists.
 		var out []map[string]string
 		for _, uid := range f.roleMembers[r.PathValue("id")] {
 			u := f.users[uid]
 			out = append(out, map[string]string{"user_id": uid, "email": u.email, "name": u.name})
+		}
+		_ = json.NewEncoder(w).Encode(out)
+	})
+	mux.HandleFunc("GET /api/v2/users", func(w http.ResponseWriter, r *http.Request) {
+		// Genuinely parses the Lucene q= the client built, rather than
+		// trusting it blindly — exercises the same OR-of-ids shape lastSeen
+		// actually sends, the way a canned response would not.
+		q := r.URL.Query().Get("q")
+		var out []map[string]string
+		for _, term := range strings.Split(q, " OR ") {
+			uid := strings.TrimSuffix(strings.TrimPrefix(term, `user_id:"`), `"`)
+			seen, ok := f.lastSeen[uid]
+			if !ok {
+				continue
+			}
+			out = append(out, map[string]string{"user_id": uid, "created_at": seen.createdAt, "last_login": seen.lastLogin})
 		}
 		_ = json.NewEncoder(w).Encode(out)
 	})
@@ -168,6 +189,51 @@ func TestListPeopleMergesRoleMembership(t *testing.T) {
 	}
 	if r := byEmail["gateonly@example.com"]; len(r) != 0 {
 		t.Errorf("gate-only's roles = %v, want none", r)
+	}
+}
+
+// The real bug this guards against: GET /api/v2/roles/{id}/users (what
+// ListPeople's own role listing hits) never returns created_at/last_login
+// at all, on a real tenant — so every person on the People page showed
+// "never signed in" regardless of their actual history. lastSeen's separate
+// search-endpoint lookup is what's supposed to fill that in.
+func TestListPeopleFillsInSignInHistoryFromTheSearchEndpoint(t *testing.T) {
+	f := newFakeTenant(t)
+	f.users["u1"] = struct{ email, name string }{"rider@example.com", "Rider Person"}
+	f.roleMembers["role-gate"] = []string{"u1"}
+	f.lastSeen["u1"] = struct{ createdAt, lastLogin string }{"2026-01-01T00:00:00.000Z", "2026-08-10T12:30:00.000Z"}
+
+	c := newTestClient(t, f)
+	people, err := c.ListPeople("domestique-users")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(people) != 1 {
+		t.Fatalf("people = %+v, want 1", people)
+	}
+	if people[0].LastLogin.IsZero() {
+		t.Error("LastLogin is zero, want it filled in from the search endpoint")
+	}
+	if people[0].CreatedAt.IsZero() {
+		t.Error("CreatedAt is zero, want it filled in from the search endpoint")
+	}
+}
+
+// A gate member the search endpoint has no history for (a freshly created
+// account that's never actually signed in) must not error the whole page —
+// it should just show as never signed in, same as before this fix.
+func TestListPeopleLeavesSignInHistoryZeroWhenTheSearchEndpointHasNone(t *testing.T) {
+	f := newFakeTenant(t)
+	f.users["u1"] = struct{ email, name string }{"new@example.com", "New Person"}
+	f.roleMembers["role-gate"] = []string{"u1"}
+
+	c := newTestClient(t, f)
+	people, err := c.ListPeople("domestique-users")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(people) != 1 || !people[0].LastLogin.IsZero() {
+		t.Errorf("people = %+v, want the one person with a zero LastLogin", people)
 	}
 }
 
