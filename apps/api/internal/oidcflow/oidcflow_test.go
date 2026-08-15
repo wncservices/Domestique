@@ -260,6 +260,28 @@ func TestEndSessionURLWhenAdvertised(t *testing.T) {
 	}
 }
 
+// Domestique's one real caller never has an ID token to hand back (the
+// session stores only the derived Identity) — client_id is what actually
+// reaches this method, and per Auth0's own logout endpoint, that is the one
+// thing standing between post_logout_redirect_uri being honoured and the
+// visitor being stranded on the issuer's own logout page.
+func TestEndSessionURLFallsBackToClientIDWithoutAnIDTokenHint(t *testing.T) {
+	f := newFakeIssuer(t)
+	f.advertiseEndSession = true
+	flow := newFlow(t, f)
+
+	got := flow.EndSessionURL("https://app.example.test/", "")
+	if !strings.Contains(got, "post_logout_redirect_uri=") {
+		t.Errorf("EndSessionURL missing post_logout_redirect_uri: %s", got)
+	}
+	if !strings.Contains(got, "client_id="+testClientID) {
+		t.Errorf("EndSessionURL missing client_id: %s", got)
+	}
+	if strings.Contains(got, "id_token_hint=") {
+		t.Errorf("EndSessionURL sent an empty id_token_hint: %s", got)
+	}
+}
+
 func TestEndSessionURLWhenNotAdvertised(t *testing.T) {
 	f := newFakeIssuer(t) // advertiseEndSession left false
 	flow := newFlow(t, f)

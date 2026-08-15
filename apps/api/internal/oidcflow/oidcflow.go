@@ -195,6 +195,17 @@ func (f *Flow) VerifyIDToken(ctx context.Context, raw string) (*oidc.IDToken, er
 // EndSessionURL returns the issuer's RP-initiated logout URL, or "" if the
 // issuer's discovery document did not advertise one — not every issuer does,
 // and a deployment against one that doesn't just ends the local session.
+//
+// Always carries client_id alongside post_logout_redirect_uri, with or
+// without idTokenHint. Per the RP-Initiated Logout spec, and confirmed
+// against Auth0's own docs, an issuer will not honour
+// post_logout_redirect_uri at all unless the request also identifies the
+// client — either id_token_hint or client_id. Domestique's session never
+// retains the raw ID token past login (sessions.Store seals only the
+// derived Identity), so idTokenHint here is "" from the one real caller;
+// client_id is what is actually available, and is exactly this parameter's
+// documented purpose for that case. Without it, the browser lands on the
+// issuer's own logout page and stays there instead of coming back.
 func (f *Flow) EndSessionURL(postLogoutRedirect, idTokenHint string) string {
 	if f.endSessionEndpoint == "" {
 		return ""
@@ -205,6 +216,8 @@ func (f *Flow) EndSessionURL(postLogoutRedirect, idTokenHint string) string {
 	}
 	if idTokenHint != "" {
 		v.Set("id_token_hint", idTokenHint)
+	} else if f.cfg.ClientID != "" {
+		v.Set("client_id", f.cfg.ClientID)
 	}
 	if len(v) == 0 {
 		return f.endSessionEndpoint
