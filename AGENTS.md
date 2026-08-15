@@ -26,14 +26,20 @@ npm workspace: `@domestique/web`, wired through the root `package.json`.
 
 Three words that are easy to confuse, and the distinction is the whole design:
 
-- A **user** is a person who logs in. Users come from Authelia and are **never
-  stored** — no table, no config. `Remote-User` says who, `Remote-Groups` says
-  what they may do.
-- A **rider** is that user's name as it appears on things they own. It is
-  simply the Authelia username, copied at the moment they act.
+- A **user** is a person who logs in. Under `mode: proxy` users come from
+  Authelia and are **never stored** — no table, no config, `Remote-User` says
+  who and `Remote-Groups` says what they may do. Under `mode: oidc` the app
+  holds its own server-side session (`internal/sessions`, keyed by an opaque
+  cookie) behind a login it verifies itself — see **Authentication and
+  roles** below.
+- A **rider** is that user's name as it appears on things they own —
+  `preferred_username` falling back through `name`/`nickname`/`sub` under
+  `mode: oidc`, simply the Authelia username under `mode: proxy`. Either way
+  it is copied at the moment they act, never looked up again.
 - An **account** is a *connection to a head unit* — a Garmin Connect or Wahoo
-  account, with a label and (once the adapters exist) a credential. Authelia
-  knows nothing about anyone's Garmin login, so these cannot come from there.
+  account, with a label and (Garmin, today) an encrypted credential. Neither
+  Authelia nor the OIDC issuer knows anything about a rider's Garmin login,
+  so these cannot come from either.
 
 Accounts live in the `accounts` table and are created by **riders linking their
 own** through the UI. Nothing in the config file names them. Two rules hold
@@ -102,12 +108,54 @@ The frontend mirrors these rules to decide what to *show*. That is a courtesy,
 not a control — the server enforces, the UI only avoids offering buttons that
 would 403.
 
-**Opening this beyond our LDAP** — social logins, people who are not in
-Authelia — needs the app to speak OIDC itself rather than trust a header. That
-is designed but not built: see `docs/oidc.md`, including the one hard part
-(what a `rider` string means once identities come from an issuer). Do not build
-it speculatively; `mode: proxy` is less code and less surface until there is a
-third person.
+**Opening this beyond our LDAP** shipped: `mode: oidc` runs in production
+against an Auth0 tenant (`lab/auth0/`), with Google as an additional social
+sign-in alongside the database connection (`google-oauth2`, Dev Keys —
+`lab/auth0/google_connection.tf`). `docs/oidc.md` is the design record and
+`docs/rider-migration.md` is the runbook for the one hard part it flags: what
+a `rider` string means once identities come from an issuer.
+
+## Admin: the People page
+
+`internal/auth0mgmt` is a narrow hand-rolled client for the three things the
+admin People page needs from Auth0's Management API — list who has access,
+invite a new rider, change roles — plus `FindByEmail`. `internal/api/people.go`
+wires it through `PeopleConnector`, an interface so tests never touch a real
+tenant.
+
+**Inviting an email that already has an Auth0 identity grants access to it
+instead of creating a second one.** A Google sign-in creates its own identity
+(`google-oauth2|<id>`) the first time someone uses it — possibly before an
+admin ever invites them — entirely separate from a database account
+(`auth0|<id>`) for the same address; this tenant does not link them (see
+`lab/auth0/google_connection.tf`'s own comment). `handlePeopleInvite` calls
+`FindByEmail` first: zero matches keeps the original create-account-and-email
+flow, exactly one grants the requested roles directly to the existing
+identity with no new account and no email (they can already sign in), more
+than one is a 409 left for an admin to resolve by hand rather than guessed
+at.
+
+**The invite email is not the Management API's password-change ticket
+endpoint** — that one only returns a URL, it does not send anything. It is
+the public, unauthenticated Authentication API endpoint
+`/dbconnections/change_password`, the same one the login page's own "forgot
+password" link uses — reused here because an account with no usable password
+and one that forgot its password complete the identical flow. That call needs
+no Management API token, only `SignInClientID` (Domestique's own regular_web
+OIDC client), which is why `auth0mgmt.Config` carries both that and the
+narrower M2M `ClientID`/`ClientSecret` — they authenticate to two different
+APIs.
+
+**`GET /api/v2/roles/{id}/users` — what `ListPeople`'s gate-role listing
+uses — never returns `created_at`/`last_login`**, confirmed against Auth0's
+own OpenAPI schema: only `user_id`/`name`/`email`/`picture`. `lastSeen`
+batches those two fields separately through the Users Search API, one Lucene
+query ORing every gate member's id together
+(`q=user_id:"..." OR user_id:"..."&search_engine=v3`) so it stays one request
+regardless of how many people are on the tenant — the same N+1 avoidance the
+permission-role merge already relies on. Getting this wrong silently shows
+"never signed in" for everyone, active riders included, with no error to
+notice.
 
 ## Komoot
 
@@ -478,16 +526,28 @@ confirming that deleting the code they cover turns them red.
 
 ## Provider adapters — read before touching
 
-Both adapters are deliberate stubs. `targets.Implemented` returns false for both, which is what
-makes the UI say "not wired up" instead of offering a push that always fails. Flip a provider's
-entry only when its adapter genuinely works.
+`targets.Implemented` is the single source of truth for whether a push actually works; the UI
+says "not wired up" for anything it returns false for. Flip a provider's entry only when its
+adapter genuinely works.
 
-- **Garmin (Phase 3)** — there is no self-serve API. The official Courses API is Connect
-  Developer Program only (commercial partners), so this uses the unofficial Connect web session.
-  The SSO handshake, the course upload (`course-service`, the call *Training → Courses → Import*
-  makes) and the per-rider sign-in all exist; what is missing is the `targets.Target` adapter
-  wiring them to the library, which is why `targets.Implemented` still says false. Grey-area and
-  breakable — fine for two personal accounts, not for anything shared more widely.
+- **Garmin (Phase 3) — implemented and live.** There is no self-serve API — the official Courses
+  API is Connect Developer Program only (commercial partners) — so this uses the unofficial
+  Connect web session: the SSO handshake, `course-service` upload (the call *Training → Courses →
+  Import* makes), and the per-rider sign-in. `targets.Implemented(model.ProviderGarmin)` is `true`;
+  push, course listing/import and delete are all wired to the library. Grey-area and breakable —
+  fine for two personal accounts, not for anything shared more widely. Two things that bit in
+  production, worth knowing before touching this code again:
+  - **Duplicate detection needs a relative tolerance, not a flat one.** A same-name, same-route
+    pair re-encoded by Garmin on a longer ride can differ by several hundred metres — a flat 100m
+    threshold missed real duplicates past ~50km. `distanceWithinTolerance` in
+    `internal/api/routeduplicates.go` (100m floor, or 2% of the distance, whichever is more
+    forgiving) is shared by both `groupDuplicateRoutes` (the library's own duplicates) and
+    `groupDuplicateCourses` (a rider's Garmin course list) — do not reintroduce a second,
+    independent tolerance constant.
+  - **A route just synced back *from* Garmin must record `sync_state` immediately**, or it looks
+    unpushed and gets offered right back to the same account it came from.
+    `handleGarminCourseImport` calls `s.Store.Record` right after `s.Source.Create` for exactly
+    this reason — removing that call reintroduces a real bug that shipped once already.
 - **Wahoo (Phase 4)** — the Cloud API is documented and clean, but access is approval-gated and
   `POST /v1/routes` takes a **base64 FIT file, not GPX**. Requesting API access is the long pole.
 

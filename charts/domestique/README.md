@@ -45,6 +45,33 @@ config:
 must not be reachable except through that proxy**. `trusted_proxies` narrows it
 further; leave it empty only for a ClusterIP-only Service.
 
+Alternatively, `mode: oidc` has the app verify signed tokens itself against
+an OIDC issuer (Auth0, Keycloak, Zitadel, ...) rather than trusting a header
+— the mode for a Service that faces the public directly:
+
+```yaml
+config:
+  auth:
+    mode: oidc
+    oidc:
+      issuer: https://your-tenant.example.com/
+      client_id: domestique
+      redirect_url: https://app.example.com/sso/callback
+      scopes: [openid, profile, email]
+      groups_claim: groups
+    roles:
+      admin: [domestique-admins]
+      rider: [cyclists]
+encryptionKey:
+  existingSecret: domestique       # DOMESTIQUE_ENCRYPTION_KEY; required for this mode
+```
+
+The client secret comes from `DOMESTIQUE_OIDC_CLIENT_SECRET` via `envFrom`,
+never from `config`. An optional, separate `DOMESTIQUE_AUTH0_MGMT_CLIENT_ID` /
+`_SECRET` pair (an Auth0 Management API M2M app, narrowly scoped) enables the
+admin People page for inviting riders and managing access — without it the
+page is simply unavailable, not broken.
+
 ## PostgreSQL, and no volume
 
 Routes, sync state, linked head units and Komoot sign-ins are all rows in one
