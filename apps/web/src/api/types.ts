@@ -185,6 +185,14 @@ export interface LibraryResponse {
   problems: string[]
 }
 
+/** Library routes that look like repeated imports of the same real ride —
+ *  found by comparing the library against itself (same name, similar
+ *  distance), not against any one provider's own account. */
+export interface RouteDuplicateGroup {
+  name: string
+  routes: Route[]
+}
+
 export interface PlanItem {
   op: 'create' | 'update' | 'delete'
   accountId: string

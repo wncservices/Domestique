@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useLibrary } from '@/composables/useLibrary'
+import LibraryDuplicatesPanel from '@/components/LibraryDuplicatesPanel.vue'
 import PlanPanel from '@/components/PlanPanel.vue'
 import RouteCard from '@/components/RouteCard.vue'
 
@@ -67,6 +68,11 @@ async function push(items: { accountId: string; slug: string }[]) {
       @push="push"
       @refresh="refresh"
     />
+
+    <!-- Cross-rider by nature (the same route can turn up uploaded by two
+         different identities) — the same reason the endpoint behind this
+         is admin-scoped rather than "my own routes". -->
+    <LibraryDuplicatesPanel v-if="me?.role === 'admin'" @changed="refresh" />
 
     <section>
       <div class="mb-4 flex flex-wrap items-center justify-between gap-3">

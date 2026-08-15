@@ -124,6 +124,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/accounts", s.handleLinkAccount)
 	mux.HandleFunc("DELETE /api/accounts/{id}", s.handleUnlinkAccount)
 	mux.HandleFunc("GET /api/routes", s.handleRoutes)
+	mux.HandleFunc("GET /api/routes/duplicates", s.handleRouteDuplicates)
 	mux.HandleFunc("GET /api/plan", s.handlePlan)
 	mux.HandleFunc("POST /api/push", s.handlePush)
 
