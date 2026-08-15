@@ -45,7 +45,7 @@ func BuildPlan(routes []model.Route, linked []model.Account, store state.Store) 
 			case !seen:
 				plan.Items = append(plan.Items, model.PlanItem{
 					Op: model.OpCreate, AccountID: account.ID, Slug: slug,
-					Route: routePtr(route), Reason: "not on this account yet",
+					Route: routePtr(route), Reason: "never pushed",
 				})
 			case known.ContentHash != route.ContentHash:
 				plan.Items = append(plan.Items, model.PlanItem{
