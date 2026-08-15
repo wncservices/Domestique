@@ -1022,6 +1022,22 @@ func (s *Server) spaHandler() http.Handler {
 			clean = "index.html"
 		}
 
+		// Browsers request /favicon.ico unconditionally — independent of the
+		// <link rel="icon"> tag either index.html or landing.html declares,
+		// and issued before either page's own markup is even parsed. The
+		// build only ever produces favicon.svg, so without this, the request
+		// fell through to the same handling as any other unknown path: the
+		// landing page's own content on the landing host, the SPA shell on
+		// the app host, or (mode: oidc, anonymous) a redirect — an HTML
+		// response or a redirect where a browser's implicit probe wants an
+		// icon. Rewritten before the missing-file check runs, so it is
+		// served exactly like any other real static asset.
+		if clean == "favicon.ico" {
+			clean = "favicon.svg"
+			r = r.Clone(r.Context())
+			r.URL.Path = "/favicon.svg"
+		}
+
 		// Real files are served as themselves on either host: /assets/... is
 		// shared by both pages, and the landing page has none of its own.
 		//
