@@ -296,6 +296,66 @@ func TestRenameRiderReplaceKeepsTheOldRidersRowOnConflict(t *testing.T) {
 	assertGone(t, dsn, "wilant")
 }
 
+// The real shape this was found against: an account gets unlinked (which
+// only ever deletes the accounts row — accounts.Store.Unlink never touches
+// sync_state) rather than renamed, orphaning its sync_state rows. Nothing
+// references them, so the plain accounts-conflict check above sees no
+// conflict at all — but they still sit at the exact (account_id, slug) pair
+// the old rider's own rows are about to move into.
+func TestRenameRiderReplaceClearsOrphanedSyncStateWithNoAccount(t *testing.T) {
+	dir := workspace(t)
+	dsn := dir + "/data/domestique.db"
+	seedRider(t, dsn, "wilant")
+	seedRider(t, dsn, "friend")
+
+	db, err := source.OpenDB(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acctStore, err := accounts.UseDB(db.Conn(), db.DSN())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Unlink friend's account — its sync_state (slug "a-ride", same slug
+	// seedRider always uses) is left behind, orphaned, exactly as it was in
+	// production after a UI unlink.
+	if err := acctStore.Unlink(accounts.ID(model.ProviderGarmin, "friend")); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	// Without --replace, this must still abort rather than let Postgres/SQLite
+	// surface a raw primary-key violation later.
+	if _, err := capture(t, "rename-rider", "wilant", "friend"); err == nil {
+		t.Fatal("a rename onto a colliding orphaned sync_state row succeeded without --replace")
+	} else if !strings.Contains(err.Error(), "orphaned sync state") {
+		t.Errorf("err = %v, want it to name the orphaned sync state conflict", err)
+	}
+
+	out := mustRun(t, "rename-rider", "--replace", "wilant", "friend")
+	if !strings.Contains(out, "replaced on conflict") {
+		t.Errorf("output does not mention what --replace did:\n%s", out)
+	}
+
+	db, err = source.OpenDB(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	stateStore, err := state.UseDB(db.Conn(), db.DSN())
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := stateStore.All()
+	if err != nil {
+		t.Fatal(err)
+	}
+	friendID := accounts.ID(model.ProviderGarmin, "friend")
+	if len(entries) != 1 || entries[0].AccountID != friendID || entries[0].RemoteID != "remote-1" {
+		t.Fatalf("sync state = %+v, want exactly wilant's one row now under %s", entries, friendID)
+	}
+}
+
 // --dry-run and --replace together must report what would be replaced
 // without touching anything — the same promise plain --dry-run makes,
 // extended to the new counts.

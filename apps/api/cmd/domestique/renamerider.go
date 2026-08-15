@@ -180,6 +180,55 @@ func renameRiderTx(db *sql.DB, d dbx.Dialect, old, next string, dryRun, replace 
 			}
 		}
 
+		// A slug can still collide even with no accounts-row conflict above:
+		// an account deleted (unlinked) rather than renamed leaves its
+		// sync_state rows orphaned — nothing references them, but they keep
+		// existing, sitting at the same (account_id, slug) primary key the
+		// old rider's own rows are about to move into. The accounts-conflict
+		// branch above only clears sync_state that belonged to a *deleted*
+		// conflicting account; this is the same problem with no account left
+		// to have flagged it. Checked unconditionally, not only when the
+		// accounts check found nothing, since an accounts row that does
+		// still exist was already handled — and already cleared — above.
+		// #nosec G701
+		orphanRows, err := tx.Query(d.Rebind(
+			`SELECT slug FROM sync_state WHERE account_id = ? AND slug IN
+			 (SELECT slug FROM sync_state WHERE account_id = ?)`), newID, p.oldID)
+		if err != nil {
+			return sum, err
+		}
+		var orphanSlugs []string
+		for orphanRows.Next() {
+			var slug string
+			if err := orphanRows.Scan(&slug); err != nil {
+				_ = orphanRows.Close()
+				return sum, err
+			}
+			orphanSlugs = append(orphanSlugs, slug)
+		}
+		if err := orphanRows.Err(); err != nil {
+			_ = orphanRows.Close()
+			return sum, err
+		}
+		_ = orphanRows.Close()
+		if len(orphanSlugs) > 0 {
+			if !replace {
+				return sum, fmt.Errorf(
+					"rename-rider: %s already has %d orphaned sync state row(s) under %s that collide by slug — resolve that conflict first, then retry",
+					next, len(orphanSlugs), newID)
+			}
+			sum.replacedSyncState += len(orphanSlugs)
+			if !dryRun {
+				for _, slug := range orphanSlugs {
+					// #nosec G701
+					if _, err := tx.Exec(d.Rebind(`DELETE FROM sync_state WHERE account_id = ? AND slug = ?`),
+						newID, slug); err != nil {
+						return sum, fmt.Errorf("clearing %s's orphaned sync state for %s: %w", newID, slug, err)
+					}
+				}
+			}
+		}
+
 		var stateRows int
 		// #nosec G701
 		if err := tx.QueryRow(d.Rebind(`SELECT COUNT(1) FROM sync_state WHERE account_id = ?`), p.oldID).
