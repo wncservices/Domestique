@@ -260,14 +260,17 @@ func (c *Client) roleID(name string) (string, error) {
 	return "", fmt.Errorf("auth0mgmt: no role named %q on this tenant", name)
 }
 
-// roleUser is the shape a role's member list comes back as. Confirmed
-// against Auth0's documented standard User object for user_id/email/name/
-// created_at/last_login — every user-listing endpoint on this API shares
-// that shape — but this specific endpoint's exact field set has not been
-// exercised against a real tenant yet. Unknown fields are ignored and
-// missing ones simply zero-value, which is why this is safe to ship ahead
-// of that confirmation rather than something that could corrupt data if
-// wrong — worst case a listing shows a blank name, not a bad write.
+// roleUser is the shape a user object comes back as from any of the three
+// endpoints this file decodes one from. They do not all return the same
+// fields: confirmed against Auth0's own published OpenAPI schema,
+// GET /api/v2/roles/{id}/users returns only user_id/name/email/picture —
+// no created_at or last_login at all, not even blank — while
+// GET /api/v2/users-by-email and GET /api/v2/users (the search endpoint
+// lastSeen below uses) return the full user object, both of those included.
+// One struct still covers all three: unknown fields are ignored and missing
+// ones simply zero-value, so decoding a role-members response into this
+// just leaves CreatedAt/LastLogin blank, which lastSeen then fills in
+// separately rather than trusting the role listing for them.
 type roleUser struct {
 	UserID    string `json:"user_id"`
 	Email     string `json:"email"`
@@ -279,6 +282,41 @@ type roleUser struct {
 func parseTime(s string) time.Time {
 	t, _ := time.Parse(time.RFC3339, s)
 	return t
+}
+
+// lastSeen batches a created_at/last_login lookup for a set of user ids
+// through the Users Search API, since the role-members endpoint that
+// ListPeople otherwise uses does not return either field (see roleUser's
+// own doc comment). One Lucene query ORing every id together — the
+// documented way to search a specific set of ids — stays a single request
+// regardless of how many people are on the tenant, the same N+1 avoidance
+// ListPeople's permission-role merge already relies on. search_engine=v3 is
+// required for the q parameter to be honored at all; fields/include_fields
+// keep the response to exactly what this needs.
+func (c *Client) lastSeen(userIDs []string) (map[string]roleUser, error) {
+	if len(userIDs) == 0 {
+		return nil, nil
+	}
+	terms := make([]string, len(userIDs))
+	for i, id := range userIDs {
+		terms[i] = fmt.Sprintf("user_id:%q", id)
+	}
+	q := url.Values{
+		"search_engine":  {"v3"},
+		"q":              {strings.Join(terms, " OR ")},
+		"fields":         {"user_id,created_at,last_login"},
+		"include_fields": {"true"},
+	}
+
+	var users []roleUser
+	if err := c.do(http.MethodGet, "/api/v2/users?"+q.Encode(), nil, &users); err != nil {
+		return nil, fmt.Errorf("looking up sign-in history: %w", err)
+	}
+	out := make(map[string]roleUser, len(users))
+	for _, u := range users {
+		out[u.UserID] = u
+	}
+	return out, nil
 }
 
 // ListPeople lists everyone in gateRole (the "allowed in at all" role —
@@ -316,15 +354,25 @@ func (c *Client) ListPeople(gateRole string, permissionRoles ...string) ([]Perso
 		}
 	}
 
+	ids := make([]string, len(gateMembers))
+	for i, m := range gateMembers {
+		ids[i] = m.UserID
+	}
+	seen, err := c.lastSeen(ids)
+	if err != nil {
+		return nil, err
+	}
+
 	out := make([]Person, 0, len(gateMembers))
 	for _, m := range gateMembers {
+		s := seen[m.UserID]
 		out = append(out, Person{
 			UserID:    m.UserID,
 			Email:     m.Email,
 			Name:      m.Name,
 			Roles:     memberOf[m.UserID],
-			CreatedAt: parseTime(m.CreatedAt),
-			LastLogin: parseTime(m.LastLogin),
+			CreatedAt: parseTime(s.CreatedAt),
+			LastLogin: parseTime(s.LastLogin),
 		})
 	}
 	return out, nil
