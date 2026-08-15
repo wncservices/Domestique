@@ -60,6 +60,10 @@ const (
 	PermEditAny     Permission = "routes:edit-any"
 	PermPush        Permission = "sync:push"
 	PermKomootSync  Permission = "komoot:import"
+	// PermGarminSync is listing and importing what is already on a rider's
+	// own Garmin account — sync-back, as distinct from PermPush, which sends
+	// the library's routes the other way.
+	PermGarminSync Permission = "garmin:sync"
 	// PermManageAccounts is linking and unlinking head units. A rider manages
 	// their own; touching somebody else's additionally needs PermEditAny.
 	PermManageAccounts Permission = "accounts:manage"
@@ -77,6 +81,7 @@ var minimumRole = map[Permission]Role{
 	PermEditOwn:        RoleRider,
 	PermPush:           RoleRider,
 	PermKomootSync:     RoleRider,
+	PermGarminSync:     RoleRider,
 	PermManageAccounts: RoleRider,
 	PermEditAny:        RoleAdmin,
 	PermManageSettings: RoleAdmin,
@@ -98,7 +103,7 @@ func (r Role) Permissions() []Permission {
 	var out []Permission
 	for _, p := range []Permission{
 		PermReadRoutes, PermUploadRoute, PermEditOwn, PermEditAny, PermPush,
-		PermKomootSync, PermManageAccounts, PermManageSettings,
+		PermKomootSync, PermGarminSync, PermManageAccounts, PermManageSettings,
 	} {
 		if r.Can(p) {
 			out = append(out, p)

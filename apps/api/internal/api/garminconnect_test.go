@@ -42,6 +42,15 @@ type fakeGarmin struct {
 	// fails with.
 	courses    targets.Courses
 	coursesErr error
+
+	// listCourses is what ListCourses hands back, and listCoursesErr what it
+	// fails with.
+	listCourses    []garmin.Course
+	listCoursesErr error
+	// gpxByID is what DownloadGPX returns for a given course id;
+	// downloadGPXErr, when set, is what it fails with regardless of id.
+	gpxByID        map[string][]byte
+	downloadGPXErr error
 }
 
 func (f *fakeGarmin) Courses(_ api.GarminConsumer, session garmin.Session) (targets.Courses, error) {
@@ -52,6 +61,19 @@ func (f *fakeGarmin) Courses(_ api.GarminConsumer, session garmin.Session) (targ
 func (f *fakeGarmin) Devices(_ api.GarminConsumer, session garmin.Session) ([]garmin.Device, error) {
 	f.resumedSession = session
 	return f.devices, f.devicesErr
+}
+
+func (f *fakeGarmin) ListCourses(_ api.GarminConsumer, session garmin.Session) ([]garmin.Course, error) {
+	f.resumedSession = session
+	return f.listCourses, f.listCoursesErr
+}
+
+func (f *fakeGarmin) DownloadGPX(_ api.GarminConsumer, session garmin.Session, courseID string) ([]byte, error) {
+	f.resumedSession = session
+	if f.downloadGPXErr != nil {
+		return nil, f.downloadGPXErr
+	}
+	return f.gpxByID[courseID], nil
 }
 
 func (f *fakeGarmin) Connect(consumer api.GarminConsumer, email, password string) (garmin.Session, error) {

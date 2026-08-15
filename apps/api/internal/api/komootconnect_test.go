@@ -75,6 +75,7 @@ type connectHarness struct {
 	settings  *settings.Store
 	accounts  *accounts.Store
 	db        *source.DB
+	store     state.Store
 }
 
 // newConnectHarness builds a server with Komoot enabled and no environment
@@ -150,7 +151,7 @@ func newConnectHarness(t *testing.T, withKey bool) *connectHarness {
 
 	return &connectHarness{t: t, client: server.Client(), base: server.URL,
 		links: links, connector: connector, garmin: garminConnector,
-		settings: appSettings, accounts: accountStore, db: db}
+		settings: appSettings, accounts: accountStore, db: db, store: store}
 }
 
 func (h *connectHarness) as(user, groups, method, path, body string) *http.Response {

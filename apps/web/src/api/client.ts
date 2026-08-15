@@ -3,6 +3,8 @@ import type {
   AppConfig,
   GarminConnection,
   GarminConsumer,
+  GarminCourse,
+  GarminCourseImportResult,
   GarminDevice,
   KomootImportResult,
   KomootConnection,
@@ -96,6 +98,14 @@ export const api = {
   garminDisconnect: () =>
     request<GarminConnection>('/api/garmin/connection', { method: 'DELETE' }),
   garminDevices: () => request<GarminDevice[]>('/api/garmin/devices'),
+
+  garminCourses: () => request<GarminCourse[]>('/api/garmin/courses'),
+  garminCourseImport: (courseIds: string[]) =>
+    request<GarminCourseImportResult>('/api/garmin/courses/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ courseIds }),
+    }),
 
   garminConsumer: () => request<GarminConsumer>('/api/garmin/consumer'),
   setGarminConsumer: (key: string, secret: string) =>
