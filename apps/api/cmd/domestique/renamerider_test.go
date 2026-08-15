@@ -220,6 +220,169 @@ func TestRenameRiderAbortsOnConflictAndWritesNothing(t *testing.T) {
 	}
 }
 
+// --replace is the escape hatch for exactly what the plain conflict-abort
+// test above proves is otherwise refused: the new rider already has its own
+// account, sync state and provider sign-in. The old rider's row wins — the
+// real scenario this exists for is consolidating two logins onto one
+// identity where the newer login is the one actually still working.
+func TestRenameRiderReplaceKeepsTheOldRidersRowOnConflict(t *testing.T) {
+	dir := workspace(t)
+	dsn := dir + "/data/domestique.db"
+	seedRider(t, dsn, "wilant")
+	seedRider(t, dsn, "friend")
+
+	out := mustRun(t, "rename-rider", "--replace", "wilant", "friend")
+	if !strings.Contains(out, "replaced on conflict") {
+		t.Errorf("output does not mention what --replace did:\n%s", out)
+	}
+
+	db, err := source.OpenDB(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	acctStore, err := accounts.UseDB(db.Conn(), db.DSN())
+	if err != nil {
+		t.Fatal(err)
+	}
+	friendID := accounts.ID(model.ProviderGarmin, "friend")
+	account, err := acctStore.Get(friendID)
+	if err != nil {
+		t.Fatalf("Get(%s): %v", friendID, err)
+	}
+	if account.Rider != "friend" {
+		t.Errorf("account.Rider = %q", account.Rider)
+	}
+
+	// Exactly one sync state row survives, under friend's id — friend's own
+	// original row was the conflict --replace deleted; wilant's took its
+	// place rather than colliding with it.
+	stateStore, err := state.UseDB(db.Conn(), db.DSN())
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := stateStore.All()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].AccountID != friendID {
+		t.Fatalf("sync state = %+v, want exactly one row under %s", entries, friendID)
+	}
+
+	key, err := secrets.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	box, err := secrets.New(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	links, err := providerlink.UseDB(db.Conn(), db.DSN(), box)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := links.Get(string(model.ProviderGarmin), "friend")
+	if err != nil {
+		t.Fatalf("provider link not found under friend: %v", err)
+	}
+	// seedRider ties a connection's email to the rider it was seeded under —
+	// wilant's email surviving under friend's rider is proof wilant's row is
+	// the one that took over, not friend's original.
+	if conn.Email != "wilant@example.com" {
+		t.Errorf("Email = %q, want wilant's connection to have taken over", conn.Email)
+	}
+
+	assertGone(t, dsn, "wilant")
+}
+
+// --dry-run and --replace together must report what would be replaced
+// without touching anything — the same promise plain --dry-run makes,
+// extended to the new counts.
+func TestRenameRiderReplaceDryRunWritesNothing(t *testing.T) {
+	dir := workspace(t)
+	dsn := dir + "/data/domestique.db"
+	seedRider(t, dsn, "wilant")
+	seedRider(t, dsn, "friend")
+
+	out := mustRun(t, "rename-rider", "--dry-run", "--replace", "wilant", "friend")
+	if !strings.Contains(out, "dry run") || !strings.Contains(out, "replaced on conflict") {
+		t.Errorf("output missing dry-run or replace summary:\n%s", out)
+	}
+
+	db, err := source.OpenDB(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	acctStore, err := accounts.UseDB(db.Conn(), db.DSN())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if account, err := acctStore.Get(accounts.ID(model.ProviderGarmin, "friend")); err != nil {
+		t.Errorf("dry run deleted friend's account: %v", err)
+	} else if account.Rider != "friend" {
+		t.Errorf("account.Rider = %q, want untouched", account.Rider)
+	}
+	if _, err := acctStore.Get(accounts.ID(model.ProviderGarmin, "wilant")); err != nil {
+		t.Errorf("dry run moved wilant's account: %v", err)
+	}
+
+	stateStore, err := state.UseDB(db.Conn(), db.DSN())
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := stateStore.All()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Errorf("sync state has %d rows after a dry run, want both riders' untouched", len(entries))
+	}
+}
+
+// Without --replace, a conflict on provider_links specifically still aborts
+// with nothing written — the accounts-conflict case is already covered by
+// TestRenameRiderAbortsOnConflictAndWritesNothing; this is the same
+// guarantee for the other conflict --replace can resolve.
+func TestRenameRiderAbortsOnProviderLinkConflictWithoutReplace(t *testing.T) {
+	dir := workspace(t)
+	dsn := dir + "/data/domestique.db"
+	seedRider(t, dsn, "wilant")
+	seedRider(t, dsn, "friend")
+
+	_, err := capture(t, "rename-rider", "wilant", "friend")
+	if err == nil {
+		t.Fatal("a rename onto an existing provider sign-in succeeded")
+	}
+
+	key, err := secrets.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	box, err := secrets.New(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := source.OpenDB(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	links, err := providerlink.UseDB(db.Conn(), db.DSN(), box)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := links.Get(string(model.ProviderGarmin), "wilant"); err != nil {
+		t.Errorf("wilant's provider sign-in is gone after an aborted rename: %v", err)
+	}
+	if conn, err := links.Get(string(model.ProviderGarmin), "friend"); err != nil {
+		t.Errorf("friend's provider sign-in is gone after an aborted rename: %v", err)
+	} else if conn.Email != "friend@example.com" {
+		t.Errorf("friend's provider sign-in was overwritten without --replace: %q", conn.Email)
+	}
+}
+
 func TestRenameRiderDryRunWritesNothing(t *testing.T) {
 	dir := workspace(t)
 	dsn := dir + "/data/domestique.db"

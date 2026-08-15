@@ -24,6 +24,11 @@ func normalizeRider(s string) string { return strings.ToLower(strings.TrimSpace(
 // needs to report the same numbers a real run would.
 type renameSummary struct {
 	routes, accounts, syncState, providerLinks int
+	// replacedAccounts, replacedSyncState and replacedProviderLinks count
+	// what --replace deleted on the new rider's side to clear a conflict —
+	// zero whenever --replace was not asked for, since nothing is ever
+	// deleted without it.
+	replacedAccounts, replacedSyncState, replacedProviderLinks int
 }
 
 // runRenameRider is the one-off migration docs/rider-migration.md walks an
@@ -37,7 +42,7 @@ type renameSummary struct {
 // public API for an operation that runs exactly once per rider, ever, is the
 // wrong trade. The CLI already has direct database access and is where
 // keygen already lives as a comparable special case.
-func runRenameRider(src *source.DB, args []string, dryRun bool) error {
+func runRenameRider(src *source.DB, args []string, dryRun, replace bool) error {
 	if len(args) != 2 {
 		return errors.New("rename-rider needs exactly two arguments: <old-rider> <new-rider>\n" +
 			"       see docs/rider-migration.md before running this for real")
@@ -65,7 +70,7 @@ func runRenameRider(src *source.DB, args []string, dryRun bool) error {
 		return err
 	}
 
-	sum, err := renameRiderTx(src.Conn(), d, old, next, dryRun)
+	sum, err := renameRiderTx(src.Conn(), d, old, next, dryRun, replace)
 	if err != nil {
 		return err
 	}
@@ -74,6 +79,12 @@ func runRenameRider(src *source.DB, args []string, dryRun bool) error {
 	fmt.Printf("accounts:            %d\n", sum.accounts)
 	fmt.Printf("sync state rows:     %d\n", sum.syncState)
 	fmt.Printf("provider sign-ins:   %d\n", sum.providerLinks)
+	if replace && (sum.replacedAccounts > 0 || sum.replacedSyncState > 0 || sum.replacedProviderLinks > 0) {
+		fmt.Printf("\nreplaced on conflict (deleted, %s's row took over):\n", next)
+		fmt.Printf("  accounts:          %d\n", sum.replacedAccounts)
+		fmt.Printf("  sync state rows:   %d\n", sum.replacedSyncState)
+		fmt.Printf("  provider sign-ins: %d\n", sum.replacedProviderLinks)
+	}
 	if dryRun {
 		fmt.Println("\ndry run — nothing written")
 	} else {
@@ -90,7 +101,7 @@ func runRenameRider(src *source.DB, args []string, dryRun bool) error {
 // dry-run case, so a --dry-run reports the same numbers a real run would —
 // counting sync_state rows after already renaming their account_id would
 // find nothing, since by then they carry the new id.
-func renameRiderTx(db *sql.DB, d dbx.Dialect, old, next string, dryRun bool) (renameSummary, error) {
+func renameRiderTx(db *sql.DB, d dbx.Dialect, old, next string, dryRun, replace bool) (renameSummary, error) {
 	var sum renameSummary
 
 	tx, err := db.Begin()
@@ -140,9 +151,33 @@ func renameRiderTx(db *sql.DB, d dbx.Dialect, old, next string, dryRun bool) (re
 			return sum, err
 		}
 		if conflict > 0 {
-			return sum, fmt.Errorf(
-				"rename-rider: %s already has a %s account (%s) — resolve that conflict first, then retry",
-				next, p.provider, newID)
+			if !replace {
+				return sum, fmt.Errorf(
+					"rename-rider: %s already has a %s account (%s) — resolve that conflict first, then retry",
+					next, p.provider, newID)
+			}
+			// --replace's contract: the old rider's row wins, so the new
+			// rider's conflicting account (and whatever sync state still
+			// points at it) is deleted first, clearing the id for the
+			// UPDATE below to claim.
+			var staleStateRows int
+			// #nosec G701
+			if err := tx.QueryRow(d.Rebind(`SELECT COUNT(1) FROM sync_state WHERE account_id = ?`), newID).
+				Scan(&staleStateRows); err != nil {
+				return sum, err
+			}
+			sum.replacedAccounts++
+			sum.replacedSyncState += staleStateRows
+			if !dryRun {
+				// #nosec G701
+				if _, err := tx.Exec(d.Rebind(`DELETE FROM sync_state WHERE account_id = ?`), newID); err != nil {
+					return sum, fmt.Errorf("clearing %s's stale sync state: %w", newID, err)
+				}
+				// #nosec G701
+				if _, err := tx.Exec(d.Rebind(`DELETE FROM accounts WHERE id = ?`), newID); err != nil {
+					return sum, fmt.Errorf("clearing %s's stale account: %w", newID, err)
+				}
+			}
 		}
 
 		var stateRows int
@@ -201,9 +236,19 @@ func renameRiderTx(db *sql.DB, d dbx.Dialect, old, next string, dryRun bool) (re
 			return sum, err
 		}
 		if conflict > 0 {
-			return sum, fmt.Errorf(
-				"rename-rider: %s already has a %s sign-in — resolve that conflict first, then retry",
-				next, provider)
+			if !replace {
+				return sum, fmt.Errorf(
+					"rename-rider: %s already has a %s sign-in — resolve that conflict first, then retry",
+					next, provider)
+			}
+			sum.replacedProviderLinks++
+			if !dryRun {
+				// #nosec G701
+				if _, err := tx.Exec(d.Rebind(`DELETE FROM provider_links WHERE provider = ? AND rider = ?`),
+					provider, next); err != nil {
+					return sum, fmt.Errorf("clearing %s's stale %s sign-in: %w", next, provider, err)
+				}
+			}
 		}
 	}
 	sum.providerLinks = len(providers)

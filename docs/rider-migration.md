@@ -74,6 +74,31 @@ nothing is written — resolve the conflict (usually: you migrated this rider
 already, or two Authelia accounts are being merged into one identity, which
 needs a decision about which account's data wins) and retry.
 
+The recurring real-world shape of that decision: you signed in again before
+running the migration (to learn the string to rename *to*, per the ordering
+above), and that sign-in itself created a fresh account and provider sign-in
+under the new identity — which now collides with whatever you are trying to
+rename onto it. `--replace` resolves this the way it almost always should be
+resolved: the *old* rider's row wins, on the theory that it is the one with
+real history (routes pushed, a working provider sign-in), while the row
+sitting in the way is what a bare sign-in just created and has nothing behind
+it yet. It deletes the new rider's conflicting account (and any sync state
+still pointing at it) or provider sign-in before the rename proceeds, all
+inside the same transaction — an aborted run still writes nothing, and
+`--dry-run --replace` together report what would be deleted without deleting
+it.
+
+```bash
+domestique rename-rider --dry-run --replace wilant 'auth0|64f2a1b2c3d4e5f6'
+```
+
+Read the "replaced on conflict" counts as carefully as the ordinary ones —
+they name rows this run would delete. If the *new* identity's row is
+actually the one with real data (the less common direction — you already
+used the app under the new identity for a while before running this), do not
+reach for `--replace`; resolve that one by hand instead, the same as before
+this flag existed.
+
 ## Admin bootstrapping
 
 Every OIDC login lands as `default_role: viewer` until an Auth0 Action adds a
