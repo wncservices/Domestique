@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -33,6 +34,13 @@ type fakeGarmin struct {
 	// devices is what Devices hands back, and devicesErr what it fails with.
 	devices    []garmin.Device
 	devicesErr error
+
+	// mu guards resumedSession: handleGarminCourseImport downloads several
+	// courses at once (garmincourses.go's fetchGPX), so DownloadGPX is the
+	// one method here a test can genuinely call from more than one goroutine
+	// at a time. Recording into a plain field without a lock is exactly the
+	// data race `go test -race` exists to catch — and did, in CI, before this.
+	mu sync.Mutex
 	// resumedSession records the session a resumed call was given, so a test
 	// can assert the stored sign-in was used rather than a fresh one. Shared
 	// by Devices and Courses, which resume identically.
@@ -49,27 +57,35 @@ type fakeGarmin struct {
 	listCoursesErr error
 	// gpxByID is what DownloadGPX returns for a given course id;
 	// downloadGPXErr, when set, is what it fails with regardless of id.
+	// Read-only once a test has set it up, before any concurrent call can
+	// happen — safe without the lock that resumedSession needs.
 	gpxByID        map[string][]byte
 	downloadGPXErr error
 }
 
-func (f *fakeGarmin) Courses(_ api.GarminConsumer, session garmin.Session) (targets.Courses, error) {
+func (f *fakeGarmin) setResumedSession(session garmin.Session) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.resumedSession = session
+}
+
+func (f *fakeGarmin) Courses(_ api.GarminConsumer, session garmin.Session) (targets.Courses, error) {
+	f.setResumedSession(session)
 	return f.courses, f.coursesErr
 }
 
 func (f *fakeGarmin) Devices(_ api.GarminConsumer, session garmin.Session) ([]garmin.Device, error) {
-	f.resumedSession = session
+	f.setResumedSession(session)
 	return f.devices, f.devicesErr
 }
 
 func (f *fakeGarmin) ListCourses(_ api.GarminConsumer, session garmin.Session) ([]garmin.Course, error) {
-	f.resumedSession = session
+	f.setResumedSession(session)
 	return f.listCourses, f.listCoursesErr
 }
 
 func (f *fakeGarmin) DownloadGPX(_ api.GarminConsumer, session garmin.Session, courseID string) ([]byte, error) {
-	f.resumedSession = session
+	f.setResumedSession(session)
 	if f.downloadGPXErr != nil {
 		return nil, f.downloadGPXErr
 	}
