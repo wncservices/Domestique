@@ -17,13 +17,20 @@ const error = ref('')
 // rider: every checkbox stays editable.
 const toDelete = ref<Set<string>>(new Set())
 
-/** Keeps whichever copy actually has push history — real evidence it is the
- *  one a head unit already knows about — and falls back to the most
- *  recently updated when nothing in the group has any. Marks the rest. */
+/** Keeps whichever copy came from Komoot first — its own import tracking
+ *  (tags: ["komoot", "komoot:<id>"]) is what Komoot-side dedup reads, and a
+ *  Garmin-sync-back copy of the same ride never carries it. Losing the
+ *  Komoot-tagged copy would silently make that tour importable again the
+ *  next time someone lists their Komoot tours. Falls back to whichever
+ *  copy actually has push history — real evidence it is the one a head
+ *  unit already knows about — then to the most recently updated when
+ *  nothing in the group has either. Marks the rest. */
 function defaultSelection(groups: RouteDuplicateGroup[]): Set<string> {
   const slugs = new Set<string>()
   for (const group of groups) {
     const sorted = [...group.routes].sort((a, b) => {
+      const komoot = Number(b.tags.includes('komoot')) - Number(a.tags.includes('komoot'))
+      if (komoot !== 0) return komoot
       const synced = b.syncState.length - a.syncState.length
       if (synced !== 0) return synced
       return b.updatedAt.localeCompare(a.updatedAt)
