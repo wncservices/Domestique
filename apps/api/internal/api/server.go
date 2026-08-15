@@ -1047,6 +1047,27 @@ func (s *Server) spaHandler() http.Handler {
 			}
 		}
 
+		// An anonymous visitor to the app host is sent to the front door
+		// instead of the app shell. mode: proxy never had this case —
+		// Traefik's forwardAuth refused the request before it reached this
+		// server — and mode: none is never anonymous (LocalIdentity), so
+		// this only ever fires for mode: oidc, the one mode where the app
+		// itself decides who gets in. Gated on the mode explicitly, not just
+		// on being anonymous, so a caller with no Auth configured (every
+		// other test in this file) keeps getting the app rather than a
+		// redirect to nowhere.
+		//
+		// Real files are exempted the same way the landing page's own
+		// content is: this only replaces what would otherwise serve the SPA
+		// shell, not /assets/... , which the redirect target needs too.
+		if !landing && s.LandingHost != "" && s.authenticator().Mode() == auth.ModeOIDC &&
+			(missing || clean == "index.html") {
+			if auth.FromContext(r.Context()).Anonymous() {
+				http.Redirect(w, r, "https://"+s.LandingHost+"/", http.StatusFound)
+				return
+			}
+		}
+
 		switch {
 		case landing && (missing || clean == "index.html"):
 			r = r.Clone(r.Context())
