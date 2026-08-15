@@ -265,6 +265,12 @@ type accountDTO struct {
 	Implemented bool `json:"implemented"`
 	// Mine tells the UI whether the viewer may unlink this one.
 	Mine bool `json:"mine"`
+	// PossibleDuplicateOf names every other rider with an account for the
+	// same provider carrying the same label. A hint, not a certainty — see
+	// duplicateRiders — but usually means the same real device account,
+	// linked twice because an OIDC login resolved to a rider identity this
+	// deployment had not yet recognised as the same person.
+	PossibleDuplicateOf []string `json:"possibleDuplicateOf,omitempty"`
 }
 
 type routeDTO struct {
@@ -398,15 +404,43 @@ func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request) {
 	out := make([]accountDTO, 0, len(linked))
 	for _, a := range linked {
 		out = append(out, accountDTO{
-			ID:          a.ID,
-			Provider:    string(a.Provider),
-			Rider:       a.Rider,
-			Label:       a.Label,
-			Implemented: targets.Implemented(a.Provider),
-			Mine:        identity.CanEditRoute(a.Rider),
+			ID:                  a.ID,
+			Provider:            string(a.Provider),
+			Rider:               a.Rider,
+			Label:               a.Label,
+			Implemented:         targets.Implemented(a.Provider),
+			Mine:                identity.CanEditRoute(a.Rider),
+			PossibleDuplicateOf: duplicateRiders(linked, a),
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// duplicateRiders names every other rider with an account for the same
+// provider and the same non-empty label as a.
+//
+// The label a Garmin (or Wahoo, once implemented) account gets is the
+// provider's own display name, set once at link time from the live session
+// (handleGarminSignIn's ensureAccount call) — not something a rider types.
+// Two different rider identities carrying the same provider display name is
+// exactly what this deployment's own history produced: an OIDC login
+// resolving to a rider string that had not been recognised as an existing
+// person yet, linking the same real device account a second time. It is a
+// hint, not a certainty — two unrelated real accounts could coincidentally
+// share a display name — which is why this only flags, it never hides or
+// blocks anything itself.
+func duplicateRiders(all []model.Account, a model.Account) []string {
+	if a.Label == "" {
+		return nil
+	}
+	var out []string
+	for _, other := range all {
+		if other.ID == a.ID || other.Provider != a.Provider || other.Label != a.Label {
+			continue
+		}
+		out = append(out, other.Rider)
+	}
+	return out
 }
 
 // handleLinkAccount connects a provider for the signed-in rider.

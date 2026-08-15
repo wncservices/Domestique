@@ -13,6 +13,11 @@ export interface Account {
   implemented: boolean
   /** Whether the viewer may unlink this one — their own, or they're an admin. */
   mine: boolean
+  /** Other riders with an account carrying the same provider and label —
+   *  usually the same real device account, linked twice under a rider
+   *  identity this deployment had not yet recognised as the same person. A
+   *  hint, not a certainty. */
+  possibleDuplicateOf?: string[]
 }
 
 export interface LinkAccountRequest {
