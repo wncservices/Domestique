@@ -205,6 +205,18 @@ func (a *Authenticator) UseSessions(s SessionLookup) { a.sessions = s }
 // in ModeOIDC. Zero value in every other mode.
 func (a *Authenticator) OIDC() OIDCConfig { return a.oidc }
 
+// Roles is the configured group-name-to-role mapping — the admin People
+// page's own source for which Auth0 role names "admin" and "rider" actually
+// are, so it never hardcodes domestique-admins/cyclists itself and drifts
+// from what roles.go actually resolves at sign-in.
+func (a *Authenticator) Roles() RoleMapping { return a.roles }
+
+// RequiredGroup is the gate role name — "allowed in at all," not a
+// permission level. Empty means every authenticated identity is let in
+// (see Authorize), which the People page needs to know before it tries to
+// grant a "gate" role that was never configured.
+func (a *Authenticator) RequiredGroup() string { return a.requiredGroup }
+
 // validatedOIDC checks the shape of an OIDC config and fills in its
 // defaults. Pure — no network call, no I/O. Discovery (an issuer actually
 // being reachable) is a separate, later step; config.Validate runs this for

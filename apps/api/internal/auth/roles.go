@@ -72,6 +72,11 @@ const (
 	// belong to the whole deployment rather than to the rider changing them,
 	// and a bad value breaks the feature for everybody.
 	PermManageSettings Permission = "settings:manage"
+	// PermManagePeople is inviting a rider and changing who holds which
+	// role — a separate permission from PermManageSettings, not folded into
+	// it, because this one can grant another identity admin access to
+	// everything else, which a bad deployment-wide config value cannot.
+	PermManagePeople Permission = "people:manage"
 )
 
 // minimumRole is the least privileged role that holds each permission.
@@ -85,6 +90,7 @@ var minimumRole = map[Permission]Role{
 	PermManageAccounts: RoleRider,
 	PermEditAny:        RoleAdmin,
 	PermManageSettings: RoleAdmin,
+	PermManagePeople:   RoleAdmin,
 }
 
 // Can reports whether a role holds a permission.
@@ -103,7 +109,7 @@ func (r Role) Permissions() []Permission {
 	var out []Permission
 	for _, p := range []Permission{
 		PermReadRoutes, PermUploadRoute, PermEditOwn, PermEditAny, PermPush,
-		PermKomootSync, PermGarminSync, PermManageAccounts, PermManageSettings,
+		PermKomootSync, PermGarminSync, PermManageAccounts, PermManageSettings, PermManagePeople,
 	} {
 		if r.Can(p) {
 			out = append(out, p)
@@ -131,6 +137,12 @@ func (i Identity) CanEditRoute(owner string) bool {
 	}
 	return strings.EqualFold(owner, i.User)
 }
+
+// ResolveRole is resolveRole, exported so the admin People page can show
+// what role a person's current Auth0 role membership actually resolves to
+// — the same computation Identify runs at sign-in, not a second copy of
+// "most privileged wins" that could drift from it.
+func (a *Authenticator) ResolveRole(groups []string) Role { return a.resolveRole(groups) }
 
 // resolveRole picks the role for a set of Authelia groups.
 //
