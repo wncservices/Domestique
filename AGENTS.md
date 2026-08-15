@@ -15,9 +15,10 @@ route data**:
 |---|---|
 | `apps/api/` | Go service — CLI (`validate`/`plan`/`push`/`state`/`import`) and HTTP API (`serve`) |
 | `apps/web/` | Vue 3 + Vite + TypeScript frontend |
-| `charts/domestique/` | The Helm chart, published as a Helm repo on GitHub Pages |
 | `examples/routes/` | One sample route so the demo has something to show. Not a library |
 | `docs/` | Design notes, including the research behind the provider choices |
+
+The Helm chart is **not here** — see [`wncservices/domestique-chart`](https://github.com/wncservices/domestique-chart).
 
 Go module: `github.com/wncservices/domestique/apps/api`, wired through the root `go.work`.
 npm workspace: `@domestique/web`, wired through the root `package.json`.
@@ -285,14 +286,18 @@ header and CRC checked against the FIT spec with an independent implementation,
 so a bug in the library cannot pass unnoticed. **Neither proves a real device
 accepts the file** — `domestique fit <slug>` writes one out for exactly that.
 
-## The Helm chart
+## The Helm chart lives elsewhere
 
-`charts/domestique` is published by `.github/workflows/chart-release.yml` on any
-push to `main` that touches it, as a Helm repository on GitHub Pages
-(`https://wncservices.github.io/Domestique`). **That URL follows the
-repository name**, capital D included — the lowercase one 404s. **Bump `version` in `Chart.yaml` for any chart
-change**, or the release is skipped and the published chart silently lags the
-repository.
+The chart is **not in this repo** — it's [wncservices/domestique-chart](https://github.com/wncservices/domestique-chart),
+split out so it releases on its own schedule, independent of the application.
+Its own `AGENTS.md` covers chart-specific conventions (bumping `version` to
+trigger a release, its own CI validating rendered config against a
+cross-checked-out build of this repo). What's still here: `appVersion` in
+that chart's `Chart.yaml` is the image tag it deploys by default — bump it
+there, not here, when you want the chart to pick up a new release of this
+app.
+
+## Container images
 
 ### Two registries, one build
 
@@ -338,19 +343,23 @@ computed into an output by the `registries` step.
 ### GHCR packages default to private
 
 A package published to GHCR for the first time is **private**, whatever the
-visibility of the repository that published it. Both of ours started that way,
-which means `docker pull` and `helm install` fail for everyone — including the
-cluster, unless you fit an imagePullSecret.
+visibility of the repository that published it. The image started out that
+way, which means `docker pull` fails for everyone — including the cluster,
+unless you fit an imagePullSecret.
 
 There is no API for this. GitHub exposes package visibility only in the UI, so
-it is a one-time manual step per package, under *Package settings → Danger Zone
-→ Change visibility*:
+it is a one-time manual step, under *Package settings → Danger Zone →
+Change visibility*:
 
 - [image](https://github.com/orgs/wncservices/packages/container/domestique/settings)
-- [chart](https://github.com/orgs/wncservices/packages/container/charts%2Fdomestique/settings)
 
 Check it after adding any new published artifact. Nothing in CI will tell you;
-the push succeeds and the pull is what fails, later, somewhere else.
+the push succeeds and the pull is what fails, later, somewhere else. (The
+chart is not a GHCR package — `chart-releaser-action` publishes it to GitHub
+Releases and a Pages branch, never a container registry. An old reference to
+a `charts%2Fdomestique` GHCR package lived here before this section was
+rewritten; it did not correspond to anything the actual publishing mechanism
+ever produced, and is not carried into the chart's new repo.)
 
 Two defaults are deliberately unsafe-but-obvious rather than safe-but-silent:
 authentication is `none` and the NOTES warn loudly about it, because a chart

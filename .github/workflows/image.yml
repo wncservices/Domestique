@@ -1,12 +1,13 @@
 name: Container image
 
 # The image and the chart are released independently, and this workflow owns
-# only the image. The chart has its own workflow and its own tag series
+# only the image. The chart lives in its own repo now
+# (wncservices/domestique-chart) with its own workflow and its own tag series
 # (`domestique-<chart version>`), because a chart fix and an app change are
 # rarely the same event: you can ship a values default without rebuilding the
 # app, and you can ship the app without touching the chart. What links them is
 # the chart's `appVersion`, which is the image tag the chart deploys — bump it
-# when you want the chart to pick up a new release.
+# there when you want the chart to pick up a new release.
 on:
   push:
     branches: [main]

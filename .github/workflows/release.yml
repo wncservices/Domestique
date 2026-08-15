@@ -3,7 +3,8 @@ name: Release
 # Tagging `v<x.y.z>` releases the *application*: this workflow cuts the GitHub
 # Release with binaries, and `image.yml` publishes the matching container image
 # in parallel off the same tag. The Helm chart is deliberately not part of it —
-# it releases on its own from `chart-release.yml`.
+# it lives in its own repo (wncservices/domestique-chart) and releases on its
+# own schedule entirely, from that repo's own workflow.
 on:
   push:
     tags:
