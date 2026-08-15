@@ -88,6 +88,41 @@ func (f *fakeIssuer) setClaims(nonce string, groups []string) {
 	}
 }
 
+// setClaimsWithUser is setClaims minus preferred_username, plus whatever the
+// caller supplies — for exercising identityFromToken's fallback chain
+// (nickname, then sub) the way an Auth0 database-connection token actually
+// looks, rather than the happy path every other test uses.
+func (f *fakeIssuer) setClaimsWithUser(nonce string, groups []string, userClaims map[string]any) {
+	now := time.Now()
+	f.claims = map[string]any{
+		"iss": f.server.URL, "sub": "auth0|64f2a1b2c3d4e5f6", "aud": "domestique-test",
+		"exp": now.Add(time.Hour).Unix(), "iat": now.Unix(), "nonce": nonce,
+		"groups": groups,
+	}
+	for k, v := range userClaims {
+		f.claims[k] = v
+	}
+}
+
+// loginWithUser is h.login, but for setClaimsWithUser's fallback-chain cases
+// instead of the standard preferred_username happy path.
+func (h *ssoHarness) loginWithUser(groups []string, userClaims map[string]any) *http.Response {
+	h.t.Helper()
+	loginResp := h.get("/sso/login")
+	if loginResp.StatusCode != http.StatusFound {
+		h.t.Fatalf("GET /sso/login = %d, want 302", loginResp.StatusCode)
+	}
+	loc, err := loginResp.Location()
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	nonce := loc.Query().Get("nonce")
+	state := loc.Query().Get("state")
+
+	h.issuer.setClaimsWithUser(nonce, groups, userClaims)
+	return h.get("/sso/callback?code=any-code&state=" + state)
+}
+
 func signJWT(key *rsa.PrivateKey, kid string, claims map[string]any) (string, error) {
 	h, err := b64JSON(map[string]any{"alg": "RS256", "typ": "JWT", "kid": kid})
 	if err != nil {
@@ -299,6 +334,54 @@ func TestSSOCallbackSignsTheRiderIn(t *testing.T) {
 	}
 	if me["authMode"] != "oidc" {
 		t.Errorf("authMode = %v", me["authMode"])
+	}
+}
+
+// The common real-world case for Auth0's database connection: no
+// preferred_username, but nickname is there and legal as a rider id.
+func TestSSOCallbackFallsBackToNicknameWhenNoPreferredUsername(t *testing.T) {
+	h := newSSOHarness(t)
+	callback := h.loginWithUser([]string{"cyclists"}, map[string]any{"nickname": "wilant"})
+
+	if callback.StatusCode != http.StatusFound {
+		t.Fatalf("callback status = %d, want 302", callback.StatusCode)
+	}
+	me := meBody(t, h.get("/api/me"))
+	if me["user"] != "wilant" {
+		t.Errorf("user = %v, want the nickname claim", me["user"])
+	}
+}
+
+// A nickname that cannot be an account id (spaces, here) must not become the
+// rider — that would only fail later, one step after login looked like it
+// worked, the first time this rider tried to link an account.
+func TestSSOCallbackSkipsAnIllegalNicknameAndFallsBackToSub(t *testing.T) {
+	h := newSSOHarness(t)
+	callback := h.loginWithUser([]string{"cyclists"}, map[string]any{"nickname": "wil ant!"})
+
+	if callback.StatusCode != http.StatusFound {
+		t.Fatalf("callback status = %d, want 302", callback.StatusCode)
+	}
+	me := meBody(t, h.get("/api/me"))
+	if me["user"] != "auth0|64f2a1b2c3d4e5f6" {
+		t.Errorf("user = %v, want the sub", me["user"])
+	}
+}
+
+// preferred_username still wins when an issuer sends both — nickname is
+// only ever the fallback, never preferred over the claim meant for this.
+func TestSSOCallbackPrefersPreferredUsernameOverNickname(t *testing.T) {
+	h := newSSOHarness(t)
+	callback := h.loginWithUser([]string{"cyclists"}, map[string]any{
+		"preferred_username": "official-name", "nickname": "wilant",
+	})
+
+	if callback.StatusCode != http.StatusFound {
+		t.Fatalf("callback status = %d, want 302", callback.StatusCode)
+	}
+	me := meBody(t, h.get("/api/me"))
+	if me["user"] != "official-name" {
+		t.Errorf("user = %v, want preferred_username", me["user"])
 	}
 }
 
