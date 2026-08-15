@@ -178,9 +178,19 @@ func (s *Server) Handler() http.Handler {
 // mode where the app itself is the front door, so it is the first mode where
 // an anonymous request to /api/me is a real, expected case rather than one
 // that never happens in practice.
+//
+// /api/config stays open for the same reason and was missed the first time:
+// handleConfig carries no require() of its own — Source and whether Komoot
+// is enabled were never meant to be secret — but the blanket Authorize
+// check here gated it anyway. Under mode: proxy this was invisible for the
+// same reason /api/me was: an anonymous request never arrived. Under
+// mode: oidc it broke the anonymous bootstrap outright: useLibrary's
+// initial Promise.all included config() alongside me(), so one 401 failed
+// the whole batch and me stayed unset — no "Sign in" button, no visible
+// explanation, just an empty error state.
 func (s *Server) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/health" {
+		if r.URL.Path == "/api/health" || r.URL.Path == "/api/config" {
 			next.ServeHTTP(w, r)
 			return
 		}

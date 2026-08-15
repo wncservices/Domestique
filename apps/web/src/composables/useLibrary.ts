@@ -26,19 +26,34 @@ let inFlight: Promise<void> | null = null
 async function load(): Promise<void> {
   error.value = ''
   try {
-    const [appConfig, identity, accountList, library, currentPlan] = await Promise.all([
-      api.config(),
-      api.me(),
-      api.accounts(),
-      api.routes(),
-      api.plan(),
-    ])
+    // config() and me() answer for anonymous visitors too (both exempted
+    // server-side, api/server.go's authenticate) — every mode reaches this
+    // page signed out at least once. The rest of the library is a rider's
+    // own data, gated behind actually being signed in, so it is only worth
+    // asking for once me() says so: fetching it anonymously would just be a
+    // guaranteed 401, and bundling that into the same Promise.all used to
+    // fail the whole load — including config and identity — over a
+    // rejection that was completely expected.
+    const [appConfig, identity] = await Promise.all([api.config(), api.me()])
     config.value = appConfig
     me.value = identity
-    accounts.value = accountList
-    routes.value = library.routes
-    problems.value = library.problems
-    plan.value = currentPlan
+
+    if (identity.authenticated) {
+      const [accountList, library, currentPlan] = await Promise.all([
+        api.accounts(),
+        api.routes(),
+        api.plan(),
+      ])
+      accounts.value = accountList
+      routes.value = library.routes
+      problems.value = library.problems
+      plan.value = currentPlan
+    } else {
+      accounts.value = []
+      routes.value = []
+      problems.value = []
+      plan.value = null
+    }
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err)
   } finally {

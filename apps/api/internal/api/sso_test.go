@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -463,8 +464,54 @@ func TestMeIsReachableAnonymouslyInEveryMode(t *testing.T) {
 	}
 }
 
-// The fix for /api/me must not have widened to every route — an anonymous
-// visitor to anything else under /api/ in mode oidc is still refused.
+// /api/config being reachable while anonymous is the same fix as /api/me,
+// caught later: handleConfig carries no require() of its own and nothing in
+// it is secret, but the blanket Authorize check gated it anyway. Under
+// mode: proxy this was invisible for the same reason /api/me was. Under
+// mode: oidc it broke the anonymous bootstrap for real — useLibrary's
+// initial Promise.all fetches config() alongside me(), so config's 401
+// failed the whole batch and me never got set: no "Sign in" button, no
+// visible explanation, just an empty error state.
+func TestConfigIsReachableAnonymouslyInEveryMode(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  auth.Config
+	}{
+		{"none", auth.Config{Mode: auth.ModeNone}},
+		{"proxy", auth.Config{Mode: auth.ModeProxy}},
+		{"oidc", validOIDCAuthConfig(t)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			authenticator, err := auth.New(tc.cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// handleConfig calls Source.Describe(), unlike handleMe — needs a
+			// real source, not just an authenticator.
+			src, err := source.OpenDB(filepath.Join(t.TempDir(), "test.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer src.Close()
+			srv := &api.Server{Auth: authenticator, Source: src}
+			server := httptest.NewServer(srv.Handler())
+			defer server.Close()
+
+			resp, err := http.Get(server.URL + "/api/config")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status = %d, want 200 even anonymously", resp.StatusCode)
+			}
+		})
+	}
+}
+
+// The fix for /api/me and /api/config must not have widened to every
+// route — an anonymous visitor to anything else under /api/ in mode oidc is
+// still refused.
 func TestOtherRoutesStayGatedWhenMeDoesNot(t *testing.T) {
 	authenticator, err := auth.New(validOIDCAuthConfig(t))
 	if err != nil {
