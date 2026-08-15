@@ -102,6 +102,13 @@ type Server struct {
 	// Links/Settings/Sessions — one key, everything this app keeps sealed.
 	Box *secrets.Box
 
+	// People manages who has access, through Auth0's Management API — the
+	// admin People page. Nil means the deployment has no Management API
+	// credentials configured, which degrades the page to "not available"
+	// rather than a 500, the same shape Komoot/Garmin already use for their
+	// own optional credentials.
+	People PeopleConnector
+
 	// pushMu serialises pushes: two concurrent reconciles against the same
 	// account would race on remote ids and on the state file.
 	pushMu sync.Mutex
@@ -147,6 +154,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/garmin/consumer", s.handleGarminConsumer)
 	mux.HandleFunc("PUT /api/garmin/consumer", s.handleSetGarminConsumer)
 	mux.HandleFunc("DELETE /api/garmin/consumer", s.handleClearGarminConsumer)
+
+	mux.HandleFunc("GET /api/people", s.handlePeopleList)
+	mux.HandleFunc("POST /api/people", s.handlePeopleInvite)
+	mux.HandleFunc("PUT /api/people/{id}/role", s.handlePeopleSetRole)
 
 	// Not under /api: these are browser navigations (redirects, a form post
 	// from the SPA), not JSON calls, so they sit outside the /api/ 404

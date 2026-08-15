@@ -1,6 +1,7 @@
 import type {
   Account,
   AppConfig,
+  AssignableRole,
   GarminConnection,
   GarminConsumer,
   GarminCourse,
@@ -12,7 +13,9 @@ import type {
   KomootTour,
   LinkAccountRequest,
   Me,
+  InvitePersonRequest,
   LibraryResponse,
+  Person,
   PlanResponse,
   PushResponse,
   Route,
@@ -184,5 +187,22 @@ export const api = {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ targets }),
+    }),
+
+  people: () => request<Person[]>('/api/people'),
+  invitePerson: (req: InvitePersonRequest) =>
+    // The account can be created even when the invite email fails to send —
+    // that is not an ApiError (the request itself succeeded), so the
+    // response's own optional `error` field carries it instead.
+    request<{ person: Person; error?: string }>('/api/people', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+    }),
+  setPersonRole: (id: string, role: AssignableRole) =>
+    request<{ status: string }>(`/api/people/${encodeURIComponent(id)}/role`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role }),
     }),
 }

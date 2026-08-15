@@ -14,6 +14,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -24,6 +25,7 @@ import (
 	"github.com/wncservices/domestique/apps/api/internal/accounts"
 	"github.com/wncservices/domestique/apps/api/internal/api"
 	"github.com/wncservices/domestique/apps/api/internal/auth"
+	"github.com/wncservices/domestique/apps/api/internal/auth0mgmt"
 	"github.com/wncservices/domestique/apps/api/internal/config"
 	"github.com/wncservices/domestique/apps/api/internal/fitcourse"
 	"github.com/wncservices/domestique/apps/api/internal/garmin"
@@ -263,6 +265,18 @@ func runFIT(src *source.DB, args []string, out string, cues bool) error {
 	}
 	fmt.Println(")")
 	return nil
+}
+
+// managementDomain pulls the bare host out of an OIDC issuer URL —
+// auth0mgmt.Config.Domain carries no scheme, the same convention
+// auth.OIDCConfig.Issuer itself does not follow (it is a full URL, since
+// discovery needs one), so this is the one place the two conventions meet.
+func managementDomain(issuer string) (string, error) {
+	u, err := url.Parse(issuer)
+	if err != nil || u.Host == "" {
+		return "", fmt.Errorf("not a valid URL: %q", issuer)
+	}
+	return u.Host, nil
 }
 
 // komootClient logs in using the environment. Credentials never come from the
@@ -690,6 +704,34 @@ func runServe(src *source.DB, cfg *config.Config, store state.Store, addr, webDi
 		}
 		srv.OIDC = flow
 		log.Info("oidc discovery complete", "issuer", oidcCfg.Issuer)
+
+		// The admin People page — optional, same shape as Komoot/Garmin's
+		// own credentials: absent means the page reports "not configured"
+		// rather than failing startup, since inviting people is not core to
+		// serving routes the way the sign-in flow above is. Only reachable
+		// under mode oidc in the first place: SendInviteEmail and the
+		// Management API token exchange both need this issuer and this
+		// client, neither of which mode proxy's own auth block populates.
+		mgmtClientID := os.Getenv("DOMESTIQUE_AUTH0_MGMT_CLIENT_ID")
+		mgmtClientSecret := os.Getenv("DOMESTIQUE_AUTH0_MGMT_CLIENT_SECRET")
+		switch {
+		case mgmtClientID == "" || mgmtClientSecret == "":
+			log.Info("no auth0 management api credentials in the environment",
+				"hint", "an admin can invite riders once DOMESTIQUE_AUTH0_MGMT_CLIENT_ID and "+
+					"DOMESTIQUE_AUTH0_MGMT_CLIENT_SECRET are set")
+		default:
+			domain, err := managementDomain(oidcCfg.Issuer)
+			if err != nil {
+				return fmt.Errorf("deriving the management api domain from auth.oidc.issuer: %w", err)
+			}
+			srv.People = auth0mgmt.New(auth0mgmt.Config{
+				Domain:         domain,
+				ClientID:       mgmtClientID,
+				ClientSecret:   mgmtClientSecret,
+				SignInClientID: oidcCfg.ClientID,
+			})
+			log.Info("auth0 management api access configured", "domain", domain)
+		}
 	}
 
 	// Garmin needs no config of its own: a rider signs in from the UI, and the

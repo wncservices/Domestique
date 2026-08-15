@@ -1,0 +1,470 @@
+// Package auth0mgmt is a minimal client for the three things the admin
+// People page needs from Auth0's Management API: list who has access,
+// invite a new rider, and change which roles someone holds.
+//
+// Deliberately not a general-purpose Auth0 SDK. Auth0's Management API is
+// real, versioned, and documented — unlike Garmin's or Komoot's, there is
+// a spec here, which is why this is hand-rolled with net/http rather than
+// reached for as an excuse to add a dependency: three endpoints and a
+// client_credentials token exchange do not need one.
+//
+// The invite email itself is not sent from here. It goes out through the
+// public, unauthenticated Authentication API endpoint
+// /dbconnections/change_password (see SendInviteEmail) — Auth0's own
+// "reset your password" flow, reused as an invite: the account already
+// exists with no usable password, so completing that flow *is* accepting
+// the invite. That call needs no Management API token and no scope, which
+// is why SignInClientID (Domestique's own regular_web OIDC client) is
+// separate from ClientID/ClientSecret (the narrowly-scoped M2M app) in
+// Config below — they authenticate to two different APIs.
+package auth0mgmt
+
+import (
+	"bytes"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
+	"sync"
+	"time"
+)
+
+const (
+	defaultTimeout = 20 * time.Second
+	maxBody        = 4 << 20
+
+	// tokenSafetyMargin is subtracted from a fetched token's own expiry, so
+	// a token already borderline stale by the time a request actually goes
+	// out is refreshed rather than sent and rejected.
+	tokenSafetyMargin = 30 * time.Second
+)
+
+// Config points the client at one tenant. Domain carries no scheme — the
+// client adds https:// itself, the same way it is stored in
+// auth.OIDCConfig.Issuer stripped of its own scheme+slash by the caller.
+type Config struct {
+	Domain         string
+	ClientID       string
+	ClientSecret   string
+	SignInClientID string
+}
+
+// Person is one rider (or admin, or someone gated out of everything but
+// still holding the account) as the People page shows them.
+type Person struct {
+	UserID    string
+	Email     string
+	Name      string
+	Roles     []string
+	CreatedAt time.Time
+	LastLogin time.Time
+}
+
+// Client talks to one Auth0 tenant's Management API.
+type Client struct {
+	cfg  Config
+	http *http.Client
+
+	mu          sync.Mutex
+	token       string
+	tokenExpiry time.Time
+	roleIDs     map[string]string // role name -> role id, resolved once and kept
+}
+
+// New builds a client. It makes no network call itself — the first real
+// request is what proves the credentials work, the same way garmin.New and
+// komoot.New defer their own first call.
+func New(cfg Config) *Client {
+	return &Client{
+		cfg:     cfg,
+		http:    &http.Client{Timeout: defaultTimeout},
+		roleIDs: map[string]string{},
+	}
+}
+
+// baseURL is https://Domain, unless Domain already carries a scheme — which
+// only ever happens in this package's own tests, pointed at a plain-http
+// httptest.Server. A real tenant's domain never does.
+func (c *Client) baseURL() string {
+	if strings.HasPrefix(c.cfg.Domain, "http://") || strings.HasPrefix(c.cfg.Domain, "https://") {
+		return strings.TrimSuffix(c.cfg.Domain, "/")
+	}
+	return "https://" + c.cfg.Domain
+}
+
+// accessToken returns a valid Management API bearer, fetching or refreshing
+// one as needed. Guarded by c.mu so concurrent callers (the People page can
+// legitimately fire off ListPeople for three roles at once) share one token
+// exchange rather than each doing their own.
+func (c *Client) accessToken() (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.token != "" && time.Now().Before(c.tokenExpiry) {
+		return c.token, nil
+	}
+
+	body, err := json.Marshal(map[string]string{
+		"client_id":     c.cfg.ClientID,
+		"client_secret": c.cfg.ClientSecret,
+		"audience":      c.baseURL() + "/api/v2/",
+		"grant_type":    "client_credentials",
+	})
+	if err != nil {
+		return "", err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, c.baseURL()+"/oauth/token", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	raw, status, err := c.doRaw(req)
+	if err != nil {
+		return "", err
+	}
+	if status >= 300 {
+		return "", fmt.Errorf("auth0mgmt: token exchange returned %d: %s", status, snippet(raw))
+	}
+
+	var token struct {
+		AccessToken string `json:"access_token"`
+		ExpiresIn   int    `json:"expires_in"`
+	}
+	if err := json.Unmarshal(raw, &token); err != nil || token.AccessToken == "" {
+		return "", fmt.Errorf("auth0mgmt: unreadable token response: %s", snippet(raw))
+	}
+
+	c.token = token.AccessToken
+	c.tokenExpiry = time.Now().Add(time.Duration(token.ExpiresIn)*time.Second - tokenSafetyMargin)
+	return c.token, nil
+}
+
+// do makes an authenticated Management API request and decodes a JSON
+// response into out (nil to discard the body, for a 204 No Content call).
+func (c *Client) do(method, path string, body any, out any) error {
+	token, err := c.accessToken()
+	if err != nil {
+		return err
+	}
+
+	var reader io.Reader
+	if body != nil {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		reader = bytes.NewReader(raw)
+	}
+
+	req, err := http.NewRequest(method, c.baseURL()+path, reader)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	raw, status, err := c.doRaw(req)
+	if err != nil {
+		return err
+	}
+	if status >= 300 {
+		return apiError(status, raw)
+	}
+	if out == nil || len(raw) == 0 {
+		return nil
+	}
+	if err := json.Unmarshal(raw, out); err != nil {
+		return fmt.Errorf("auth0mgmt: unreadable response from %s: %s", path, snippet(raw))
+	}
+	return nil
+}
+
+func (c *Client) doRaw(req *http.Request) ([]byte, int, error) {
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxBody))
+	if err != nil {
+		return nil, resp.StatusCode, err
+	}
+	return raw, resp.StatusCode, nil
+}
+
+// apiError turns a Management API error response into something readable.
+// The shape ({"statusCode", "error", "message", "errorCode"}) is documented
+// and consistent across every endpoint here, unlike Garmin's, so this is
+// worth a real parse rather than a snippet of raw JSON.
+func apiError(status int, raw []byte) error {
+	var body struct {
+		Message   string `json:"message"`
+		ErrorCode string `json:"errorCode"`
+	}
+	if err := json.Unmarshal(raw, &body); err == nil && body.Message != "" {
+		if body.ErrorCode != "" {
+			return fmt.Errorf("auth0mgmt: %s (%s)", body.Message, body.ErrorCode)
+		}
+		return errors.New("auth0mgmt: " + body.Message)
+	}
+	return fmt.Errorf("auth0mgmt: request returned %d: %s", status, snippet(raw))
+}
+
+func snippet(raw []byte) string {
+	const limit = 300
+	text := strings.TrimSpace(string(raw))
+	if len(text) > limit {
+		return text[:limit] + "…"
+	}
+	return text
+}
+
+// roleID resolves a role's name to its id, the one thing every role-scoped
+// call here needs and nothing else offers a shortcut for. Resolved once per
+// name and kept — a role is renamed by a human, rarely enough that this
+// process's lifetime is a perfectly good cache horizon.
+func (c *Client) roleID(name string) (string, error) {
+	c.mu.Lock()
+	if id, ok := c.roleIDs[name]; ok {
+		c.mu.Unlock()
+		return id, nil
+	}
+	c.mu.Unlock()
+
+	var roles []struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	if err := c.do(http.MethodGet,
+		"/api/v2/roles?name_filter="+url.QueryEscape(name), nil, &roles); err != nil {
+		return "", err
+	}
+	for _, r := range roles {
+		if r.Name == name {
+			c.mu.Lock()
+			c.roleIDs[name] = r.ID
+			c.mu.Unlock()
+			return r.ID, nil
+		}
+	}
+	return "", fmt.Errorf("auth0mgmt: no role named %q on this tenant", name)
+}
+
+// roleUser is the shape a role's member list comes back as. Confirmed
+// against Auth0's documented standard User object for user_id/email/name/
+// created_at/last_login — every user-listing endpoint on this API shares
+// that shape — but this specific endpoint's exact field set has not been
+// exercised against a real tenant yet. Unknown fields are ignored and
+// missing ones simply zero-value, which is why this is safe to ship ahead
+// of that confirmation rather than something that could corrupt data if
+// wrong — worst case a listing shows a blank name, not a bad write.
+type roleUser struct {
+	UserID    string `json:"user_id"`
+	Email     string `json:"email"`
+	Name      string `json:"name"`
+	CreatedAt string `json:"created_at"`
+	LastLogin string `json:"last_login"`
+}
+
+func parseTime(s string) time.Time {
+	t, _ := time.Parse(time.RFC3339, s)
+	return t
+}
+
+// ListPeople lists everyone in gateRole (the "allowed in at all" role —
+// domestique-users, in this deployment), each annotated with which of the
+// other named roles they also hold. adminRole/riderRole name the two
+// permission-level roles this app actually offers a choice between; any
+// other role a person holds on the tenant for unrelated reasons is not this
+// page's business and is not reported.
+func (c *Client) ListPeople(gateRole string, permissionRoles ...string) ([]Person, error) {
+	gateID, err := c.roleID(gateRole)
+	if err != nil {
+		return nil, err
+	}
+	var gateMembers []roleUser
+	if err := c.do(http.MethodGet, "/api/v2/roles/"+gateID+"/users", nil, &gateMembers); err != nil {
+		return nil, fmt.Errorf("listing %s: %w", gateRole, err)
+	}
+
+	// memberOf[userID] accumulates every permission role a gate member also
+	// holds — built from separate per-role membership lists rather than one
+	// roles-lookup per person, so this stays a handful of requests
+	// regardless of how many people are on the tenant.
+	memberOf := map[string][]string{}
+	for _, roleName := range permissionRoles {
+		roleID, err := c.roleID(roleName)
+		if err != nil {
+			return nil, err
+		}
+		var members []roleUser
+		if err := c.do(http.MethodGet, "/api/v2/roles/"+roleID+"/users", nil, &members); err != nil {
+			return nil, fmt.Errorf("listing %s: %w", roleName, err)
+		}
+		for _, m := range members {
+			memberOf[m.UserID] = append(memberOf[m.UserID], roleName)
+		}
+	}
+
+	out := make([]Person, 0, len(gateMembers))
+	for _, m := range gateMembers {
+		out = append(out, Person{
+			UserID:    m.UserID,
+			Email:     m.Email,
+			Name:      m.Name,
+			Roles:     memberOf[m.UserID],
+			CreatedAt: parseTime(m.CreatedAt),
+			LastLogin: parseTime(m.LastLogin),
+		})
+	}
+	return out, nil
+}
+
+// randomPassword satisfies Auth0's create-user requirement for one, even
+// though nobody will ever type it: SendInviteEmail is what actually gets
+// this account its first real password, through Auth0's own reset flow.
+// Same shape as sessions.newToken and oidcflow.randomString — each package
+// here keeps its own copy of this rather than sharing one, on purpose; see
+// either of theirs for why.
+func randomPassword() (string, error) {
+	buf := make([]byte, 24)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("auth0mgmt: generating a password: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(buf), nil
+}
+
+// Invite creates a new Auth0 user and grants the named roles (the gate role
+// plus whichever permission role an admin picked). It does not send the
+// invite email itself — call SendInviteEmail with the result, kept as two
+// steps because the second one is a different API with no scope of its own
+// and a caller may reasonably want to retry it independently of the first.
+func (c *Client) Invite(email, name string, roleNames []string) (Person, error) {
+	password, err := randomPassword()
+	if err != nil {
+		return Person{}, err
+	}
+
+	var created struct {
+		UserID string `json:"user_id"`
+		Email  string `json:"email"`
+		Name   string `json:"name"`
+	}
+	if err := c.do(http.MethodPost, "/api/v2/users", map[string]any{
+		"connection":     "Username-Password-Authentication",
+		"email":          email,
+		"name":           name,
+		"password":       password,
+		"email_verified": false,
+	}, &created); err != nil {
+		return Person{}, fmt.Errorf("creating the account: %w", err)
+	}
+
+	if err := c.SetRoles(created.UserID, roleNames); err != nil {
+		return Person{}, fmt.Errorf("account created but granting access failed: %w", err)
+	}
+
+	return Person{UserID: created.UserID, Email: created.Email, Name: created.Name, Roles: roleNames}, nil
+}
+
+// SetRoles makes userID's role membership exactly want — granting whatever
+// is missing, revoking whatever is present but not wanted. current is read
+// fresh rather than trusted from a caller's stale copy of the page.
+func (c *Client) SetRoles(userID string, want []string) error {
+	var current []struct {
+		ID string `json:"id"`
+	}
+	if err := c.do(http.MethodGet, "/api/v2/users/"+url.PathEscape(userID)+"/roles", nil, &current); err != nil {
+		return fmt.Errorf("reading current roles: %w", err)
+	}
+	currentIDs := make(map[string]bool, len(current))
+	for _, r := range current {
+		currentIDs[r.ID] = true
+	}
+
+	wantIDs := make(map[string]bool, len(want))
+	for _, name := range want {
+		id, err := c.roleID(name)
+		if err != nil {
+			return err
+		}
+		wantIDs[id] = true
+	}
+
+	var toGrant, toRevoke []string
+	for id := range wantIDs {
+		if !currentIDs[id] {
+			toGrant = append(toGrant, id)
+		}
+	}
+	for id := range currentIDs {
+		if !wantIDs[id] {
+			toRevoke = append(toRevoke, id)
+		}
+	}
+
+	if len(toGrant) > 0 {
+		if err := c.do(http.MethodPost, "/api/v2/users/"+url.PathEscape(userID)+"/roles",
+			map[string]any{"roles": toGrant}, nil); err != nil {
+			return fmt.Errorf("granting roles: %w", err)
+		}
+	}
+	if len(toRevoke) > 0 {
+		if err := c.doWithBody(http.MethodDelete, "/api/v2/users/"+url.PathEscape(userID)+"/roles",
+			map[string]any{"roles": toRevoke}); err != nil {
+			return fmt.Errorf("revoking roles: %w", err)
+		}
+	}
+	return nil
+}
+
+// doWithBody is do, for the one call here (DELETE .../roles) that carries a
+// body on a method net/http's client sends fine but c.do's signature does
+// not otherwise need to distinguish from a bodyless GET/DELETE.
+func (c *Client) doWithBody(method, path string, body any) error {
+	return c.do(method, path, body, nil)
+}
+
+// SendInviteEmail triggers Auth0's own "reset your password" flow for
+// email — the public, unauthenticated Authentication API endpoint every
+// rider's own "forgot password" link already uses on the real login page,
+// reused here as the invite: an account that has never had a usable
+// password and one that has forgotten its password complete the identical
+// flow. No Management API token, no scope — this call authenticates with
+// nothing but SignInClientID, Domestique's own regular_web OIDC client.
+func (c *Client) SendInviteEmail(email string) error {
+	body, err := json.Marshal(map[string]string{
+		"client_id":  c.cfg.SignInClientID,
+		"email":      email,
+		"connection": "Username-Password-Authentication",
+	})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequest(http.MethodPost, c.baseURL()+"/dbconnections/change_password", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	raw, status, err := c.doRaw(req)
+	if err != nil {
+		return err
+	}
+	if status >= 300 {
+		// Not JSON on this endpoint — a plain confirmation sentence on
+		// success, and on failure whatever Auth0's own error page says.
+		return fmt.Errorf("auth0mgmt: invite email request returned %d: %s", status, snippet(raw))
+	}
+	return nil
+}

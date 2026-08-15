@@ -45,6 +45,7 @@ export type Permission =
   | 'komoot:import'
   | 'garmin:sync'
   | 'accounts:manage'
+  | 'people:manage'
 
 export interface Me {
   /** Whether *this* request is signed in — not whether the deployment has
@@ -111,6 +112,30 @@ export interface GarminCourseImportResult {
 export interface GarminDuplicateGroup {
   name: string
   courses: GarminCourse[]
+}
+
+/** The three roles this page actually offers a choice between — Role also
+ *  has 'none', which is not something anyone is invited or set as. */
+export type AssignableRole = 'admin' | 'rider' | 'viewer'
+
+/** Someone with access to this deployment — the admin People page. Always
+ *  holds at least the gate role, so role here is never 'none' the way the
+ *  broader Role type otherwise allows. */
+export interface Person {
+  id: string
+  email: string
+  name: string
+  /** The role this person actually resolves to — the same computation
+   *  Identify runs at sign-in, not just whatever Auth0 roles are assigned. */
+  role: AssignableRole
+  createdAt?: string
+  lastLogin?: string
+}
+
+export interface InvitePersonRequest {
+  email: string
+  name?: string
+  role: AssignableRole
 }
 
 export interface AppConfig {
