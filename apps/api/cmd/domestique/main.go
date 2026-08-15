@@ -55,7 +55,8 @@ commands:
   fit           export a route as a Garmin FIT course
   serve         run the HTTP API and the web UI
   rename-rider  move one rider's routes, accounts and sign-ins to a new identity
-                (see docs/rider-migration.md before running this for real)
+                (see docs/rider-migration.md before running this for real;
+                --replace resolves a conflict by keeping the old rider's row)
   keygen        print a new DOMESTIQUE_ENCRYPTION_KEY
   version       print the version
 
@@ -109,6 +110,8 @@ func run(args []string) error {
 	configPath := fs.String("config", "domestique.yaml", "app config file")
 	dsn := fs.String("db", "", "PostgreSQL URL or SQLite file path")
 	dryRun := fs.Bool("dry-run", false, "print what push would do without doing it")
+	replace := fs.Bool("replace", false,
+		"rename-rider: on conflict, delete the new rider's existing row and let the old rider's take its place")
 	addr := fs.String("addr", ":8080", "listen address for serve")
 	webDir := fs.String("web-dir", filepath.Join("apps", "web", "dist"), "built frontend to serve")
 	from := fs.String("from", "", "directory of GPX routes to import")
@@ -185,7 +188,7 @@ func run(args []string) error {
 	case "fit":
 		return runFIT(src, positional, *out, *cues)
 	case "rename-rider":
-		return runRenameRider(src, positional, *dryRun)
+		return runRenameRider(src, positional, *dryRun, *replace)
 	}
 	return nil
 }
