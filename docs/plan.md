@@ -145,7 +145,7 @@ test can establish that a real head unit accepts the file.
 | 3 | Garmin push, course import, de-duplication | ✅ |
 | 4 | Wahoo push | ⬜ stub, **blocked** on API access |
 | 5 | Deploy: Helm chart ✅, ArgoCD ✅, `mode: oidc` (Auth0 + Google) ✅, admin People page ✅, Vault-backed credentials ✅, scheduled reconcile ⬜ | 🟡 |
-| 6 | Metrics and staleness alerting | ⬜ |
+| 6 | Metrics (`/api/metrics`, push success/failure per account) ✅, `ServiceMonitor` + alert rules ⬜ | 🟡 |
 
 ### Phase 3 — Garmin
 
@@ -202,9 +202,18 @@ Specifics this app needs:
 ### Phase 6 — knowing it still works
 
 The failure mode that matters is silence: a token expires, pushes stop, and
-nobody notices until a route is missing at the start of a ride. A
-`last_successful_push` timestamp with an alert on staleness catches that; a
-per-target error counter says which half broke.
+nobody notices until a route is missing at the start of a ride. Built:
+`GET /api/metrics` (`internal/api/metrics.go`, `prometheus/client_golang`,
+exempted from auth the same way `/api/health`/`/api/config` already are —
+a scraper has no rider identity to present), a
+`domestique_push_last_success_timestamp_seconds` gauge and a
+`domestique_push_errors_total` counter, both labeled by account and op
+(create/update/delete), recorded via a callback `internal/sync.Apply` calls
+per changed item — the diff engine itself stays pure and unaware metrics
+exist at all, per its own package doc. Not yet built: the chart's
+`ServiceMonitor` to actually scrape it (gated, `domestique-chart`, follow-up
+PR) and the alert rule that turns staleness into a notification rather than
+a number nobody is looking at.
 
 ## Appendix: the provider research
 

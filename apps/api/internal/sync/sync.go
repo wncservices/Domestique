@@ -79,19 +79,34 @@ func BuildPlan(routes []model.Route, linked []model.Account, store state.Store) 
 
 // Apply executes a plan. It returns per-item failures; one bad route never
 // aborts the run, because the other rider's routes should still go out.
-func Apply(plan model.Plan, store state.Store, byAccount map[string]targets.Target) []error {
+//
+// onResult, if non-nil, is called once per changed item — success (err ==
+// nil) or failure — after that item is fully processed. This is the seam
+// observability hooks into (the API server's own push metrics, notably)
+// without this package importing anything about metrics itself: it stays
+// exactly what its own doc says, pure, given routes/state/targets, nothing
+// else. Pass nil where nothing needs it, the CLI push command among them.
+func Apply(plan model.Plan, store state.Store, byAccount map[string]targets.Target, onResult func(item model.PlanItem, err error)) []error {
 	var failures []error
 
 	for _, item := range plan.Changes() {
 		target, ok := byAccount[item.AccountID]
 		if !ok {
-			failures = append(failures, fmt.Errorf("%s: no configured target adapter", item.AccountID))
+			err := fmt.Errorf("%s: no configured target adapter", item.AccountID)
+			failures = append(failures, err)
+			if onResult != nil {
+				onResult(item, err)
+			}
 			continue
 		}
 
-		if err := applyOne(item, store, target); err != nil {
-			failures = append(failures, fmt.Errorf("%s %s: %s failed: %w",
-				item.AccountID, item.Slug, item.Op, err))
+		err := applyOne(item, store, target)
+		if err != nil {
+			err = fmt.Errorf("%s %s: %s failed: %w", item.AccountID, item.Slug, item.Op, err)
+			failures = append(failures, err)
+		}
+		if onResult != nil {
+			onResult(item, err)
 		}
 	}
 

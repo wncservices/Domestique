@@ -75,7 +75,7 @@ func TestApplyCreatesAndRecordsState(t *testing.T) {
 		Route: &model.Route{RouteMeta: model.RouteMeta{Name: "Loop"}, Slug: "loop", ContentHash: "v1"},
 	}}}
 
-	if failures := Apply(plan, store, map[string]targets.Target{"garmin:one": target}); len(failures) != 0 {
+	if failures := Apply(plan, store, map[string]targets.Target{"garmin:one": target}, nil); len(failures) != 0 {
 		t.Fatalf("failures: %v", failures)
 	}
 
@@ -100,7 +100,7 @@ func TestApplyUpdateKeepsRemoteID(t *testing.T) {
 		Route:    &model.Route{RouteMeta: model.RouteMeta{Name: "Loop"}, Slug: "loop", ContentHash: "v2"},
 	}}}
 
-	if failures := Apply(plan, store, map[string]targets.Target{"garmin:one": target}); len(failures) != 0 {
+	if failures := Apply(plan, store, map[string]targets.Target{"garmin:one": target}, nil); len(failures) != 0 {
 		t.Fatalf("failures: %v", failures)
 	}
 
@@ -125,7 +125,7 @@ func TestApplyDeleteForgetsState(t *testing.T) {
 		Op: model.OpDelete, AccountID: "garmin:one", Slug: "loop", RemoteID: "remote-abc",
 	}}}
 
-	if failures := Apply(plan, store, map[string]targets.Target{"garmin:one": target}); len(failures) != 0 {
+	if failures := Apply(plan, store, map[string]targets.Target{"garmin:one": target}, nil); len(failures) != 0 {
 		t.Fatalf("failures: %v", failures)
 	}
 	if len(target.deletes) != 1 {
@@ -150,7 +150,7 @@ func TestApplyIsolatesFailures(t *testing.T) {
 	failures := Apply(plan, store, map[string]targets.Target{
 		"garmin:one": healthy,
 		"wahoo:two":  broken,
-	})
+	}, nil)
 
 	if len(failures) != 1 {
 		t.Fatalf("failures = %v, want exactly one", failures)
@@ -172,9 +172,52 @@ func TestApplyReportsMissingAdapter(t *testing.T) {
 		Op: model.OpCreate, AccountID: "garmin:ghost", Slug: "loop", Route: ptr(route("loop", "v1")),
 	}}}
 
-	failures := Apply(plan, store, map[string]targets.Target{})
+	failures := Apply(plan, store, map[string]targets.Target{}, nil)
 	if len(failures) != 1 || !strings.Contains(failures[0].Error(), "garmin:ghost") {
 		t.Errorf("failures = %v, want one naming the account", failures)
+	}
+}
+
+// onResult is the seam handlePush's own push metrics hook into — prove it
+// actually fires, with the right item and the right error (nil on success),
+// rather than only proving that passing nil elsewhere does not break.
+func TestApplyCallsOnResultForEveryChange(t *testing.T) {
+	store := newStore(t)
+	healthy := &fakeTarget{}
+	broken := &fakeTarget{err: errors.New("provider exploded")}
+
+	plan := model.Plan{Items: []model.PlanItem{
+		{Op: model.OpCreate, AccountID: "garmin:one", Slug: "loop", Route: ptr(route("loop", "v1"))},
+		{Op: model.OpCreate, AccountID: "wahoo:two", Slug: "loop", Route: ptr(route("loop", "v1"))},
+		{Op: model.OpNoop, AccountID: "garmin:one", Slug: "unrelated", Route: ptr(route("unrelated", "v1"))},
+	}}
+
+	type call struct {
+		accountID string
+		op        model.Op
+		failed    bool
+	}
+	var calls []call
+	onResult := func(item model.PlanItem, err error) {
+		calls = append(calls, call{item.AccountID, item.Op, err != nil})
+	}
+
+	Apply(plan, store, map[string]targets.Target{
+		"garmin:one": healthy,
+		"wahoo:two":  broken,
+	}, onResult)
+
+	// Noop is excluded from plan.Changes() itself (BuildPlan's own job, not
+	// Apply's) — plan.Changes() here already only carries the two creates,
+	// so exactly two calls, not three.
+	if len(calls) != 2 {
+		t.Fatalf("onResult calls = %+v, want exactly 2 (the noop item is not a change)", calls)
+	}
+	if calls[0] != (call{"garmin:one", model.OpCreate, false}) {
+		t.Errorf("first call = %+v, want the healthy account reported as a success", calls[0])
+	}
+	if calls[1] != (call{"wahoo:two", model.OpCreate, true}) {
+		t.Errorf("second call = %+v, want the broken account reported as a failure", calls[1])
 	}
 }
 
@@ -184,7 +227,7 @@ func TestApplySkipsNoops(t *testing.T) {
 		Op: model.OpNoop, AccountID: "garmin:one", Slug: "loop", Route: ptr(route("loop", "v1")),
 	}}}
 
-	if failures := Apply(plan, store, map[string]targets.Target{"garmin:one": target}); len(failures) != 0 {
+	if failures := Apply(plan, store, map[string]targets.Target{"garmin:one": target}, nil); len(failures) != 0 {
 		t.Fatalf("failures: %v", failures)
 	}
 	if len(target.creates)+len(target.updates)+len(target.deletes) != 0 {

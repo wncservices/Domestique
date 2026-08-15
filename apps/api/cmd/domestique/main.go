@@ -493,7 +493,7 @@ func runPush(src *source.DB, linked []model.Account, store state.Store, dryRun b
 		byAccount[account.ID] = target
 	}
 
-	failures := sync.Apply(plan, store, byAccount)
+	failures := sync.Apply(plan, store, byAccount, nil)
 	if err := reportProblems(problems); err != nil {
 		return err
 	}
