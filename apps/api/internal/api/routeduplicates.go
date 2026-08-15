@@ -1,0 +1,94 @@
+package api
+
+import (
+	"math"
+	"net/http"
+	"strings"
+
+	"github.com/wncservices/domestique/apps/api/internal/auth"
+	"github.com/wncservices/domestique/apps/api/internal/model"
+)
+
+// routeDuplicateToleranceM is how close two routes' distances have to be to
+// count as the same real ride, imported more than once.
+const routeDuplicateToleranceM = 100
+
+type routeDuplicateGroupDTO struct {
+	Name   string     `json:"name"`
+	Routes []routeDTO `json:"routes"`
+}
+
+// handleRouteDuplicates groups library routes that look like repeated
+// imports of the same real ride — the shape a rider actually hits when
+// Garmin sync-back (or a Komoot import, or a plain re-upload) runs more
+// than once against the same source. Cross-rider by nature (the same route
+// can turn up uploaded by two different identities, exactly what this
+// deployment's own history produced), so this is admin-scoped rather than
+// "my own routes" the way most of this file's other handlers are.
+func (s *Server) handleRouteDuplicates(w http.ResponseWriter, r *http.Request) {
+	if !s.require(w, r, auth.PermEditAny) {
+		return
+	}
+
+	routes, _, err := s.Source.List()
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	linked, ok := s.linkedAccounts(w)
+	if !ok {
+		return
+	}
+
+	writeJSON(w, http.StatusOK, groupDuplicateRoutes(routes, func(rt model.Route) routeDTO {
+		return s.toRouteDTO(rt, linked)
+	}))
+}
+
+// groupDuplicateRoutes groups routes sharing a name (case-insensitive,
+// trimmed) and a distance within routeDuplicateToleranceM of each other,
+// returning only groups with more than one member — same shape and same
+// reasoning as garmincourses.go's groupDuplicateCourses: content_hash alone
+// would miss it, since Garmin re-encodes a GPX slightly differently on
+// every download, so the same real ride imported twice from Garmin does not
+// reliably hash the same even though its name and distance do. Compared
+// against each group's own anchor distance, not an independently-rounded
+// bucket, for the identical reason groupDuplicateCourses does — see its own
+// comment.
+func groupDuplicateRoutes(routes []model.Route, toDTO func(model.Route) routeDTO) []routeDuplicateGroupDTO {
+	type group struct {
+		name    string
+		anchor  float64
+		members []model.Route
+	}
+
+	var groups []*group
+	for _, rt := range routes {
+		name := strings.ToLower(strings.TrimSpace(rt.Name))
+		var target *group
+		for _, g := range groups {
+			if g.name == name && math.Abs(g.anchor-rt.Stats.DistanceM) <= routeDuplicateToleranceM {
+				target = g
+				break
+			}
+		}
+		if target == nil {
+			target = &group{name: name, anchor: rt.Stats.DistanceM}
+			groups = append(groups, target)
+		}
+		target.members = append(target.members, rt)
+	}
+
+	out := make([]routeDuplicateGroupDTO, 0)
+	for _, g := range groups {
+		if len(g.members) < 2 {
+			continue
+		}
+		dto := routeDuplicateGroupDTO{Name: g.members[0].Name}
+		for _, rt := range g.members {
+			dto.Routes = append(dto.Routes, toDTO(rt))
+		}
+		out = append(out, dto)
+	}
+	return out
+}

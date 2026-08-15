@@ -19,6 +19,7 @@ import type {
   PlanResponse,
   PushResponse,
   Route,
+  RouteDuplicateGroup,
   TrackResponse,
   UploadRequest,
 } from './types'
@@ -188,6 +189,8 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ targets }),
     }),
+
+  routeDuplicates: () => request<RouteDuplicateGroup[]>('/api/routes/duplicates'),
 
   people: () => request<Person[]>('/api/people'),
   invitePerson: (req: InvitePersonRequest) =>

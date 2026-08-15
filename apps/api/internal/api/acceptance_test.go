@@ -403,6 +403,33 @@ func TestAccountsEndpointFlagsPossibleDuplicatesByMatchingLabel(t *testing.T) {
 	}
 }
 
+// The real, end-to-end wiring for the grouping logic
+// routeduplicates_test.go proves in isolation: two uploads of the same GPX
+// under the same name (what a repeated Garmin sync-back import produces)
+// come back grouped; a route with nothing repeating it does not appear at
+// all.
+func TestRouteDuplicatesEndpointGroupsRepeatedImports(t *testing.T) {
+	h := newHarness(t)
+	h.uploadExample("Kemmelberg Loop")
+	h.uploadExample("Kemmelberg Loop")
+	h.uploadExample("Solo Ride")
+
+	resp := h.get("/api/routes/duplicates")
+	h.expectStatus(resp, http.StatusOK)
+
+	var groups []struct {
+		Name   string     `json:"name"`
+		Routes []routeDTO `json:"routes"`
+	}
+	h.decode(resp, &groups)
+	if len(groups) != 1 {
+		t.Fatalf("groups = %+v, want exactly one", groups)
+	}
+	if groups[0].Name != "Kemmelberg Loop" || len(groups[0].Routes) != 2 {
+		t.Errorf("group = %+v, want the two Kemmelberg Loop uploads", groups[0])
+	}
+}
+
 func TestRoutesEndpointOnEmptyDatabase(t *testing.T) {
 	h := newHarness(t)
 	resp := h.get("/api/routes")
