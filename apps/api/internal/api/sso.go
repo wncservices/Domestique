@@ -233,16 +233,24 @@ func (s *Server) handleSSOLogout(w http.ResponseWriter, r *http.Request) {
 
 // identityFromToken builds an Identity from a verified ID token's claims.
 //
-// User is preferred_username, falling back to nickname, falling back to sub.
-// Auth0's database connection never populates preferred_username, but does
-// send nickname (defaults to the local part of the email, editable per-user
-// in the Auth0 dashboard) whenever the "profile" scope is requested — so for
-// that issuer this is the readable rider identity, and sub (shaped like
+// User is preferred_username, falling back to name, falling back to
+// nickname, falling back to sub. Auth0's database connection never
+// populates preferred_username, but does send both name and nickname
+// (nickname auto-defaults to the local part of the email; name defaults to
+// the same thing but, unlike nickname, is what the Auth0 dashboard's own
+// user page prompts an admin to edit) whenever the "profile" scope is
+// requested. name is tried first, ahead of nickname, on the theory that a
+// value someone deliberately typed into a "Name" field is a better rider
+// identity than one nobody has ever looked at — confirmed against a real
+// case, not a guess: a nickname left at its auto-generated default
+// ("wilant.nackaerts") split what should have been one rider into two,
+// where the same person's already-edited name ("Wilant") matched an
+// existing rider exactly, once lower-cased. sub (shaped like
 // "auth0|64f2a1b2c3d4e5f6") is only the fallback for an issuer that sends
-// neither. nickname is skipped, not just lower-cased, if it does not survive
-// RiderPattern (an OIDC nickname can contain spaces or other characters an
-// account id and a URL cannot) — falling through to sub rather than handing
-// Link a value it will reject one step later.
+// none of the three. Each candidate is skipped, not just lower-cased, if it
+// does not survive RiderPattern (an OIDC name or nickname can contain
+// spaces or other characters an account id and a URL cannot) — falling
+// through rather than handing Link a value it will reject one step later.
 func (s *Server) identityFromToken(idToken *oidc.IDToken) (auth.Identity, error) {
 	var claims map[string]any
 	if err := idToken.Claims(&claims); err != nil {
@@ -250,16 +258,19 @@ func (s *Server) identityFromToken(idToken *oidc.IDToken) (auth.Identity, error)
 	}
 
 	user := strings.ToLower(strings.TrimSpace(stringClaim(claims, "preferred_username")))
-	if user == "" {
-		if nickname := strings.ToLower(strings.TrimSpace(stringClaim(claims, "nickname"))); accounts.RiderPattern.MatchString(nickname) {
-			user = nickname
+	for _, claim := range []string{"name", "nickname"} {
+		if user != "" {
+			break
+		}
+		if candidate := strings.ToLower(strings.TrimSpace(stringClaim(claims, claim))); accounts.RiderPattern.MatchString(candidate) {
+			user = candidate
 		}
 	}
 	if user == "" {
 		user = strings.ToLower(strings.TrimSpace(idToken.Subject))
 	}
 	if user == "" {
-		return auth.Identity{}, errors.New("neither preferred_username, nickname nor sub was present")
+		return auth.Identity{}, errors.New("neither preferred_username, name, nickname nor sub was present")
 	}
 
 	// Absent groups claim is not an error — every issuer that sends none
