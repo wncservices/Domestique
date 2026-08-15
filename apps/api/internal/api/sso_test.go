@@ -368,6 +368,43 @@ func TestSSOCallbackSkipsAnIllegalNicknameAndFallsBackToSub(t *testing.T) {
 	}
 }
 
+// The real case this was found against: a nickname left at Auth0's
+// auto-generated default doesn't match an already-established rider, while
+// name — the field the Auth0 dashboard's own user page prompts an admin to
+// edit — does, once lower-cased. name has to win, or the nickname keeps
+// splitting the same person into two riders every time they sign in.
+func TestSSOCallbackPrefersNameOverNickname(t *testing.T) {
+	h := newSSOHarness(t)
+	callback := h.loginWithUser([]string{"cyclists"}, map[string]any{
+		"name": "Wilant", "nickname": "wilant.nackaerts",
+	})
+
+	if callback.StatusCode != http.StatusFound {
+		t.Fatalf("callback status = %d, want 302", callback.StatusCode)
+	}
+	me := meBody(t, h.get("/api/me"))
+	if me["user"] != "wilant" {
+		t.Errorf("user = %v, want the lower-cased name claim", me["user"])
+	}
+}
+
+// name can be exactly as illegal a rider id as nickname (a full "First
+// Last" carries a space) — same skip-and-fall-through rule applies.
+func TestSSOCallbackSkipsAnIllegalNameAndFallsBackToNickname(t *testing.T) {
+	h := newSSOHarness(t)
+	callback := h.loginWithUser([]string{"cyclists"}, map[string]any{
+		"name": "Wilant Nackaerts", "nickname": "wilant",
+	})
+
+	if callback.StatusCode != http.StatusFound {
+		t.Fatalf("callback status = %d, want 302", callback.StatusCode)
+	}
+	me := meBody(t, h.get("/api/me"))
+	if me["user"] != "wilant" {
+		t.Errorf("user = %v, want the nickname claim (name has a space)", me["user"])
+	}
+}
+
 // preferred_username still wins when an issuer sends both — nickname is
 // only ever the fallback, never preferred over the claim meant for this.
 func TestSSOCallbackPrefersPreferredUsernameOverNickname(t *testing.T) {
