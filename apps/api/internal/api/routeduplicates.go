@@ -9,9 +9,23 @@ import (
 	"github.com/wncservices/domestique/apps/api/internal/model"
 )
 
-// routeDuplicateToleranceM is how close two routes' distances have to be to
-// count as the same real ride, imported more than once.
+// routeDuplicateToleranceM is the flat floor for how close two routes'
+// distances have to be to count as the same real ride, imported more than
+// once — a fixed minimum for a short route, where 2% would round to
+// nothing. distanceWithinTolerance below is what actually decides.
 const routeDuplicateToleranceM = 100
+
+// distanceWithinTolerance is the same forgiving comparison
+// possibleDuplicateOf already uses against the library: 100m, or 2% of the
+// distance, whichever is more forgiving. A flat 100m alone missed real
+// duplicates on longer rides — found live, running this feature's own
+// cleanup: a 76km ride's two copies were 355m apart, an 89km ride's were
+// 288m, a 97km ride's were 384m, all real re-encodes of the same GPX, none
+// within a flat 100m. 2% of each of those covers all three.
+func distanceWithinTolerance(a, b float64) bool {
+	delta := math.Abs(a - b)
+	return delta <= routeDuplicateToleranceM || delta <= math.Max(a, b)*0.02
+}
 
 type routeDuplicateGroupDTO struct {
 	Name   string     `json:"name"`
@@ -46,15 +60,15 @@ func (s *Server) handleRouteDuplicates(w http.ResponseWriter, r *http.Request) {
 }
 
 // groupDuplicateRoutes groups routes sharing a name (case-insensitive,
-// trimmed) and a distance within routeDuplicateToleranceM of each other,
-// returning only groups with more than one member — same shape and same
-// reasoning as garmincourses.go's groupDuplicateCourses: content_hash alone
-// would miss it, since Garmin re-encodes a GPX slightly differently on
-// every download, so the same real ride imported twice from Garmin does not
-// reliably hash the same even though its name and distance do. Compared
-// against each group's own anchor distance, not an independently-rounded
-// bucket, for the identical reason groupDuplicateCourses does — see its own
-// comment.
+// trimmed) and a distance within tolerance of each other (see
+// distanceWithinTolerance), returning only groups with more than one
+// member — same shape and same reasoning as garmincourses.go's
+// groupDuplicateCourses: content_hash alone would miss it, since Garmin
+// re-encodes a GPX slightly differently on every download, so the same
+// real ride imported twice from Garmin does not reliably hash the same
+// even though its name and distance do. Compared against each group's own
+// anchor distance, not an independently-rounded bucket, for the identical
+// reason groupDuplicateCourses does — see its own comment.
 func groupDuplicateRoutes(routes []model.Route, toDTO func(model.Route) routeDTO) []routeDuplicateGroupDTO {
 	type group struct {
 		name    string
@@ -67,7 +81,7 @@ func groupDuplicateRoutes(routes []model.Route, toDTO func(model.Route) routeDTO
 		name := strings.ToLower(strings.TrimSpace(rt.Name))
 		var target *group
 		for _, g := range groups {
-			if g.name == name && math.Abs(g.anchor-rt.Stats.DistanceM) <= routeDuplicateToleranceM {
+			if g.name == name && distanceWithinTolerance(g.anchor, rt.Stats.DistanceM) {
 				target = g
 				break
 			}
