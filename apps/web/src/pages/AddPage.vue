@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useLibrary } from '@/composables/useLibrary'
 import GarminCoursesPanel from '@/components/GarminCoursesPanel.vue'
+import GarminDuplicatesPanel from '@/components/GarminDuplicatesPanel.vue'
 import KomootPanel from '@/components/KomootPanel.vue'
 import UploadPanel from '@/components/UploadPanel.vue'
 
@@ -28,5 +29,6 @@ const { accounts, me, config, canUpload, canImportKomoot, canSyncGarmin, komootE
     />
 
     <GarminCoursesPanel v-if="canSyncGarmin" @imported="refresh" />
+    <GarminDuplicatesPanel v-if="canSyncGarmin" />
   </div>
 </template>

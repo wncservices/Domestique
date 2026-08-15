@@ -105,6 +105,14 @@ export interface GarminCourseImportResult {
   skipped: Record<string, string>
 }
 
+/** Garmin courses that look like repeated copies of each other — same name,
+ *  same distance — found by comparing the account's own course list against
+ *  itself, not against the library. */
+export interface GarminDuplicateGroup {
+  name: string
+  courses: GarminCourse[]
+}
+
 export interface AppConfig {
   /** Human-readable description of the route source. */
   source: string

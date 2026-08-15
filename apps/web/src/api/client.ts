@@ -5,6 +5,7 @@ import type {
   GarminConsumer,
   GarminCourse,
   GarminCourseImportResult,
+  GarminDuplicateGroup,
   GarminDevice,
   KomootImportResult,
   KomootConnection,
@@ -105,6 +106,12 @@ export const api = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ courseIds }),
+    }),
+  garminCourseDuplicates: () =>
+    request<GarminDuplicateGroup[]>('/api/garmin/courses/duplicates'),
+  garminCourseDelete: (id: string) =>
+    request<{ status: string }>(`/api/garmin/courses/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
     }),
 
   garminConsumer: () => request<GarminConsumer>('/api/garmin/consumer'),

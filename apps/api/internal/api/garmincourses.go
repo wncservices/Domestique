@@ -5,13 +5,16 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/wncservices/domestique/apps/api/internal/accounts"
 	"github.com/wncservices/domestique/apps/api/internal/auth"
 	"github.com/wncservices/domestique/apps/api/internal/garmin"
 	"github.com/wncservices/domestique/apps/api/internal/model"
 	"github.com/wncservices/domestique/apps/api/internal/source"
+	"github.com/wncservices/domestique/apps/api/internal/state"
 )
 
 type garminCourseDTO struct {
@@ -146,6 +149,150 @@ func possibleDuplicateOf(course garmin.Course, routes []model.Route) string {
 	return ""
 }
 
+// courseDuplicateToleranceM is how close two Garmin courses' distances have
+// to be to count as the same course pushed more than once.
+const courseDuplicateToleranceM = 100
+
+type garminDuplicateGroupDTO struct {
+	Name    string            `json:"name"`
+	Courses []garminCourseDTO `json:"courses"`
+}
+
+// handleGarminCourseDuplicates groups the caller's own Garmin courses that
+// look like repeated copies of each other — distinct from
+// handleGarminCourseList's PossibleDuplicate, which compares a Garmin course
+// against the library. This compares Garmin's course list against itself:
+// the shape a rider actually hits after the same route gets pushed more than
+// once (an identity split re-creating an account Garmin already had a course
+// from, for instance) — nothing here reads the library at all.
+func (s *Server) handleGarminCourseDuplicates(w http.ResponseWriter, r *http.Request) {
+	if !s.require(w, r, auth.PermGarminSync) {
+		return
+	}
+
+	rider, session, ok := s.garminSessionFor(r)
+	if !ok {
+		writeJSON(w, http.StatusOK, []garminDuplicateGroupDTO{})
+		return
+	}
+
+	consumer, _ := s.garminConsumer()
+	courses, err := s.Garmin.ListCourses(consumer, session)
+	if err != nil {
+		s.logger().Warn("garmin course list failed", "rider", rider, "err", err)
+		writeJSON(w, http.StatusBadGateway, map[string]string{
+			"error": "Garmin would not list the courses on this account just now.",
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, groupDuplicateCourses(courses))
+}
+
+// groupDuplicateCourses groups courses that are very likely repeated copies
+// of the same real course — the same name (case-insensitive, trimmed) and a
+// distance within courseDuplicateToleranceM of each other — and returns only
+// the groups with more than one course. A course with no repeats is not a
+// duplicate of anything, so it is left out entirely rather than returned as
+// a group of one.
+//
+// Name and distance, not the start-point-and-distance heuristic
+// possibleDuplicateOf uses against the library: two Garmin courses created
+// from the same GPX at different times can carry slightly different ascent
+// (Garmin recomputes elevation gain per upload, not stored with the file),
+// but the same name and the same distance, since this deployment names a
+// pushed course after the route it came from and a GPX's own distance does
+// not change between uploads.
+func groupDuplicateCourses(courses []garmin.Course) []garminDuplicateGroupDTO {
+	type group struct {
+		name string
+		// anchor is the first course's distance seen for this group — every
+		// later candidate is compared against it directly, not against an
+		// independently-rounded bucket of its own. Two courses 50m apart can
+		// round to different buckets if they straddle a rounding boundary
+		// (42000 and 42050 do, at a 100m tolerance) even though 50m is well
+		// inside the tolerance either one of them would pass on its own —
+		// comparing directly against the group's own anchor has no boundary
+		// to straddle.
+		anchor  float64
+		members []garmin.Course
+	}
+
+	var groups []*group
+	for _, c := range courses {
+		name := strings.ToLower(strings.TrimSpace(c.Name))
+		var target *group
+		for _, g := range groups {
+			if g.name == name && math.Abs(g.anchor-c.DistanceM) <= courseDuplicateToleranceM {
+				target = g
+				break
+			}
+		}
+		if target == nil {
+			target = &group{name: name, anchor: c.DistanceM}
+			groups = append(groups, target)
+		}
+		target.members = append(target.members, c)
+	}
+
+	out := make([]garminDuplicateGroupDTO, 0)
+	for _, g := range groups {
+		if len(g.members) < 2 {
+			continue
+		}
+		dto := garminDuplicateGroupDTO{Name: g.members[0].Name}
+		for _, c := range g.members {
+			dto.Courses = append(dto.Courses, garminCourseDTO{
+				ID: c.ID, Name: c.Name, DistanceM: c.DistanceM, AscentM: c.AscentM,
+				ActivityType: c.ActivityType,
+				CreatedAt:    formatTime(c.CreatedAt),
+			})
+		}
+		out = append(out, dto)
+	}
+	return out
+}
+
+// handleGarminCourseDelete removes one course from the caller's own Garmin
+// account — the other half of duplicate cleanup: handleGarminCourseDuplicates
+// finds the groups, this removes whichever copies were picked to go. Nothing
+// here checks that the id actually came from a duplicate group: the rider is
+// deleting from their own real Garmin account, using their own Garmin
+// session, the same trust already given to unlinking an account or importing
+// a course.
+func (s *Server) handleGarminCourseDelete(w http.ResponseWriter, r *http.Request) {
+	if !s.require(w, r, auth.PermGarminSync) {
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no course id"})
+		return
+	}
+
+	rider, session, ok := s.garminSessionFor(r)
+	if !ok {
+		writeJSON(w, http.StatusPreconditionFailed, map[string]string{
+			"error": "Not connected to Garmin — connect your account in Settings",
+		})
+		return
+	}
+	consumer, _ := s.garminConsumer()
+	courses, err := s.Garmin.Courses(consumer, session)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := courses.DeleteCourse(id); err != nil {
+		s.logger().Warn("garmin course delete failed", "rider", rider, "course", id, "err", err)
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+
+	s.logger().Info("garmin course deleted", "rider", rider, "course", id)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
 // handleGarminCourseImport pulls selected Garmin courses into the library.
 func (s *Server) handleGarminCourseImport(w http.ResponseWriter, r *http.Request) {
 	if !s.require(w, r, auth.PermGarminSync) {
@@ -216,16 +363,38 @@ func (s *Server) handleGarminCourseImport(w http.ResponseWriter, r *http.Request
 		}
 		course := byID[id]
 
-		if _, err := s.Source.Create(source.CreateRequest{
+		route, err := s.Source.Create(source.CreateRequest{
 			Filename:   course.Name + ".gpx",
 			Name:       course.Name,
 			Descript:   fmt.Sprintf("Synced back from Garmin (course %s)", id),
 			UploadedBy: identity.User,
 			GPX:        got.gpx,
-		}); err != nil {
+		})
+		if err != nil {
 			result.Skipped[id] = err.Error()
 			continue
 		}
+
+		// The route just came FROM this Garmin account — record that as
+		// already synced, or the very next plan sees "targets this account,
+		// no sync state" and offers to push right back what was just pulled
+		// down. RemoteID is the course id it came from, so a later push
+		// recognises it as already there instead of creating a second copy.
+		if err := s.Store.Record(state.Entry{
+			AccountID:   accounts.ID(model.ProviderGarmin, rider),
+			Slug:        route.Slug,
+			RemoteID:    id,
+			ContentHash: route.ContentHash,
+			Name:        route.Name,
+			UpdatedAt:   time.Now().UTC().Format(time.RFC3339),
+		}); err != nil {
+			// The import itself already succeeded — losing this record is
+			// not worth undoing that over. Worst case is one extra push
+			// offered next time, recoverable, unlike losing the route.
+			s.logger().Warn("recording garmin sync state after import failed",
+				"rider", rider, "course", id, "err", err)
+		}
+
 		result.Imported = append(result.Imported, id)
 	}
 
