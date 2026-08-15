@@ -263,10 +263,11 @@ junction — a route planner that knows the roads does this better.
 
 ## Deploying it
 
-There is a Helm chart in `charts/domestique`, published on every change:
+The Helm chart lives in its own repo — [wncservices/domestique-chart](https://github.com/wncservices/domestique-chart) —
+published on every chart change:
 
 ```bash
-helm repo add domestique https://wncservices.github.io/Domestique
+helm repo add domestique https://wncservices.github.io/domestique-chart
 helm repo update
 helm install domestique domestique/domestique \
   --namespace domestique --create-namespace
@@ -280,21 +281,22 @@ pointed at an issuer if you want the app to authenticate people itself — see
 `DOMESTIQUE_SOURCE_DSN` from a Secret rather than writing a password into
 values.
 
-[`charts/domestique/README.md`](charts/domestique/README.md) has the detail,
-and `charts/domestique/ci/full-values.yaml` is a complete worked example.
+[The chart repo's own README](https://github.com/wncservices/domestique-chart/blob/main/charts/domestique/README.md)
+has the detail, and `charts/domestique/ci/full-values.yaml` there is a
+complete worked example.
 
 ## Releases
 
-The image and the chart release **separately**, because they change for
-different reasons — a values default is not an app change, and an app change
-usually needs no chart edit.
+The image and the chart release **separately** — different repos entirely
+now — because they change for different reasons: a values default is not an
+app change, and an app change usually needs no chart edit.
 
 | Track | Trigger | Produces |
 |---|---|---|
 | Container image, dev | every merge to `main` | `:dev`, `:sha-<short>` |
 | Container image, release | tag `v<x.y.z>` | `:x.y.z`, `:x.y`, `:x`, `:latest` |
 | Binaries | tag `v<x.y.z>` | a GitHub Release with tarballs |
-| Helm chart | any change under `charts/` on `main` | a GitHub Release + the Helm repo at `wncservices.github.io/Domestique` |
+| Helm chart | any change to the chart in [domestique-chart](https://github.com/wncservices/domestique-chart) | a GitHub Release there + the Helm repo at `wncservices.github.io/domestique-chart` |
 
 Each image is pushed to **two registries from one build**, under the same tags:
 
@@ -329,8 +331,9 @@ none. Naming targets is what keeps one rider's private routes off the other's de
 | `apps/api/` | Go service: CLI and HTTP API |
 | `apps/web/` | Vue 3 + Vite frontend |
 | `examples/routes/` | A sample .gpx, so the demo has something to import |
-| `charts/domestique/` | The Helm chart |
 | `docs/plan.md` | Why the providers work the way they do — read before touching an adapter |
+
+The Helm chart lives in its own repo now — [domestique-chart](https://github.com/wncservices/domestique-chart) — not under this one.
 
 ## Roadmap
 

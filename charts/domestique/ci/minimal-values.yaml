@@ -1,4 +1,0 @@
-# The smallest thing that renders: a CloudNativePG cluster and nothing else.
-# No ingress, no auth — every visitor an admin, which the NOTES say loudly.
-postgresql:
-  cluster: domestique-db
