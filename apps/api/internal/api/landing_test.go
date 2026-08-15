@@ -64,6 +64,62 @@ func TestLandingIsServedOnlyOnTheApex(t *testing.T) {
 	}
 }
 
+// Browsers request /favicon.ico on their own, regardless of the <link
+// rel="icon"> tag either page declares — the build only ever produces
+// favicon.svg, so without a rewrite this fell through to whatever unknown
+// paths get on that host: the landing page's own content on the apex, or
+// (mode: oidc, anonymous) a redirect on the app host. Either way, an HTML
+// response or a redirect where a browser wanted an icon.
+func TestFaviconIcoServesTheSVGFavicon(t *testing.T) {
+	web := fstest.MapFS{
+		"index.html":   {Data: []byte("<html>APP</html>")},
+		"landing.html": {Data: []byte("<html>LANDING</html>")},
+		"favicon.svg":  {Data: []byte("<svg>ICON</svg>")},
+	}
+
+	for _, tc := range []struct{ name, host string }{
+		{"the apex", "domestique.dev"},
+		{"the app host", "app.domestique.dev"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := &Server{WebFS: web, LandingHost: "domestique.dev"}
+
+			req := httptest.NewRequest(http.MethodGet, "/favicon.ico", nil)
+			req.Host = tc.host
+			rec := httptest.NewRecorder()
+			srv.spaHandler().ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK || rec.Body.String() != "<svg>ICON</svg>" {
+				t.Errorf("status %d body %q, want the svg favicon", rec.Code, rec.Body.String())
+			}
+			if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "svg") {
+				t.Errorf("Content-Type = %q, want an svg type", ct)
+			}
+		})
+	}
+}
+
+// The same rewrite has to survive the anonymous mode: oidc redirect on the
+// app host — the one path that answered with a 302 rather than HTML, which
+// is just as unusable to a browser's favicon.ico probe.
+func TestFaviconIcoSurvivesTheAnonymousOIDCRedirect(t *testing.T) {
+	web := fstest.MapFS{
+		"index.html":   {Data: []byte("<html>APP</html>")},
+		"landing.html": {Data: []byte("<html>LANDING</html>")},
+		"favicon.svg":  {Data: []byte("<svg>ICON</svg>")},
+	}
+	srv := &Server{WebFS: web, LandingHost: "domestique.dev", Auth: oidcAuthenticator(t)}
+
+	req := httptest.NewRequest(http.MethodGet, "/favicon.ico", nil)
+	req.Host = "app.domestique.dev"
+	rec := httptest.NewRecorder()
+	srv.spaHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || rec.Body.String() != "<svg>ICON</svg>" {
+		t.Errorf("status %d body %q, want the svg favicon, not the redirect", rec.Code, rec.Body.String())
+	}
+}
+
 // An unbuilt or older frontend has no landing.html. Serving the app is a far
 // better failure than 404-ing the front door.
 func TestMissingLandingFallsBackToTheApp(t *testing.T) {
