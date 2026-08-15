@@ -130,6 +130,10 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             VERSION=${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('dev-{0}', github.sha) }}
+            # This deployment runs mode: oidc — see docs/oidc.md. A self-hosted
+            # build on a different domain, or one running mode: proxy, should
+            # override this (or leave it unset for the proxy default).
+            VITE_APP_URL=https://app.domestique.dev/sso/login
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

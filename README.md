@@ -146,6 +146,17 @@ outright rather than degrade. The proxy-mode warning above does not apply
 here: the app is verifying signed tokens itself, not trusting a header, so it
 is the mode for a deployment that faces the public directly.
 
+One thing to set at **build** time, not in `domestique.yaml`: the landing
+page's Sign in link (`apps/web/src/landing/Landing.vue`) is a plain link
+across origins to the app host, baked in at build time as `VITE_APP_URL` —
+there is no runtime config for a static Vite bundle. Left unset it falls back
+to the bare app host, which is correct for `mode: proxy` (the app host itself
+intercepts an unauthenticated visit and shows a login form). `mode: oidc`
+needs it set explicitly to the app host's `/sso/login` path instead —
+`ARG VITE_APP_URL=https://your-app-host/sso/login` passed to `docker build`
+— or the landing page's button lands on the app's bare root, which redirects
+straight back to the landing page and looks like the button does nothing.
+
 | Role | Can |
 |---|---|
 | `viewer` | read routes, download GPX, see what would be pushed |

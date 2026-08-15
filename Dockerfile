@@ -10,7 +10,14 @@ COPY package.json package-lock.json ./
 COPY apps/web/package.json apps/web/
 RUN npm ci
 COPY apps/web apps/web
-RUN npm --workspace @domestique/web run build
+# Baked into the landing page's Sign in link at build time (Vite inlines
+# import.meta.env.VITE_* — there is no runtime env var to read later).
+# Empty by default: apps/web/src/landing/Landing.vue falls back to
+# https://app.domestique.dev, correct for mode: proxy, where the app host
+# itself intercepts an unauthenticated visit. mode: oidc needs this set
+# explicitly to https://<app-host>/sso/login instead — see docs/oidc.md.
+ARG VITE_APP_URL=""
+RUN VITE_APP_URL=${VITE_APP_URL} npm --workspace @domestique/web run build
 
 FROM --platform=$BUILDPLATFORM golang:1.26.6-alpine AS api
 WORKDIR /src
