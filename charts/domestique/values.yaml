@@ -36,6 +36,24 @@ config:
     #   viewer: [guests]
     # default_role: viewer
 
+    # mode: oidc — the app verifies signed tokens itself against an issuer
+    # (Auth0, Keycloak, Zitadel, ...) instead of trusting a proxy header, so
+    # unlike mode: proxy this one is fine to expose directly to the public.
+    # client_secret comes from DOMESTIQUE_OIDC_CLIENT_SECRET below, never
+    # from here, and DOMESTIQUE_ENCRYPTION_KEY (see encryptionKey: below)
+    # must be set — without it there is nowhere safe to hold the session or
+    # the short-lived sign-in state and /sso/login refuses outright.
+    # mode: oidc
+    # oidc:
+    #   issuer: https://your-tenant.example.com/
+    #   client_id: domestique
+    #   redirect_url: https://app.example.com/sso/callback
+    #   scopes: [openid, profile, email]
+    #   groups_claim: groups   # empty if your issuer sends no groups at all
+    # roles:
+    #   admin: [domestique-admins]
+    #   rider: [cyclists]
+
   komoot:
     enabled: false
 
@@ -59,6 +77,11 @@ config:
 #                              in Vault rather than in the database.
 #   KOMOOT_EMAIL               one shared Komoot account, as an alternative to
 #   KOMOOT_PASSWORD            riders signing in themselves
+#   DOMESTIQUE_OIDC_CLIENT_SECRET      mode: oidc only — the OIDC client's own secret
+#   DOMESTIQUE_AUTH0_MGMT_CLIENT_ID    Optional, mode: oidc only — a separate,
+#   DOMESTIQUE_AUTH0_MGMT_CLIENT_SECRET  narrowly-scoped Auth0 Management API
+#                              M2M app. Without these the People page (invite,
+#                              list, change roles) is unavailable rather than broken.
 envFrom: []
 # - secretRef:
 #     name: domestique

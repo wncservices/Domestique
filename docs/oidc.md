@@ -1,7 +1,30 @@
 # Plan: generic OIDC as a second auth mode
 
-**Status: not built.** This is the design, written down while the reasons are
-fresh. Nothing here is required for the current deployment, which works.
+**Status: shipped.** `mode: oidc` runs in production, against an Auth0 tenant
+(`lab/auth0/` in the infra repo), with Google added as a social sign-in
+alongside the database connection. The design below is kept as the record of
+*why* it looks the way it does — most of it held, a few things changed once
+real data hit it:
+
+- **Group claims** work as planned (see below), through a post-login Action
+  (`lab/auth0/actions.tf`) rather than a promise to add one later.
+- **The rider-identity migration** is `domestique rename-rider` —
+  `docs/rider-migration.md` is the runbook, not just the design intent.
+- **One thing this plan didn't anticipate**: opening sign-in to a second
+  identity provider (Google) surfaced a real question this document doesn't
+  answer — what to do when an email invited through the People page already
+  has an identity on the issuer. It is deliberately **not** auto-linked to an
+  existing account (a Google identity and a database identity for the same
+  address stay two separate Auth0 users); the People page grants the invited
+  role to whichever identity already exists instead of creating a second one.
+  See `internal/auth0mgmt`'s package doc and `internal/api/people.go`.
+- **`sub`'s fallback chain** ended up longer than `preferred_username` →
+  `sub`: Auth0's database connection populates neither reliably, so
+  `identityFromToken` (`internal/api/sso.go`) falls through
+  `preferred_username` → `name` → `nickname` → `sub`, each checked against
+  the same rider pattern.
+
+The rest of this document is unchanged from before any of it was built.
 
 ## Why this rather than picking a provider
 
@@ -24,9 +47,12 @@ configuration rather than a dependency, and the choice stays reversible — whic
 matters, because the honest answer to "which IdP" today is "we do not know yet
 whether this ever has users beyond two".
 
-**Do not build this speculatively.** The trigger is a third person who is not
-in our LDAP. Until then `mode: proxy` is less code, less attack surface, and
-already works.
+**The trigger for building this was a third person who is not in our
+LDAP** — it arrived, which is why this moved from plan to shipped, and
+Google as an additional sign-in came once the People page existed to grant
+that person access without an invite email. The reasoning below stands as a
+record of why it waited: `mode: proxy` was less code and less attack surface
+right up until that trigger.
 
 ## What changes, and what does not
 
@@ -108,9 +134,10 @@ rename migration and write it before anyone else has data.
 dependency budget in AGENTS.md is for exactly this case — a spec where writing
 it yourself means writing the vulnerabilities yourself.
 
-**Keep `mode: proxy`.** It is what this deployment runs, it is one HTTP header
-of trust, and it stays the recommended shape for anyone behind their own SSO.
-OIDC is the mode for a deployment that faces the public.
+**Keep `mode: proxy`.** This deployment has since moved to `mode: oidc`
+because it needed to face the public, but `mode: proxy` stays supported and
+is the right shape for anyone behind their own SSO — it is one HTTP header of
+trust and less code than speaking OIDC at all.
 
 ## Rough order
 

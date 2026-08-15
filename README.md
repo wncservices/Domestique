@@ -17,10 +17,12 @@ Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Status
 
-Early. The library, diff engine, CLI, HTTP API and web UI work end to end, and routes convert to
-Garmin FIT courses. **The provider adapters are stubs** — see [Roadmap](#roadmap). Today you can
-add routes, browse them, see exactly what would be pushed where, and export a FIT to copy onto a
-device by hand; automatic pushing is not wired up yet.
+The library, diff engine, CLI, HTTP API and web UI work end to end, routes convert to Garmin FIT
+courses, and **Garmin push is live** — a route added once pushes to every linked Garmin Connect
+account, and courses already on Garmin can be listed, imported back, and de-duplicated from the
+UI. **Wahoo is still a stub** — see [Roadmap](#roadmap). `mode: oidc` (Auth0, including Google as
+a social sign-in) and an admin People page for inviting riders and managing access are live
+alongside the original `mode: proxy` — see [Logging in](#logging-in).
 
 ## Where routes live
 
@@ -150,11 +152,23 @@ is the mode for a deployment that faces the public directly.
 |---|---|
 | `viewer` | read routes, download GPX, see what would be pushed |
 | `rider` | + upload, import from Komoot, link **their own** head units, push, edit and delete **their own** routes |
-| `admin` | + edit and delete **anyone's** routes and head units, and set up Garmin for the deployment |
+| `admin` | + edit and delete **anyone's** routes and head units, and set up Garmin for the deployment, and manage who has access (see below) |
 
 With `mode: none` (the default) there is no login at all and every visitor is
 an admin. That is right for a laptop and wrong for anything else; the UI says
 so in the header.
+
+Under `mode: oidc` the issuer can offer more than one way to sign in — this
+deployment adds Google alongside the database connection, so a rider without
+a password to remember can just click "Sign in with Google". Signing in with
+a new provider creates a **new, separate identity** even for an email address
+that already has access another way; it still needs to clear the same
+`required_group` gate as anyone else. An admin grants that from the
+**People** page (`mode: oidc` only, needs Auth0 Management API credentials —
+see `docs/oidc.md`): inviting an email that already has an identity on the
+issuer (a prior Google sign-in, say) grants the requested role to it directly
+instead of creating a second account, and no invite email goes out — they can
+already sign in.
 
 ## Linking a head unit
 
@@ -228,8 +242,13 @@ dependency. Already-imported tours are skipped, so running it twice is safe.
 
 ## Getting a route onto a device today
 
-The provider adapters are still stubs, but the conversion they will use works.
-Write a route out as a Garmin FIT course and copy it over USB:
+**Garmin pushes automatically** once a rider links their account (see [Linking
+a head unit](#linking-a-head-unit) above) — a route with no `targets` of its
+own goes out to every linked Garmin Connect account on the next push. Wahoo is
+still a stub, but the FIT conversion it will eventually use already works.
+Write a route out as a Garmin FIT course and copy it over USB — the fallback
+for Wahoo today, and useful for a device you would rather not link an account
+on at all:
 
 ```bash
 just fit kemmelberg-loop
@@ -319,14 +338,14 @@ none. Naming targets is what keeps one rider's private routes off the other's de
 |---|---|---|
 | 1 | Library, diff engine, CLI, API, web UI | ✅ |
 | 2 | GPX → FIT course conversion, with inferred turn cues | ✅ |
-| 3 | Garmin: sign-in ✅, FIT course upload ✅, push not wired to the library yet | 🟡 |
+| 3 | Garmin: sign-in, FIT course upload, push wired to the library, course import + de-duplication | ✅ |
 | 4 | Wahoo push (Cloud API) | ⬜ stub, needs approved API access |
-| 5 | Deploy: Helm chart ✅, scheduled reconcile, Vault-backed tokens | 🟡 |
+| 5 | Deploy: Helm chart ✅, `mode: oidc` (Auth0 + Google) ✅, admin People page ✅, scheduled reconcile ⬜, Vault-backed tokens ✅ | 🟡 |
 | 6 | Metrics + staleness alerting | ⬜ |
 
-Phases 2–4 are where this succeeds or fails. Neither provider offers a self-serve route API:
-Garmin has none at all, and Wahoo's is approval-gated and wants FIT rather than GPX.
-`docs/plan.md` has the detail, including what to do if Wahoo says no.
+Phase 4 is what is left to succeed or fail on. Wahoo's API is approval-gated and wants FIT rather
+than GPX — Garmin, once the harder of the two, is done. `docs/plan.md` has the detail, including
+what to do if Wahoo says no.
 
 ## Contributing
 

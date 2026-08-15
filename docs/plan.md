@@ -67,20 +67,38 @@ keeps a private route off somebody else's device.
 
 ## Who can do what
 
-Domestique authenticates nobody. It sits behind Traefik with an Authelia
-forwardAuth middleware and reads the identity Authelia passes down. Roles come
-from Authelia groups:
+Three modes, picked by `auth.mode`. `internal/auth` is the same `Identity`
+and role resolution regardless of which one supplied the identity — only
+where it comes from differs.
+
+**`mode: proxy`** — the original shape. Domestique authenticates nobody
+itself; it sits behind Traefik with an Authelia forwardAuth middleware and
+reads the identity Authelia passes down. The scheme rests on one assumption:
+the app is unreachable except through the proxy. A browser can set
+`Remote-User` as easily as Traefik can. Header trust is therefore opt-in
+(default `none`), and `trusted_proxies` discards headers from any other peer.
+
+**`mode: oidc`** — shipped, and what the production deployment runs today.
+The app verifies signed tokens itself against an Auth0 tenant, including
+Google as a social sign-in alongside the database connection, so the
+unreachable-except-through-the-proxy assumption does not apply to it. See
+`docs/oidc.md` for the design and `docs/rider-migration.md` for moving an
+existing `mode: proxy` rider onto it.
+
+Roles come from groups either way — Authelia's, or Auth0's `groups_claim`
+via a post-login Action:
 
 | Role | Can |
 |---|---|
 | `viewer` | read routes, download GPX and FIT, see the plan |
 | `rider` | + upload, import from Komoot, push, edit and delete **their own** routes |
-| `admin` | + edit and delete **anyone's** routes |
+| `admin` | + edit and delete **anyone's** routes, and manage who has access |
 
-The scheme rests on one assumption: the app is unreachable except through the
-proxy. A browser can set `Remote-User` as easily as Traefik can. Header trust is
-therefore opt-in (`auth.mode: proxy`, default `none`), and `trusted_proxies`
-discards headers from any other peer.
+Under `mode: oidc`, an admin manages access from the **People** page: invite
+by email, see everyone who has it, change roles. Inviting an email that
+already has an identity on the issuer (most often: signed in with Google
+before anyone invited them) grants access to that identity directly rather
+than creating a second, separate one for the same person.
 
 ## Getting routes in
 
@@ -107,9 +125,12 @@ heuristic knows nothing about roads: it calls a hairpin on an open road and
 stays quiet through a junction taken as a gentle curve. A planner that knows the
 road network does better, and its cues should win when a route comes from one.
 
-Until the adapters land, `domestique fit <slug>` and `GET /api/fit/<slug>` write
-a course out to copy onto a device over USB. That is also the only way to prove
-the conversion: no test can establish that a real head unit accepts the file.
+Garmin push is wired and live — a route with no `targets` of its own goes out
+to every linked Garmin Connect account automatically. `domestique fit <slug>`
+and `GET /api/fit/<slug>` still write a course out to copy onto a device over
+USB, for Wahoo (still a stub) or a device nobody wants an account linked on.
+That manual path is also the only way to prove the conversion end to end: no
+test can establish that a real head unit accepts the file.
 
 ## What is left
 
@@ -118,25 +139,35 @@ the conversion: no test can establish that a real head unit accepts the file.
 | 1 | Library, diff engine, CLI, API, web UI | ✅ |
 | 1b | Database library (PostgreSQL and SQLite), uploads, Authelia login with roles, Komoot import | ✅ |
 | 1c | Sync state in the database, so a deployment needs no volume | ✅ |
-| 1d | Head units linked through the UI, stored in the database, keyed to the Authelia user | ✅ |
+| 1d | Head units linked through the UI, stored in the database, keyed to the rider | ✅ |
 | 1e | One storage model: the filesystem library removed | ✅ |
 | 2 | GPX → FIT course conversion, with inferred turn cues | ✅ |
-| 3 | Garmin push | ⬜ stub |
+| 3 | Garmin push, course import, de-duplication | ✅ |
 | 4 | Wahoo push | ⬜ stub, **blocked** on API access |
-| 5 | Deploy: Helm chart ✅, ArgoCD, Vault-backed credentials, scheduled reconcile | 🟡 |
+| 5 | Deploy: Helm chart ✅, ArgoCD ✅, `mode: oidc` (Auth0 + Google) ✅, admin People page ✅, Vault-backed credentials ✅, scheduled reconcile ⬜ | 🟡 |
 | 6 | Metrics and staleness alerting | ⬜ |
 
 ### Phase 3 — Garmin
 
 There is no self-serve Garmin API. The official Courses API is Connect
-Developer Program only, for commercial partners. The workable path is the
-unofficial Connect web session: the SSO handshake, then the call the
-*Training → Courses → Import* button makes. Confirm the `course-service` path
-with devtools first; it is undocumented and moves.
+Developer Program only, for commercial partners. The workable path taken is
+the unofficial Connect web session: the SSO handshake, then the call the
+*Training → Courses → Import* button makes — `course-service`, undocumented
+and known to move.
 
 Grey-area and breakable. Acceptable for two personal accounts, not for anything
-shared more widely. Tokens last roughly a year, then need a manual re-auth —
-which should surface as a metric, not as a surprise at the start of a ride.
+shared more widely. Tokens last roughly a year, then need a manual re-auth,
+which Settings surfaces as a date rather than a surprise at the start of a
+ride.
+
+Two things found running this against real data, not in design: duplicate
+detection needs a *relative* distance tolerance, not a flat one — Garmin
+re-encodes a GPX slightly differently on every download, and that drift grows
+with distance — and a route just synced back **from** Garmin has to record
+its own `sync_state` immediately, or it looks unpushed and gets offered right
+back to the same account it came from. Both are documented next to the code
+that fixes them (`internal/api/routeduplicates.go`,
+`internal/api/garmincourses.go`).
 
 ### Phase 4 — Wahoo
 
