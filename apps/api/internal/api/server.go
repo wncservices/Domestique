@@ -140,6 +140,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/garmin/connection", s.handleGarminConnect)
 	mux.HandleFunc("DELETE /api/garmin/connection", s.handleGarminDisconnect)
 	mux.HandleFunc("GET /api/garmin/devices", s.handleGarminDevices)
+	mux.HandleFunc("GET /api/garmin/courses", s.handleGarminCourseList)
+	mux.HandleFunc("POST /api/garmin/courses/import", s.handleGarminCourseImport)
 	mux.HandleFunc("GET /api/garmin/consumer", s.handleGarminConsumer)
 	mux.HandleFunc("PUT /api/garmin/consumer", s.handleSetGarminConsumer)
 	mux.HandleFunc("DELETE /api/garmin/consumer", s.handleClearGarminConsumer)

@@ -35,6 +35,12 @@ type GarminConnector interface {
 	// Courses returns a client that can push and remove courses, from that
 	// same stored session.
 	Courses(consumer GarminConsumer, session garmin.Session) (targets.Courses, error)
+	// ListCourses lists every course already on the account — sync-back and
+	// duplicate detection, not scoped to anything this app itself pushed.
+	ListCourses(consumer GarminConsumer, session garmin.Session) ([]garmin.Course, error)
+	// DownloadGPX fetches one of those courses' tracks, to bring it into the
+	// library as a new route.
+	DownloadGPX(consumer GarminConsumer, session garmin.Session, courseID string) ([]byte, error)
 }
 
 // LiveGarmin is the real connector: it talks to Garmin.
@@ -111,4 +117,22 @@ func (l LiveGarmin) Devices(consumer GarminConsumer, session garmin.Session) ([]
 // Courses returns a client for pushing courses to a connected account.
 func (l LiveGarmin) Courses(consumer GarminConsumer, session garmin.Session) (targets.Courses, error) {
 	return l.resume(consumer, session)
+}
+
+// ListCourses lists every course already on the account.
+func (l LiveGarmin) ListCourses(consumer GarminConsumer, session garmin.Session) ([]garmin.Course, error) {
+	client, err := l.resume(consumer, session)
+	if err != nil {
+		return nil, err
+	}
+	return client.ListCourses()
+}
+
+// DownloadGPX fetches one course's track as GPX.
+func (l LiveGarmin) DownloadGPX(consumer GarminConsumer, session garmin.Session, courseID string) ([]byte, error) {
+	client, err := l.resume(consumer, session)
+	if err != nil {
+		return nil, err
+	}
+	return client.DownloadGPX(courseID)
 }

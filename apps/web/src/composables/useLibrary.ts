@@ -78,6 +78,7 @@ function can(permission: Permission): boolean {
 
 const canUpload = computed(() => can('routes:upload'))
 const canImportKomoot = computed(() => can('komoot:import'))
+const canSyncGarmin = computed(() => can('garmin:sync'))
 const canPush = computed(() => can('sync:push'))
 const canManageAccounts = computed(() => can('accounts:manage'))
 
@@ -101,6 +102,7 @@ export function useLibrary() {
     can,
     canUpload,
     canImportKomoot,
+    canSyncGarmin,
     canPush,
     canManageAccounts,
     komootEnabled,

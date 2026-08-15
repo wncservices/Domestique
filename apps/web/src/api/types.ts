@@ -38,6 +38,7 @@ export type Permission =
   | 'routes:edit-any'
   | 'sync:push'
   | 'komoot:import'
+  | 'garmin:sync'
   | 'accounts:manage'
 
 export interface Me {
@@ -72,6 +73,29 @@ export interface KomootTour {
 }
 
 export interface KomootImportResult {
+  imported: string[]
+  skipped: Record<string, string>
+}
+
+/** One course already on the rider's own Garmin account — sync-back, the
+ *  reverse direction from pushing. */
+export interface GarminCourse {
+  id: string
+  name: string
+  distanceM: number
+  ascentM: number
+  activityType: string
+  createdAt?: string
+  /** Already tracked as something this app pushed to this account — exact
+   *  match, not a guess. */
+  imported: boolean
+  /** Set when a library route looks like the same ride by distance and
+   *  start point. A hint, not a certainty — Garmin re-encodes track points
+   *  its own way, so this is never an exact match the way `imported` is. */
+  possibleDuplicate?: string
+}
+
+export interface GarminCourseImportResult {
   imported: string[]
   skipped: Record<string, string>
 }

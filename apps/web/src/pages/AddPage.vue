@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { useLibrary } from '@/composables/useLibrary'
+import GarminCoursesPanel from '@/components/GarminCoursesPanel.vue'
 import KomootPanel from '@/components/KomootPanel.vue'
 import UploadPanel from '@/components/UploadPanel.vue'
 
-const { accounts, me, config, canUpload, canImportKomoot, komootEnabled, refresh } = useLibrary()
+const { accounts, me, config, canUpload, canImportKomoot, canSyncGarmin, komootEnabled, refresh } =
+  useLibrary()
 </script>
 
 <template>
@@ -24,5 +26,7 @@ const { accounts, me, config, canUpload, canImportKomoot, komootEnabled, refresh
       :state="config.komoot === 'disabled' ? 'unconfigured' : config.komoot"
       @imported="refresh"
     />
+
+    <GarminCoursesPanel v-if="canSyncGarmin" @imported="refresh" />
   </div>
 </template>

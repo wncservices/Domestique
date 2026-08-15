@@ -8,6 +8,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // coursePath is the course service. Connect's own Training → Courses → Import
@@ -303,4 +304,133 @@ func snippet(raw []byte) string {
 		return text[:limit] + "…"
 	}
 	return text
+}
+
+// coursesOwnerPath lists every course already on the account — what
+// Connect's own Training → Courses page shows, not scoped to anything this
+// app pushed there itself.
+//
+// Under a different service ("web-gateway") than the rest of this file's
+// course-service endpoints — found by inspecting that page's own network
+// traffic, not documented anywhere, same as everything else here. That
+// traffic goes through connect.garmin.com's /gc-api/ proxy with a browser's
+// cookie session; this package authenticates with a Bearer token straight
+// against connectapi.garmin.com instead (see bearerToken), a different
+// surface that was not itself exercised during discovery. The shape below
+// is confirmed; whether this specific path accepts a Bearer token the same
+// way the rest of course-service does is not, until a real first call
+// proves it.
+const coursesOwnerPath = "/web-gateway/course/owner/"
+
+// Course is one course already on the account, as returned by ListCourses.
+type Course struct {
+	ID           string
+	Name         string
+	DistanceM    float64
+	AscentM      float64
+	StartLat     float64
+	StartLng     float64
+	ActivityType string
+	CreatedAt    time.Time
+}
+
+// coursesOwnerResponse is the shape ListCourses reads back — a single
+// top-level key wrapping the array, not a bare list.
+type coursesOwnerResponse struct {
+	CoursesForUser []courseSummaryDTO `json:"coursesForUser"`
+}
+
+type courseSummaryDTO struct {
+	CourseID              json.Number `json:"courseId"`
+	CourseName            string      `json:"courseName"`
+	DistanceInMeters      float64     `json:"distanceInMeters"`
+	ElevationGainInMeters float64     `json:"elevationGainInMeters"`
+	StartLatitude         float64     `json:"startLatitude"`
+	StartLongitude        float64     `json:"startLongitude"`
+	ActivityType          struct {
+		TypeKey string `json:"typeKey"`
+	} `json:"activityType"`
+	// Milliseconds since the epoch, Connect's own convention — same as
+	// devices.go's lastSyncTime.
+	CreatedDate int64 `json:"createdDate"`
+}
+
+// ListCourses lists every course already on the account.
+func (c *Client) ListCourses() ([]Course, error) {
+	bearer, err := c.bearerToken()
+	if err != nil {
+		return nil, err
+	}
+
+	raw, status, err := c.do(http.MethodGet, c.APIBase+coursesOwnerPath, nil, "",
+		header{"Authorization", "Bearer " + bearer},
+		header{"Accept", "application/json"},
+		header{"X-Requested-With", "XMLHttpRequest"},
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	switch {
+	case status == http.StatusUnauthorized, status == http.StatusForbidden:
+		return nil, errors.New("garmin: the session was refused — sign in again")
+	case status >= 300:
+		return nil, fmt.Errorf("garmin: listing courses returned %d: %s", status, snippet(raw))
+	}
+
+	var body coursesOwnerResponse
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return nil, fmt.Errorf("garmin: unreadable course list: %s", snippet(raw))
+	}
+
+	out := make([]Course, 0, len(body.CoursesForUser))
+	for _, dto := range body.CoursesForUser {
+		out = append(out, Course{
+			ID:           dto.CourseID.String(),
+			Name:         dto.CourseName,
+			DistanceM:    dto.DistanceInMeters,
+			AscentM:      dto.ElevationGainInMeters,
+			StartLat:     dto.StartLatitude,
+			StartLng:     dto.StartLongitude,
+			ActivityType: dto.ActivityType.TypeKey,
+			CreatedAt:    time.UnixMilli(dto.CreatedDate).UTC(),
+		})
+	}
+	return out, nil
+}
+
+// DownloadGPX fetches a course's track as GPX — the format this app already
+// parses everywhere else (internal/gpx), so a downloaded course needs no new
+// parser to become a Route.
+func (c *Client) DownloadGPX(courseID string) ([]byte, error) {
+	if strings.TrimSpace(courseID) == "" {
+		return nil, errors.New("garmin: no course id to download")
+	}
+
+	bearer, err := c.bearerToken()
+	if err != nil {
+		return nil, err
+	}
+
+	raw, status, err := c.do(http.MethodGet, c.APIBase+coursePath+"/gpx/"+courseID, nil, "",
+		header{"Authorization", "Bearer " + bearer},
+		header{"Accept", "*/*"},
+		header{"X-Requested-With", "XMLHttpRequest"},
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	switch {
+	case status == http.StatusUnauthorized, status == http.StatusForbidden:
+		return nil, errors.New("garmin: the session was refused — sign in again")
+	case status == http.StatusNotFound:
+		return nil, fmt.Errorf("garmin: course %s not found", courseID)
+	case status >= 300:
+		return nil, fmt.Errorf("garmin: downloading course %s returned %d: %s", courseID, status, snippet(raw))
+	}
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("garmin: course %s downloaded empty", courseID)
+	}
+	return raw, nil
 }
