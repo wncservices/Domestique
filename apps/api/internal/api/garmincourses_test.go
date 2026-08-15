@@ -362,6 +362,31 @@ func TestGarminCourseDuplicatesGroupsBySameNameAndDistance(t *testing.T) {
 	}
 }
 
+// Found live: a flat 100m tolerance missed real duplicate courses on a
+// longer ride — two genuine re-pushes of the same 76km course, 355m apart,
+// well outside a flat 100m but well inside 2% of the distance.
+func TestGarminCourseDuplicatesToleratesDriftOnLongerRides(t *testing.T) {
+	h := newConnectHarness(t, true)
+	h.connectGarmin("wilant")
+	h.garmin.listCourses = []garmin.Course{
+		{ID: "1", Name: "Jaagpad van de Demer", DistanceM: 76576.87, ActivityType: "cycling"},
+		{ID: "2", Name: "Jaagpad van de Demer", DistanceM: 76221.80, ActivityType: "cycling"},
+	}
+
+	resp := h.as("wilant", "cyclists", http.MethodGet, "/api/garmin/courses/duplicates", "")
+	var groups []struct {
+		Courses []struct {
+			ID string `json:"id"`
+		} `json:"courses"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&groups); err != nil {
+		t.Fatal(err)
+	}
+	if len(groups) != 1 || len(groups[0].Courses) != 2 {
+		t.Errorf("groups = %+v, want the pair grouped despite the 355m gap", groups)
+	}
+}
+
 func TestGarminCourseDuplicatesWithoutAConnectionIsEmpty(t *testing.T) {
 	h := newConnectHarness(t, true)
 

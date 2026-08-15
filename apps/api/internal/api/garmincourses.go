@@ -149,10 +149,6 @@ func possibleDuplicateOf(course garmin.Course, routes []model.Route) string {
 	return ""
 }
 
-// courseDuplicateToleranceM is how close two Garmin courses' distances have
-// to be to count as the same course pushed more than once.
-const courseDuplicateToleranceM = 100
-
 type garminDuplicateGroupDTO struct {
 	Name    string            `json:"name"`
 	Courses []garminCourseDTO `json:"courses"`
@@ -191,10 +187,11 @@ func (s *Server) handleGarminCourseDuplicates(w http.ResponseWriter, r *http.Req
 
 // groupDuplicateCourses groups courses that are very likely repeated copies
 // of the same real course — the same name (case-insensitive, trimmed) and a
-// distance within courseDuplicateToleranceM of each other — and returns only
-// the groups with more than one course. A course with no repeats is not a
-// duplicate of anything, so it is left out entirely rather than returned as
-// a group of one.
+// distance within tolerance of each other (distanceWithinTolerance, shared
+// with routeduplicates.go's identical problem on the library side) — and
+// returns only the groups with more than one course. A course with no
+// repeats is not a duplicate of anything, so it is left out entirely rather
+// than returned as a group of one.
 //
 // Name and distance, not the start-point-and-distance heuristic
 // possibleDuplicateOf uses against the library: two Garmin courses created
@@ -223,7 +220,7 @@ func groupDuplicateCourses(courses []garmin.Course) []garminDuplicateGroupDTO {
 		name := strings.ToLower(strings.TrimSpace(c.Name))
 		var target *group
 		for _, g := range groups {
-			if g.name == name && math.Abs(g.anchor-c.DistanceM) <= courseDuplicateToleranceM {
+			if g.name == name && distanceWithinTolerance(g.anchor, c.DistanceM) {
 				target = g
 				break
 			}
