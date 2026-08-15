@@ -104,6 +104,16 @@ func newFakeTenant(t *testing.T) *fakeTenant {
 		f.revokedRoles[uid] = append(f.revokedRoles[uid], body.Roles...)
 		w.WriteHeader(http.StatusNoContent)
 	})
+	mux.HandleFunc("GET /api/v2/users-by-email", func(w http.ResponseWriter, r *http.Request) {
+		email := r.URL.Query().Get("email")
+		var out []map[string]string
+		for uid, u := range f.users {
+			if u.email == email {
+				out = append(out, map[string]string{"user_id": uid, "email": u.email, "name": u.name})
+			}
+		}
+		_ = json.NewEncoder(w).Encode(out)
+	})
 	mux.HandleFunc("POST /dbconnections/change_password", func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]string
 		_ = json.NewDecoder(r.Body).Decode(&body)
@@ -268,6 +278,35 @@ func TestAccessTokenIsCachedAcrossCalls(t *testing.T) {
 	}
 	if got := f.tokenCalls.Load(); got != 1 {
 		t.Errorf("token fetched %d times, want exactly 1 (cached across both calls)", got)
+	}
+}
+
+func TestFindByEmailReturnsEveryMatchingIdentity(t *testing.T) {
+	f := newFakeTenant(t)
+	f.users["auth0|1"] = struct{ email, name string }{"rider@example.com", "DB Rider"}
+	f.users["google-oauth2|2"] = struct{ email, name string }{"rider@example.com", "Google Rider"}
+	f.users["auth0|3"] = struct{ email, name string }{"someone-else@example.com", "Someone Else"}
+	c := newTestClient(t, f)
+
+	people, err := c.FindByEmail("rider@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(people) != 2 {
+		t.Fatalf("people = %+v, want the 2 identities sharing that email, not the unrelated third", people)
+	}
+}
+
+func TestFindByEmailReturnsNoneForAnUnknownAddress(t *testing.T) {
+	f := newFakeTenant(t)
+	c := newTestClient(t, f)
+
+	people, err := c.FindByEmail("nobody@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(people) != 0 {
+		t.Errorf("people = %+v, want none", people)
 	}
 }
 

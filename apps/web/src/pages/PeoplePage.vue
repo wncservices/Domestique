@@ -80,6 +80,17 @@ async function sendInvite() {
         icon: 'i-lucide-triangle-alert',
         color: 'warning',
       })
+    } else if (result.granted) {
+      // They already had an Auth0 identity — most often a prior Google
+      // sign-in — so this granted access to it directly rather than
+      // creating a second account. No invite email goes out: they already
+      // have a way to sign in.
+      toast.add({
+        title: `Granted access to ${result.person.email}`,
+        description: 'They already had a sign-in for this address — no new account was created.',
+        icon: 'i-lucide-shield-check',
+        color: 'success',
+      })
     } else {
       toast.add({
         title: `Invited ${result.person.email}`,

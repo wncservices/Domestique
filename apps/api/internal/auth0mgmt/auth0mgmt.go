@@ -330,6 +330,34 @@ func (c *Client) ListPeople(gateRole string, permissionRoles ...string) ([]Perso
 	return out, nil
 }
 
+// FindByEmail looks up every Auth0 identity already registered with an
+// exact email address. Plural, deliberately: a Google sign-in
+// (google-oauth2|<id>) and a database account (auth0|<id>) are two entirely
+// separate Auth0 users even for the same address, and this tenant does not
+// link them (see google_connection.tf in the lab repo). The People page
+// uses this to grant access to someone who already has an identity — most
+// often: signed in with Google once, before anyone told this app about
+// them — instead of creating, and inviting, a second one for the same
+// person. Returned Persons carry no Roles; SetRoles is still the caller's
+// job.
+func (c *Client) FindByEmail(email string) ([]Person, error) {
+	var users []roleUser
+	if err := c.do(http.MethodGet, "/api/v2/users-by-email?email="+url.QueryEscape(email), nil, &users); err != nil {
+		return nil, fmt.Errorf("looking up %s: %w", email, err)
+	}
+	out := make([]Person, 0, len(users))
+	for _, u := range users {
+		out = append(out, Person{
+			UserID:    u.UserID,
+			Email:     u.Email,
+			Name:      u.Name,
+			CreatedAt: parseTime(u.CreatedAt),
+			LastLogin: parseTime(u.LastLogin),
+		})
+	}
+	return out, nil
+}
+
 // randomPassword satisfies Auth0's create-user requirement for one, even
 // though nobody will ever type it: SendInviteEmail is what actually gets
 // this account its first real password, through Auth0's own reset flow.

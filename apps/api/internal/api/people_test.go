@@ -25,10 +25,13 @@ type fakePeople struct {
 	invitedEmail []string            // SendInviteEmail's own calls
 	setRoles     map[string][]string // by user id, last call wins
 
+	findByEmail map[string][]auth0mgmt.Person // by email — empty/absent means no existing identity
+
 	listErr   error
 	inviteErr error
 	emailErr  error
 	rolesErr  error
+	findErr   error
 }
 
 func (f *fakePeople) ListPeople(string, ...string) ([]auth0mgmt.Person, error) {
@@ -68,6 +71,13 @@ func (f *fakePeople) SendInviteEmail(email string) error {
 	}
 	f.invitedEmail = append(f.invitedEmail, email)
 	return nil
+}
+
+func (f *fakePeople) FindByEmail(email string) ([]auth0mgmt.Person, error) {
+	if f.findErr != nil {
+		return nil, f.findErr
+	}
+	return f.findByEmail[email], nil
 }
 
 type peopleHarness struct {
@@ -222,6 +232,71 @@ func TestPeopleInviteAsViewerGrantsOnlyTheGateRole(t *testing.T) {
 	roles := fake.invitedRoles["viewer@example.com"]
 	if len(roles) != 1 || roles[0] != "domestique-users" {
 		t.Errorf("invited roles = %v, want [domestique-users]", roles)
+	}
+}
+
+// The shape a Google sign-in actually produces: an Auth0 identity exists
+// before anyone told this app about that person. Inviting that email must
+// grant access to the identity that already exists, not create a second one
+// alongside it.
+func TestPeopleInviteGrantsAccessToAnExistingIdentityInsteadOfCreatingASecond(t *testing.T) {
+	fake := &fakePeople{findByEmail: map[string][]auth0mgmt.Person{
+		"already-signed-in@example.com": {{UserID: "google-oauth2|123", Email: "already-signed-in@example.com", Name: "Tiebe"}},
+	}}
+	h := newPeopleHarness(t, fake)
+
+	resp := h.as("wilant", "domestique-users,domestique-admins", http.MethodPost, "/api/people",
+		`{"email":"Already-Signed-In@Example.com","role":"rider"}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (granted, not created)", resp.StatusCode)
+	}
+	if len(fake.invited) != 0 {
+		t.Errorf("invited = %v, want no new account created", fake.invited)
+	}
+	if len(fake.invitedEmail) != 0 {
+		t.Errorf("invite email sent to %v, want none — they can already sign in", fake.invitedEmail)
+	}
+	roles := fake.setRoles["google-oauth2|123"]
+	if len(roles) != 2 || roles[0] != "domestique-users" || roles[1] != "cyclists" {
+		t.Errorf("granted roles = %v, want [domestique-users cyclists] on the existing identity", roles)
+	}
+
+	var out struct {
+		Granted bool `json:"granted"`
+		Person  struct {
+			ID string `json:"id"`
+		} `json:"person"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if !out.Granted {
+		t.Error("granted = false, want true")
+	}
+	if out.Person.ID != "google-oauth2|123" {
+		t.Errorf("person id = %q, want the existing identity's id", out.Person.ID)
+	}
+}
+
+// Two separate identities sharing an email (a Google one and a database one,
+// say) is exactly the case FindByEmail can't resolve on its own — surfaced
+// to the admin instead of guessed at.
+func TestPeopleInviteRejectsAmbiguousMultipleExistingIdentities(t *testing.T) {
+	fake := &fakePeople{findByEmail: map[string][]auth0mgmt.Person{
+		"dup@example.com": {
+			{UserID: "google-oauth2|1", Email: "dup@example.com"},
+			{UserID: "auth0|2", Email: "dup@example.com"},
+		},
+	}}
+	h := newPeopleHarness(t, fake)
+
+	resp := h.as("wilant", "domestique-users,domestique-admins", http.MethodPost, "/api/people",
+		`{"email":"dup@example.com","role":"rider"}`)
+	if resp.StatusCode != http.StatusConflict {
+		t.Errorf("status = %d, want 409", resp.StatusCode)
+	}
+	if len(fake.invited) != 0 || len(fake.setRoles) != 0 {
+		t.Errorf("invited=%v setRoles=%v, want neither touched on an ambiguous match", fake.invited, fake.setRoles)
 	}
 }
 
