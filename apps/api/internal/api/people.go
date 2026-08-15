@@ -20,6 +20,7 @@ type PeopleConnector interface {
 	Invite(email, name string, roleNames []string) (auth0mgmt.Person, error)
 	SetRoles(userID string, roleNames []string) error
 	SendInviteEmail(email string) error
+	FindByEmail(email string) ([]auth0mgmt.Person, error)
 }
 
 type personDTO struct {
@@ -180,6 +181,38 @@ func (s *Server) handlePeopleInvite(w http.ResponseWriter, r *http.Request) {
 	roleNames, err := s.roleNamesFor(body.Role)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	// A Google sign-in creates its own Auth0 identity the first time someone
+	// uses it, entirely separate from — and possibly before — anyone tells
+	// this app about them (see google_connection.tf in the lab repo). If
+	// that already happened, grant access to it directly rather than
+	// creating, and inviting, a second identity for the same person: they
+	// already have a way to sign in, they just weren't let past the gate
+	// role yet.
+	existing, err := s.People.FindByEmail(body.Email)
+	if err != nil {
+		s.logger().Warn("checking for an existing account failed", "email", body.Email, "err", err)
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	if len(existing) > 1 {
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": fmt.Sprintf("%s already has %d separate sign-ins on this tenant — resolve which one to grant access to in the Auth0 dashboard first", body.Email, len(existing)),
+		})
+		return
+	}
+	if len(existing) == 1 {
+		if err := s.People.SetRoles(existing[0].UserID, roleNames); err != nil {
+			s.logger().Warn("granting access to an existing account failed", "email", body.Email, "err", err)
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+			return
+		}
+		s.logger().Info("access granted to existing account", "email", body.Email, "role", body.Role, "by", auth.FromContext(r.Context()).User)
+		granted := existing[0]
+		granted.Roles = roleNames
+		writeJSON(w, http.StatusOK, map[string]any{"person": s.personDTO(granted), "granted": true})
 		return
 	}
 

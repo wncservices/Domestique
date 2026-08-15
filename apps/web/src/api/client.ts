@@ -196,8 +196,12 @@ export const api = {
   invitePerson: (req: InvitePersonRequest) =>
     // The account can be created even when the invite email fails to send —
     // that is not an ApiError (the request itself succeeded), so the
-    // response's own optional `error` field carries it instead.
-    request<{ person: Person; error?: string }>('/api/people', {
+    // response's own optional `error` field carries it instead. `granted`
+    // distinguishes access granted to an identity that already existed
+    // (typically: a prior Google sign-in) from a brand new account — no
+    // invite email goes out in the former case, since they can already sign
+    // in.
+    request<{ person: Person; error?: string; granted?: boolean }>('/api/people', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(req),
