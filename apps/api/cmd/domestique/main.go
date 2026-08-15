@@ -705,14 +705,27 @@ func runServe(src *source.DB, cfg *config.Config, store state.Store, addr, webDi
 	}
 
 	if cfg.Komoot.Enabled {
-		client, err := komootClient()
-		if err != nil {
-			// Komoot is optional. Losing it must not stop the app serving
-			// routes that are already here.
-			log.Warn("komoot import disabled", "err", err)
-		} else {
-			srv.Komoot = client
-			log.Info("komoot import enabled", "account", client.DisplayName())
+		switch {
+		case os.Getenv("KOMOOT_EMAIL") == "" || os.Getenv("KOMOOT_PASSWORD") == "":
+			// No deployment-wide account configured — completely normal, and
+			// not a problem, when riders sign in to their own Komoot account
+			// from Settings instead. Same shape and level as the Garmin
+			// OAuth1 consumer message just above: informational, not a
+			// warning, because nothing here failed.
+			log.Info("no deployment-wide komoot account in the environment",
+				"hint", "riders can sign in to their own Komoot account from Settings instead")
+		default:
+			// Unlike the case above, credentials were actually supplied —
+			// an operator configured this on purpose, so a login failure
+			// here is worth a warning. Komoot is still optional: losing it
+			// must not stop the app serving routes that are already here.
+			client, err := komootClient()
+			if err != nil {
+				log.Warn("deployment-wide komoot account failed to sign in", "err", err)
+			} else {
+				srv.Komoot = client
+				log.Info("komoot import enabled", "account", client.DisplayName())
+			}
 		}
 	}
 
