@@ -191,6 +191,15 @@ async function unlink(account: Account) {
           adapter not wired up
         </UBadge>
 
+        <UTooltip
+          v-if="account.possibleDuplicateOf?.length"
+          :text="`Same ${account.provider} account as ${account.possibleDuplicateOf.join(', ')} — probably worth unlinking one`"
+        >
+          <UBadge color="warning" variant="subtle" size="sm" icon="i-lucide-triangle-alert">
+            possible duplicate
+          </UBadge>
+        </UTooltip>
+
         <UButton
           v-if="account.mine"
           icon="i-lucide-unlink"

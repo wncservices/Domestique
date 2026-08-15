@@ -348,6 +348,61 @@ func TestAccountsEndpoint(t *testing.T) {
 	}
 }
 
+// An account's label is set once, at link time, from the provider's own
+// session (see duplicateRiders' doc comment) — not typed by a rider. Two
+// different riders' accounts sharing one is the real-world signal this
+// deployment's own history produced: the same physical Garmin login, linked
+// twice because an OIDC login resolved to a rider string not yet recognised
+// as an existing person.
+func TestAccountsEndpointFlagsPossibleDuplicatesByMatchingLabel(t *testing.T) {
+	h := newHarness(t)
+
+	acctStore, err := accounts.UseDB(h.source.Conn(), h.source.DSN())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// seedAccounts links model.ProviderGarmin for rider "one" with an empty
+	// label, which defaults to "one's Garmin". A second rider linking the
+	// same real Garmin account gets its own display name as a label — here,
+	// deliberately the same string, simulating that shared real account.
+	if _, err := acctStore.Link(model.ProviderGarmin, "duplicate-of-one", "one's Garmin"); err != nil {
+		t.Fatal(err)
+	}
+	// A Wahoo account with a label that happens to match nothing else must
+	// not be flagged — different provider, no real collision.
+	if _, err := acctStore.Link(model.ProviderWahoo, "three", "one's Garmin"); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := h.get("/api/accounts")
+	h.expectStatus(resp, http.StatusOK)
+
+	var out []struct {
+		Rider               string   `json:"rider"`
+		Provider            string   `json:"provider"`
+		Label               string   `json:"label"`
+		PossibleDuplicateOf []string `json:"possibleDuplicateOf"`
+	}
+	h.decode(resp, &out)
+
+	byRider := map[string][]string{}
+	for _, a := range out {
+		byRider[a.Rider] = a.PossibleDuplicateOf
+	}
+
+	if got := byRider["one"]; len(got) != 1 || got[0] != "duplicate-of-one" {
+		t.Errorf("one's duplicates = %v, want [duplicate-of-one]", got)
+	}
+	if got := byRider["duplicate-of-one"]; len(got) != 1 || got[0] != "one" {
+		t.Errorf("duplicate-of-one's duplicates = %v, want [one]", got)
+	}
+	// "three" shares the label string with "one" and "duplicate-of-one" but
+	// on a different provider (wahoo, not garmin) — must not be flagged.
+	if got := byRider["three"]; len(got) != 0 {
+		t.Errorf("three's duplicates = %v, want none (different provider)", got)
+	}
+}
+
 func TestRoutesEndpointOnEmptyDatabase(t *testing.T) {
 	h := newHarness(t)
 	resp := h.get("/api/routes")
