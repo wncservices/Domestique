@@ -17,6 +17,8 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+
 	"github.com/wncservices/domestique/apps/api/internal/accounts"
 	"github.com/wncservices/domestique/apps/api/internal/auth"
 	"github.com/wncservices/domestique/apps/api/internal/config"
@@ -178,7 +180,18 @@ func (s *Server) Handler() http.Handler {
 	if s.WebFS != nil {
 		mux.Handle("/", s.spaHandler())
 	}
-	return instrument(logRequests(s.logger(), s.authenticate(mux)))
+
+	// Outermost: otelhttp starts the span (extracting any inbound
+	// traceparent, e.g. from Traefik) before anything else runs, so
+	// authenticate/logRequests/instrument all execute inside it, and any
+	// outbound call a handler makes has a real parent to attach to.
+	return otelhttp.NewHandler(
+		instrument(logRequests(s.logger(), s.authenticate(mux))),
+		"domestique",
+		otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
+			return r.Method + " " + r.URL.Path
+		}),
+	)
 }
 
 // authenticate resolves the identity once per request and puts it on the

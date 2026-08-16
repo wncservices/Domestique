@@ -16,9 +16,11 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"text/tabwriter"
 	"time"
 
@@ -41,6 +43,7 @@ import (
 	"github.com/wncservices/domestique/apps/api/internal/state"
 	"github.com/wncservices/domestique/apps/api/internal/sync"
 	"github.com/wncservices/domestique/apps/api/internal/targets"
+	"github.com/wncservices/domestique/apps/api/internal/telemetry"
 )
 
 const usage = `Domestique — fetch-and-carry for cycling routes
@@ -612,6 +615,16 @@ func runServe(src *source.DB, cfg *config.Config, store state.Store, addr, webDi
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
+	// Traces only actually export once OTEL_EXPORTER_OTLP_ENDPOINT (or
+	// _TRACES_ENDPOINT) is set — see internal/telemetry's own doc. Shutdown
+	// flushes whatever the batch exporter is still holding; wired to the
+	// same signal-triggered shutdown as the HTTP server below so a pod
+	// restart does not drop the last few seconds of spans.
+	shutdownTraces, err := telemetry.Setup(context.Background(), "domestique", version)
+	if err != nil {
+		return fmt.Errorf("telemetry: %w", err)
+	}
+
 	authenticator, err := auth.New(cfg.Auth)
 	if err != nil {
 		return err
@@ -791,10 +804,31 @@ func runServe(src *source.DB, cfg *config.Config, store state.Store, addr, webDi
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
+	// SIGTERM is what a pod restart actually sends. Without catching it, the
+	// process just dies where it stands — dropping in-flight requests and,
+	// now that there is a batch trace exporter, whatever spans it was still
+	// holding since the last export tick.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := httpSrv.Shutdown(shutdownCtx); err != nil {
+			log.Warn("http server shutdown", "err", err)
+		}
+	}()
+
 	log.Info("listening", "addr", addr, "library", src.Describe(),
 		"auth", authenticator.Mode())
 	if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
+	}
+
+	flushCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := shutdownTraces(flushCtx); err != nil {
+		log.Warn("telemetry shutdown", "err", err)
 	}
 	return nil
 }
