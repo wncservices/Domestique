@@ -36,6 +36,7 @@ import (
 	"github.com/wncservices/domestique/apps/api/internal/state"
 	syncer "github.com/wncservices/domestique/apps/api/internal/sync"
 	"github.com/wncservices/domestique/apps/api/internal/targets"
+	"github.com/wncservices/domestique/apps/api/internal/wahoo"
 )
 
 // maxUploadBytes bounds a multipart upload before it is read into memory.
@@ -63,6 +64,13 @@ type Server struct {
 	// Garmin signs riders in to Garmin Connect. Nil means the deployment
 	// cannot offer it — see GarminConnector.
 	Garmin GarminConnector
+
+	// Wahoo drives the OAuth2 authorization-code flow for a rider's own
+	// Wahoo account. Nil means WAHOO_CLIENT_ID/WAHOO_CLIENT_SECRET are not
+	// set — /wahoo/connect and /wahoo/callback report "not configured"
+	// rather than reaching for a client that does not exist, the same shape
+	// Garmin's own missing-consumer case already uses.
+	Wahoo *wahoo.Client
 
 	// Settings holds deployment-wide configuration an admin sets from the UI,
 	// today the Garmin OAuth1 consumer. Nil falls back to the environment for
@@ -160,6 +168,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/garmin/consumer", s.handleSetGarminConsumer)
 	mux.HandleFunc("DELETE /api/garmin/consumer", s.handleClearGarminConsumer)
 
+	mux.HandleFunc("GET /api/wahoo/connection", s.handleWahooConnection)
+	mux.HandleFunc("DELETE /api/wahoo/connection", s.handleWahooDisconnect)
+
 	mux.HandleFunc("GET /api/people", s.handlePeopleList)
 	mux.HandleFunc("POST /api/people", s.handlePeopleInvite)
 	mux.HandleFunc("PUT /api/people/{id}/role", s.handlePeopleSetRole)
@@ -170,6 +181,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /sso/login", s.handleSSOLogin)
 	mux.HandleFunc("GET /sso/callback", s.handleSSOCallback)
 	mux.HandleFunc("POST /sso/logout", s.handleSSOLogout)
+
+	mux.HandleFunc("GET /wahoo/connect", s.handleWahooConnect)
+	mux.HandleFunc("GET /wahoo/callback", s.handleWahooCallback)
 
 	// Anything else under /api is a 404 in JSON, not the SPA shell.
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {

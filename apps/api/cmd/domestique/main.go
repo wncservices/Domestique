@@ -44,6 +44,7 @@ import (
 	"github.com/wncservices/domestique/apps/api/internal/sync"
 	"github.com/wncservices/domestique/apps/api/internal/targets"
 	"github.com/wncservices/domestique/apps/api/internal/telemetry"
+	"github.com/wncservices/domestique/apps/api/internal/wahoo"
 )
 
 const usage = `Domestique — fetch-and-carry for cycling routes
@@ -757,6 +758,27 @@ func runServe(src *source.DB, cfg *config.Config, store state.Store, addr, webDi
 		log.Info("no garmin OAuth1 consumer in the environment",
 			"hint", "an admin can set one in Settings, or set "+
 				garmin.EnvConsumerKey+" and "+garmin.EnvConsumerSecret)
+	}
+
+	// Wahoo needs its own client id/secret from the environment (Vault, in a
+	// cluster — the same rule as every other credential) and a redirect URL
+	// from config, since it must equal exactly what is registered with
+	// Wahoo. Riders connect their own account from Settings the same way
+	// they do for Garmin/Komoot, just via a redirect instead of a password
+	// form.
+	if clientID, clientSecret := os.Getenv("WAHOO_CLIENT_ID"), os.Getenv("WAHOO_CLIENT_SECRET"); clientID != "" && clientSecret != "" {
+		if cfg.Wahoo.RedirectURL == "" {
+			return errors.New("WAHOO_CLIENT_ID is set but wahoo.redirect_url is not configured")
+		}
+		srv.Wahoo = wahoo.New(wahoo.Config{
+			ClientID:     clientID,
+			ClientSecret: clientSecret,
+			RedirectURL:  cfg.Wahoo.RedirectURL,
+		})
+		log.Info("wahoo cloud api configured", "redirect_url", cfg.Wahoo.RedirectURL)
+	} else {
+		log.Info("no wahoo client credentials in the environment",
+			"hint", "set WAHOO_CLIENT_ID and WAHOO_CLIENT_SECRET to let riders connect Wahoo")
 	}
 
 	if cfg.Komoot.Enabled {
