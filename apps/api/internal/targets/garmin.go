@@ -1,6 +1,7 @@
 package targets
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
@@ -25,7 +26,7 @@ type Garmin struct {
 
 	// Track returns the route's points. The adapter builds the file itself
 	// because the shape a provider wants is the adapter's business.
-	Track func(slug string) ([]gpx.Point, error)
+	Track func(ctx context.Context, slug string) ([]gpx.Point, error)
 	// Courses is the signed-in client for this account's rider. Resolved per
 	// push rather than held, so a session that was refreshed or removed since
 	// the server started is the one used.
@@ -43,12 +44,12 @@ var errGarminNotWired = errors.New(
 	"garmin push needs a signed-in account: connect Garmin in Settings")
 
 // Create uploads the route as a new course.
-func (g *Garmin) Create(route model.Route) (string, error) {
-	client, data, err := g.prepare(route)
+func (g *Garmin) Create(ctx context.Context, route model.Route) (string, error) {
+	client, data, err := g.prepare(ctx, route)
 	if err != nil {
 		return "", err
 	}
-	return client.ImportCourse(courseFilename(route), data)
+	return client.ImportCourse(ctx, courseFilename(route), data)
 }
 
 // Update replaces a course.
@@ -63,19 +64,19 @@ func (g *Garmin) Create(route model.Route) (string, error) {
 // with no error: the state has to move on, or every later push would import
 // another copy. What is left behind is one stale course, which is why it is
 // logged.
-func (g *Garmin) Update(remoteID string, route model.Route) (string, error) {
-	client, data, err := g.prepare(route)
+func (g *Garmin) Update(ctx context.Context, remoteID string, route model.Route) (string, error) {
+	client, data, err := g.prepare(ctx, route)
 	if err != nil {
 		return "", err
 	}
 
-	newID, err := client.ImportCourse(courseFilename(route), data)
+	newID, err := client.ImportCourse(ctx, courseFilename(route), data)
 	if err != nil {
 		return "", err
 	}
 
 	if remoteID != "" && remoteID != newID {
-		if err := client.DeleteCourse(remoteID); err != nil && g.Log != nil {
+		if err := client.DeleteCourse(ctx, remoteID); err != nil && g.Log != nil {
 			g.Log("garmin: the replaced course could not be removed",
 				"course", remoteID, "route", route.Slug, "err", err)
 		}
@@ -84,16 +85,16 @@ func (g *Garmin) Update(remoteID string, route model.Route) (string, error) {
 }
 
 // Delete removes a course from the account.
-func (g *Garmin) Delete(remoteID string) error {
+func (g *Garmin) Delete(ctx context.Context, remoteID string) error {
 	client, err := g.client()
 	if err != nil {
 		return err
 	}
-	return client.DeleteCourse(remoteID)
+	return client.DeleteCourse(ctx, remoteID)
 }
 
 // prepare resolves the client and renders the route as a FIT course.
-func (g *Garmin) prepare(route model.Route) (Courses, []byte, error) {
+func (g *Garmin) prepare(ctx context.Context, route model.Route) (Courses, []byte, error) {
 	client, err := g.client()
 	if err != nil {
 		return nil, nil, err
@@ -102,7 +103,7 @@ func (g *Garmin) prepare(route model.Route) (Courses, []byte, error) {
 		return nil, nil, errGarminNotWired
 	}
 
-	points, err := g.Track(route.Slug)
+	points, err := g.Track(ctx, route.Slug)
 	if err != nil {
 		return nil, nil, fmt.Errorf("reading the track for %s: %w", route.Slug, err)
 	}

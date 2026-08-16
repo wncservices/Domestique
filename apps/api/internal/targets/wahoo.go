@@ -1,6 +1,7 @@
 package targets
 
 import (
+	"context"
 	"errors"
 
 	"github.com/wncservices/domestique/apps/api/internal/model"
@@ -35,6 +36,10 @@ type Wahoo struct {
 var errWahooUnimplemented = errors.New(
 	"wahoo push is Phase 4: needs an approved API client and FIT conversion (Phase 2)")
 
-func (w *Wahoo) Create(model.Route) (string, error)         { return "", errWahooUnimplemented }
-func (w *Wahoo) Update(string, model.Route) (string, error) { return "", errWahooUnimplemented }
-func (w *Wahoo) Delete(string) error                        { return errWahooUnimplemented }
+func (w *Wahoo) Create(context.Context, model.Route) (string, error) {
+	return "", errWahooUnimplemented
+}
+func (w *Wahoo) Update(context.Context, string, model.Route) (string, error) {
+	return "", errWahooUnimplemented
+}
+func (w *Wahoo) Delete(context.Context, string) error { return errWahooUnimplemented }

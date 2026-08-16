@@ -53,7 +53,7 @@ const ownerResponseFixture = `{"coursesForUser":[
 func TestListCoursesParsesTheOwnerResponse(t *testing.T) {
 	c := listFake(t, http.StatusOK, ownerResponseFixture, http.StatusOK, "")
 
-	courses, err := c.ListCourses()
+	courses, err := c.ListCourses(t.Context())
 	if err != nil {
 		t.Fatalf("ListCourses: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestListCoursesParsesTheOwnerResponse(t *testing.T) {
 func TestListCoursesSurfacesUnauthorized(t *testing.T) {
 	c := listFake(t, http.StatusUnauthorized, "", http.StatusOK, "")
 
-	if _, err := c.ListCourses(); err == nil {
+	if _, err := c.ListCourses(t.Context()); err == nil {
 		t.Fatal("want an error when the session is refused")
 	}
 }
@@ -89,7 +89,7 @@ func TestListCoursesSurfacesUnauthorized(t *testing.T) {
 func TestListCoursesRejectsUnreadableJSON(t *testing.T) {
 	c := listFake(t, http.StatusOK, "<html>not json</html>", http.StatusOK, "")
 
-	if _, err := c.ListCourses(); err == nil {
+	if _, err := c.ListCourses(t.Context()); err == nil {
 		t.Fatal("want an error for a response that is not the expected shape")
 	}
 }
@@ -97,7 +97,7 @@ func TestListCoursesRejectsUnreadableJSON(t *testing.T) {
 func TestDownloadGPXReturnsTheBody(t *testing.T) {
 	c := listFake(t, http.StatusOK, "", http.StatusOK, "<gpx>track</gpx>")
 
-	raw, err := c.DownloadGPX("502255241")
+	raw, err := c.DownloadGPX(t.Context(), "502255241")
 	if err != nil {
 		t.Fatalf("DownloadGPX: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestDownloadGPXReturnsTheBody(t *testing.T) {
 func TestDownloadGPXWithoutAnIdIsAnError(t *testing.T) {
 	c := listFake(t, http.StatusOK, "", http.StatusOK, "<gpx/>")
 
-	if _, err := c.DownloadGPX(""); err == nil {
+	if _, err := c.DownloadGPX(t.Context(), ""); err == nil {
 		t.Fatal("want an error for an empty course id")
 	}
 }
@@ -117,7 +117,7 @@ func TestDownloadGPXWithoutAnIdIsAnError(t *testing.T) {
 func TestDownloadGPXSurfacesNotFound(t *testing.T) {
 	c := listFake(t, http.StatusOK, "", http.StatusNotFound, "")
 
-	if _, err := c.DownloadGPX("no-such-course"); err == nil {
+	if _, err := c.DownloadGPX(t.Context(), "no-such-course"); err == nil {
 		t.Fatal("want an error when the course does not exist")
 	}
 }
@@ -125,7 +125,7 @@ func TestDownloadGPXSurfacesNotFound(t *testing.T) {
 func TestDownloadGPXRejectsAnEmptyBody(t *testing.T) {
 	c := listFake(t, http.StatusOK, "", http.StatusOK, "")
 
-	if _, err := c.DownloadGPX("502255241"); err == nil {
+	if _, err := c.DownloadGPX(t.Context(), "502255241"); err == nil {
 		t.Fatal("want an error for a course that downloaded empty")
 	}
 }

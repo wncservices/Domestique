@@ -57,7 +57,7 @@ func (s *Server) handleKomootTours(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	existing := s.komootTagIndex()
+	existing := s.komootTagIndex(r.Context())
 	out := make([]komootTourDTO, 0, len(tours))
 	for _, t := range tours {
 		out = append(out, komootTourDTO{
@@ -109,7 +109,7 @@ func (s *Server) handleKomootImport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	identity := auth.FromContext(r.Context())
-	existing := s.komootTagIndex()
+	existing := s.komootTagIndex(r.Context())
 	result := komootImportResult{Imported: []string{}, Skipped: map[string]string{}}
 
 	// Decide what to fetch before fetching anything, so the slow part is a
@@ -148,7 +148,7 @@ func (s *Server) handleKomootImport(w http.ResponseWriter, r *http.Request) {
 		tour := byID[id]
 		raw := got.gpx
 
-		if _, err := s.Source.Create(source.CreateRequest{
+		if _, err := s.Source.Create(r.Context(), source.CreateRequest{
 			Filename:   tour.Name + ".gpx",
 			Name:       tour.Name,
 			Descript:   fmt.Sprintf("Imported from Komoot (tour %s)", id),
@@ -214,9 +214,9 @@ func fetchTours(ctx context.Context, client KomootImporter, ids []string, parall
 //
 // The id is carried as a tag rather than a column so the fs source works the
 // same way — a route.yaml can carry `komoot:12345` just as well.
-func (s *Server) komootTagIndex() map[string]bool {
+func (s *Server) komootTagIndex(ctx context.Context) map[string]bool {
 	out := map[string]bool{}
-	routes, _, err := s.Source.List()
+	routes, _, err := s.Source.List(ctx)
 	if err != nil {
 		s.logger().Warn("could not index existing komoot imports", "err", err)
 		return out

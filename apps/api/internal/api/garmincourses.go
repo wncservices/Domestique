@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -79,7 +80,7 @@ func (s *Server) handleGarminCourseList(w http.ResponseWriter, r *http.Request) 
 	}
 
 	consumer, _ := s.garminConsumer()
-	courses, err := s.Garmin.ListCourses(consumer, session)
+	courses, err := s.Garmin.ListCourses(r.Context(), consumer, session)
 	if err != nil {
 		s.logger().Warn("garmin course list failed", "rider", rider, "err", err)
 		writeJSON(w, http.StatusBadGateway, map[string]string{
@@ -88,12 +89,12 @@ func (s *Server) handleGarminCourseList(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	routes, _, err := s.Source.List()
+	routes, _, err := s.Source.List(r.Context())
 	if err != nil {
 		s.fail(w, err)
 		return
 	}
-	tracked := s.garminTrackedRemoteIDs(rider)
+	tracked := s.garminTrackedRemoteIDs(r.Context(), rider)
 
 	out := make([]garminCourseDTO, 0, len(courses))
 	for _, c := range courses {
@@ -111,9 +112,9 @@ func (s *Server) handleGarminCourseList(w http.ResponseWriter, r *http.Request) 
 // garminTrackedRemoteIDs is the set of Garmin course ids this app has
 // already recorded pushing to the caller's own linked account — the
 // exact-match half of dedup, free of any heuristic.
-func (s *Server) garminTrackedRemoteIDs(rider string) map[string]bool {
+func (s *Server) garminTrackedRemoteIDs(ctx context.Context, rider string) map[string]bool {
 	out := map[string]bool{}
-	entries, err := s.Store.ForAccount(accounts.ID(model.ProviderGarmin, rider))
+	entries, err := s.Store.ForAccount(ctx, accounts.ID(model.ProviderGarmin, rider))
 	if err != nil {
 		// Not fatal to listing: worst case some already-tracked courses show
 		// up without the Imported flag, which just makes them look like
@@ -173,7 +174,7 @@ func (s *Server) handleGarminCourseDuplicates(w http.ResponseWriter, r *http.Req
 	}
 
 	consumer, _ := s.garminConsumer()
-	courses, err := s.Garmin.ListCourses(consumer, session)
+	courses, err := s.Garmin.ListCourses(r.Context(), consumer, session)
 	if err != nil {
 		s.logger().Warn("garmin course list failed", "rider", rider, "err", err)
 		writeJSON(w, http.StatusBadGateway, map[string]string{
@@ -280,7 +281,7 @@ func (s *Server) handleGarminCourseDelete(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
 	}
-	if err := courses.DeleteCourse(id); err != nil {
+	if err := courses.DeleteCourse(r.Context(), id); err != nil {
 		s.logger().Warn("garmin course delete failed", "rider", rider, "course", id, "err", err)
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
@@ -321,7 +322,7 @@ func (s *Server) handleGarminCourseImport(w http.ResponseWriter, r *http.Request
 	// Re-listed rather than trusting names from the request body: the
 	// courses' own names are the authoritative ones, the same reason
 	// handleKomootImport re-fetches tours rather than trusting the client.
-	courses, err := s.Garmin.ListCourses(consumer, session)
+	courses, err := s.Garmin.ListCourses(r.Context(), consumer, session)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{
 			"error": "Garmin would not list the courses on this account just now.",
@@ -350,7 +351,7 @@ func (s *Server) handleGarminCourseImport(w http.ResponseWriter, r *http.Request
 	// somebody's personal account on an undocumented API, not a service to
 	// saturate.
 	const parallel = 4
-	downloads := fetchGPX(s.Garmin, consumer, session, wanted, parallel)
+	downloads := fetchGPX(r.Context(), s.Garmin, consumer, session, wanted, parallel)
 
 	for _, id := range wanted {
 		got := downloads[id]
@@ -360,7 +361,7 @@ func (s *Server) handleGarminCourseImport(w http.ResponseWriter, r *http.Request
 		}
 		course := byID[id]
 
-		route, err := s.Source.Create(source.CreateRequest{
+		route, err := s.Source.Create(r.Context(), source.CreateRequest{
 			Filename:   course.Name + ".gpx",
 			Name:       course.Name,
 			Descript:   fmt.Sprintf("Synced back from Garmin (course %s)", id),
@@ -377,7 +378,7 @@ func (s *Server) handleGarminCourseImport(w http.ResponseWriter, r *http.Request
 		// no sync state" and offers to push right back what was just pulled
 		// down. RemoteID is the course id it came from, so a later push
 		// recognises it as already there instead of creating a second copy.
-		if err := s.Store.Record(state.Entry{
+		if err := s.Store.Record(r.Context(), state.Entry{
 			AccountID:   accounts.ID(model.ProviderGarmin, rider),
 			Slug:        route.Slug,
 			RemoteID:    id,
@@ -407,7 +408,7 @@ type gpxDownload struct {
 
 // fetchGPX downloads several courses at once, bounded by parallel — same
 // shape as komoot.go's fetchTours.
-func fetchGPX(connector GarminConnector, consumer GarminConsumer, session garmin.Session, ids []string, parallel int) map[string]gpxDownload {
+func fetchGPX(ctx context.Context, connector GarminConnector, consumer GarminConsumer, session garmin.Session, ids []string, parallel int) map[string]gpxDownload {
 	out := make(map[string]gpxDownload, len(ids))
 	if len(ids) == 0 {
 		return out
@@ -424,7 +425,7 @@ func fetchGPX(connector GarminConnector, consumer GarminConsumer, session garmin
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			gpx, err := connector.DownloadGPX(consumer, session, id)
+			gpx, err := connector.DownloadGPX(ctx, consumer, session, id)
 
 			mu.Lock()
 			out[id] = gpxDownload{gpx: gpx, err: err}

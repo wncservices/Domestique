@@ -2,6 +2,7 @@
 package sync
 
 import (
+	"context"
 	"fmt"
 	"sort"
 
@@ -20,11 +21,11 @@ import (
 // It returns an error rather than treating unreadable state as empty: an empty
 // plan reads as "nothing to do", but empty *state* means "push everything
 // again", and the two must never be confused.
-func BuildPlan(routes []model.Route, linked []model.Account, store state.Store) (model.Plan, error) {
+func BuildPlan(ctx context.Context, routes []model.Route, linked []model.Account, store state.Store) (model.Plan, error) {
 	var plan model.Plan
 
 	for _, account := range linked {
-		recorded, err := store.ForAccount(account.ID)
+		recorded, err := store.ForAccount(ctx, account.ID)
 		if err != nil {
 			return model.Plan{}, fmt.Errorf("read state for %s: %w", account.ID, err)
 		}
@@ -86,7 +87,7 @@ func BuildPlan(routes []model.Route, linked []model.Account, store state.Store) 
 // without this package importing anything about metrics itself: it stays
 // exactly what its own doc says, pure, given routes/state/targets, nothing
 // else. Pass nil where nothing needs it, the CLI push command among them.
-func Apply(plan model.Plan, store state.Store, byAccount map[string]targets.Target, onResult func(item model.PlanItem, err error)) []error {
+func Apply(ctx context.Context, plan model.Plan, store state.Store, byAccount map[string]targets.Target, onResult func(item model.PlanItem, err error)) []error {
 	var failures []error
 
 	for _, item := range plan.Changes() {
@@ -100,7 +101,7 @@ func Apply(plan model.Plan, store state.Store, byAccount map[string]targets.Targ
 			continue
 		}
 
-		err := applyOne(item, store, target)
+		err := applyOne(ctx, item, store, target)
 		if err != nil {
 			err = fmt.Errorf("%s %s: %s failed: %w", item.AccountID, item.Slug, item.Op, err)
 			failures = append(failures, err)
@@ -113,33 +114,33 @@ func Apply(plan model.Plan, store state.Store, byAccount map[string]targets.Targ
 	return failures
 }
 
-func applyOne(item model.PlanItem, store state.Store, target targets.Target) error {
+func applyOne(ctx context.Context, item model.PlanItem, store state.Store, target targets.Target) error {
 	switch item.Op {
 	case model.OpCreate:
-		remoteID, err := target.Create(*item.Route)
+		remoteID, err := target.Create(ctx, *item.Route)
 		if err != nil {
 			return err
 		}
-		return store.Record(state.Entry{
+		return store.Record(ctx, state.Entry{
 			AccountID: item.AccountID, Slug: item.Slug, RemoteID: remoteID,
 			ContentHash: item.Route.ContentHash, Name: item.Route.Name,
 		})
 
 	case model.OpUpdate:
-		remoteID, err := target.Update(item.RemoteID, *item.Route)
+		remoteID, err := target.Update(ctx, item.RemoteID, *item.Route)
 		if err != nil {
 			return err
 		}
-		return store.Record(state.Entry{
+		return store.Record(ctx, state.Entry{
 			AccountID: item.AccountID, Slug: item.Slug, RemoteID: remoteID,
 			ContentHash: item.Route.ContentHash, Name: item.Route.Name,
 		})
 
 	case model.OpDelete:
-		if err := target.Delete(item.RemoteID); err != nil {
+		if err := target.Delete(ctx, item.RemoteID); err != nil {
 			return err
 		}
-		return store.Forget(item.AccountID, item.Slug)
+		return store.Forget(ctx, item.AccountID, item.Slug)
 	}
 
 	return nil

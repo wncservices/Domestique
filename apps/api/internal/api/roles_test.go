@@ -97,9 +97,11 @@ func seedRoleAccounts(t *testing.T, db *source.DB) *accounts.Store {
 
 type stubTarget struct{}
 
-func (stubTarget) Create(model.Route) (string, error)         { return "remote-1", nil }
-func (stubTarget) Update(string, model.Route) (string, error) { return "remote-1", nil }
-func (stubTarget) Delete(string) error                        { return nil }
+func (stubTarget) Create(context.Context, model.Route) (string, error) { return "remote-1", nil }
+func (stubTarget) Update(context.Context, string, model.Route) (string, error) {
+	return "remote-1", nil
+}
+func (stubTarget) Delete(context.Context, string) error { return nil }
 
 // as issues a request as a user in the given groups.
 func (h *authHarness) as(user, groups, method, path string, body string) *http.Response {
@@ -134,7 +136,7 @@ func (h *authHarness) as(user, groups, method, path string, body string) *http.R
 
 func (h *authHarness) seedRoute(t *testing.T, name, owner string) model.Route {
 	t.Helper()
-	route, err := h.src.Create(source.CreateRequest{
+	route, err := h.src.Create(t.Context(), source.CreateRequest{
 		Name:       name,
 		GPX:        []byte(seedGPX),
 		UploadedBy: owner,

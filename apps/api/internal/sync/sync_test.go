@@ -56,7 +56,7 @@ func TestBuildPlanIsIdempotent(t *testing.T) {
 	routes, linked, store := testRoutes(t), testAccounts(), newStore(t)
 
 	for _, item := range mustPlan(t, routes, linked, store).Changes() {
-		if err := store.Record(state.Entry{
+		if err := store.Record(t.Context(), state.Entry{
 			AccountID:   item.AccountID,
 			Slug:        item.Slug,
 			RemoteID:    "remote-" + item.Slug,
@@ -74,7 +74,7 @@ func TestBuildPlanIsIdempotent(t *testing.T) {
 func TestBuildPlanDeletesRoutesDroppedFromLibrary(t *testing.T) {
 	routes, linked, store := testRoutes(t), testAccounts(), newStore(t)
 
-	if err := store.Record(state.Entry{
+	if err := store.Record(t.Context(), state.Entry{
 		AccountID:   linked[0].ID,
 		Slug:        "gone-from-repo",
 		RemoteID:    "remote-123",
@@ -102,7 +102,7 @@ func TestBuildPlanUpdatesChangedRoutes(t *testing.T) {
 
 	route := routes[0]
 	account := linked[0].ID
-	if err := store.Record(state.Entry{
+	if err := store.Record(t.Context(), state.Entry{
 		AccountID:   account,
 		Slug:        route.Slug,
 		RemoteID:    "remote-abc",

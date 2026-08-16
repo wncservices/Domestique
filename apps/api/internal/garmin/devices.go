@@ -1,6 +1,7 @@
 package garmin
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -63,13 +64,13 @@ func (d deviceDTO) lastSync() time.Time {
 // whichever units can take it. Showing them answers the question a rider
 // actually has — "will this reach my Edge?" — which linking an account does
 // not answer on its own.
-func (c *Client) Devices() ([]Device, error) {
-	bearer, err := c.bearerToken()
+func (c *Client) Devices(ctx context.Context) ([]Device, error) {
+	bearer, err := c.bearerToken(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	raw, status, err := c.do(http.MethodGet, c.APIBase+devicesPath, nil, "",
+	raw, status, err := c.do(ctx, http.MethodGet, c.APIBase+devicesPath, nil, "",
 		header{"Authorization", "Bearer " + bearer},
 		header{"Accept", "application/json"},
 		header{"X-Requested-With", "XMLHttpRequest"},

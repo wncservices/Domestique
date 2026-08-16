@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -74,17 +75,17 @@ func (f *fakeGarmin) Courses(_ api.GarminConsumer, session garmin.Session) (targ
 	return f.courses, f.coursesErr
 }
 
-func (f *fakeGarmin) Devices(_ api.GarminConsumer, session garmin.Session) ([]garmin.Device, error) {
+func (f *fakeGarmin) Devices(_ context.Context, _ api.GarminConsumer, session garmin.Session) ([]garmin.Device, error) {
 	f.setResumedSession(session)
 	return f.devices, f.devicesErr
 }
 
-func (f *fakeGarmin) ListCourses(_ api.GarminConsumer, session garmin.Session) ([]garmin.Course, error) {
+func (f *fakeGarmin) ListCourses(_ context.Context, _ api.GarminConsumer, session garmin.Session) ([]garmin.Course, error) {
 	f.setResumedSession(session)
 	return f.listCourses, f.listCoursesErr
 }
 
-func (f *fakeGarmin) DownloadGPX(_ api.GarminConsumer, session garmin.Session, courseID string) ([]byte, error) {
+func (f *fakeGarmin) DownloadGPX(_ context.Context, _ api.GarminConsumer, session garmin.Session, courseID string) ([]byte, error) {
 	f.setResumedSession(session)
 	if f.downloadGPXErr != nil {
 		return nil, f.downloadGPXErr
@@ -92,7 +93,7 @@ func (f *fakeGarmin) DownloadGPX(_ api.GarminConsumer, session garmin.Session, c
 	return f.gpxByID[courseID], nil
 }
 
-func (f *fakeGarmin) Connect(consumer api.GarminConsumer, email, password string) (garmin.Session, error) {
+func (f *fakeGarmin) Connect(_ context.Context, consumer api.GarminConsumer, email, password string) (garmin.Session, error) {
 	f.consumer = consumer
 	f.email, f.password = email, password
 	if f.err != nil {
@@ -561,13 +562,13 @@ type recordingCourses struct {
 	deleted   []string
 }
 
-func (r *recordingCourses) ImportCourse(filename string, data []byte) (string, error) {
+func (r *recordingCourses) ImportCourse(_ context.Context, filename string, data []byte) (string, error) {
 	r.filenames = append(r.filenames, filename)
 	r.sizes = append(r.sizes, len(data))
 	return "garmin-course-1", nil
 }
 
-func (r *recordingCourses) DeleteCourse(id string) error {
+func (r *recordingCourses) DeleteCourse(_ context.Context, id string) error {
 	r.deleted = append(r.deleted, id)
 	return nil
 }
@@ -584,7 +585,7 @@ func TestPushSendsACourseToGarmin(t *testing.T) {
 	h.as("wilant", "cyclists", http.MethodPost, "/api/garmin/connection",
 		`{"email":"r@example.com","password":"pw"}`)
 
-	if _, err := h.db.Create(source.CreateRequest{
+	if _, err := h.db.Create(t.Context(), source.CreateRequest{
 		Filename:   "ride.gpx",
 		Name:       "Kluisbergen",
 		Targets:    &[]string{"garmin:wilant"},
@@ -630,7 +631,7 @@ func TestPushSendsACourseToGarmin(t *testing.T) {
 func TestPushWithoutAGarminConnectionFailsThatAccountOnly(t *testing.T) {
 	h := newConnectHarness(t, true)
 
-	if _, err := h.db.Create(source.CreateRequest{
+	if _, err := h.db.Create(t.Context(), source.CreateRequest{
 		Filename:   "ride.gpx",
 		Name:       "Kluisbergen",
 		Targets:    &[]string{"garmin:wilant"},

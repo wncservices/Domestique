@@ -3,6 +3,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -579,7 +580,7 @@ func (s *Server) handleRoutes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	routes, problems, err := s.Source.List()
+	routes, problems, err := s.Source.List(r.Context())
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -590,7 +591,7 @@ func (s *Server) handleRoutes(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, libraryResponse{
-		Routes:   s.toRouteDTOs(routes, linked),
+		Routes:   s.toRouteDTOs(r.Context(), routes, linked),
 		Problems: orEmpty(problems),
 	})
 }
@@ -603,7 +604,7 @@ func (s *Server) handleTrack(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slug := cleanSlug(r.PathValue("slug"))
-	points, err := s.Source.Track(slug)
+	points, err := s.Source.Track(r.Context(), slug)
 	if err != nil {
 		s.failLookup(w, err)
 		return
@@ -622,7 +623,7 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slug := cleanSlug(r.PathValue("slug"))
-	raw, err := s.Source.GPX(slug)
+	raw, err := s.Source.GPX(r.Context(), slug)
 	if err != nil {
 		s.failLookup(w, err)
 		return
@@ -654,7 +655,7 @@ func (s *Server) handleDownloadFIT(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slug := cleanSlug(r.PathValue("slug"))
-	raw, err := s.Source.GPX(slug)
+	raw, err := s.Source.GPX(r.Context(), slug)
 	if err != nil {
 		s.failLookup(w, err)
 		return
@@ -667,7 +668,7 @@ func (s *Server) handleDownloadFIT(w http.ResponseWriter, r *http.Request) {
 	}
 
 	name := slug
-	if routes, _, listErr := s.Source.List(); listErr == nil {
+	if routes, _, listErr := s.Source.List(r.Context()); listErr == nil {
 		for _, route := range routes {
 			if route.Slug == slug {
 				name = route.Name
@@ -701,7 +702,7 @@ func (s *Server) handlePlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	routes, problems, err := s.Source.List()
+	routes, problems, err := s.Source.List(r.Context())
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -712,7 +713,7 @@ func (s *Server) handlePlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	plan, err := syncer.BuildPlan(routes, linked, s.Store)
+	plan, err := syncer.BuildPlan(r.Context(), routes, linked, s.Store)
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -739,7 +740,7 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 	s.pushMu.Lock()
 	defer s.pushMu.Unlock()
 
-	routes, _, err := s.Source.List()
+	routes, _, err := s.Source.List(r.Context())
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -765,7 +766,7 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 		byAccount[account.ID] = target
 	}
 
-	plan, err := syncer.BuildPlan(routes, linked, s.Store)
+	plan, err := syncer.BuildPlan(r.Context(), routes, linked, s.Store)
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -773,7 +774,7 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 	plan = plan.Select(selected)
 
 	changes := plan.Changes()
-	failures := syncer.Apply(plan, s.Store, byAccount, s.recordPushResult)
+	failures := syncer.Apply(r.Context(), plan, s.Store, byAccount, s.recordPushResult)
 
 	messages := make([]string, 0, len(failures))
 	for _, f := range failures {
@@ -892,7 +893,7 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		req.Targets = &list
 	}
 
-	route, err := s.Source.Create(req)
+	route, err := s.Source.Create(r.Context(), req)
 	if err != nil {
 		// A bad GPX is the caller's problem, not a server fault.
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -905,7 +906,7 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.logger().Info("route uploaded", "slug", route.Slug, "by", req.UploadedBy)
-	writeJSON(w, http.StatusCreated, s.toRouteDTO(route, linked))
+	writeJSON(w, http.StatusCreated, s.toRouteDTO(r.Context(), route, linked))
 }
 
 func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
@@ -930,7 +931,7 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	route, err := s.Source.Update(slug, source.UpdateRequest{
+	route, err := s.Source.Update(r.Context(), slug, source.UpdateRequest{
 		Name:     body.Name,
 		Descript: body.Description,
 		Tags:     body.Tags,
@@ -946,7 +947,7 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, s.toRouteDTO(route, linked))
+	writeJSON(w, http.StatusOK, s.toRouteDTO(r.Context(), route, linked))
 }
 
 // handleDelete removes a route from the source. It deliberately leaves sync
@@ -961,7 +962,7 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	if !s.mayEdit(w, r, slug) {
 		return
 	}
-	if err := s.Source.Delete(slug); err != nil {
+	if err := s.Source.Delete(r.Context(), slug); err != nil {
 		s.failLookup(w, err)
 		return
 	}
@@ -972,10 +973,10 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 
 // ---------- plumbing ----------
 
-func (s *Server) toRouteDTOs(routes []model.Route, linked []model.Account) []routeDTO {
+func (s *Server) toRouteDTOs(ctx context.Context, routes []model.Route, linked []model.Account) []routeDTO {
 	out := make([]routeDTO, 0, len(routes))
-	for _, r := range routes {
-		out = append(out, s.toRouteDTO(r, linked))
+	for _, route := range routes {
+		out = append(out, s.toRouteDTO(ctx, route, linked))
 	}
 	return out
 }
@@ -983,8 +984,8 @@ func (s *Server) toRouteDTOs(routes []model.Route, linked []model.Account) []rou
 // stateFor reads an account's recorded state, logging and returning nothing on
 // failure. Callers use this only to decorate the UI; the plan and the push read
 // state properly and refuse to run when it cannot be read.
-func (s *Server) stateFor(accountID string) map[string]state.Entry {
-	entries, err := s.Store.ForAccount(accountID)
+func (s *Server) stateFor(ctx context.Context, accountID string) map[string]state.Entry {
+	entries, err := s.Store.ForAccount(ctx, accountID)
 	if err != nil {
 		s.logger().Error("could not read sync state", "account", accountID, "err", err)
 		return nil
@@ -992,11 +993,11 @@ func (s *Server) stateFor(accountID string) map[string]state.Entry {
 	return entries
 }
 
-func (s *Server) toRouteDTO(r model.Route, linked []model.Account) routeDTO {
+func (s *Server) toRouteDTO(ctx context.Context, r model.Route, linked []model.Account) routeDTO {
 	targetIDs := config.TargetsFor(r, linked)
 	statuses := make([]syncStatus, 0, len(targetIDs))
 	for _, id := range targetIDs {
-		entry, seen := s.stateFor(id)[r.Slug]
+		entry, seen := s.stateFor(ctx, id)[r.Slug]
 		switch {
 		case !seen:
 			statuses = append(statuses, syncStatus{AccountID: id, Status: "pending"})
@@ -1168,7 +1169,7 @@ func (s *Server) mayEdit(w http.ResponseWriter, r *http.Request, slug string) bo
 		return true
 	}
 
-	routes, _, err := s.Source.List()
+	routes, _, err := s.Source.List(r.Context())
 	if err != nil {
 		s.fail(w, err)
 		return false

@@ -62,7 +62,7 @@ func exampleGPX(t *testing.T) []byte {
 func TestDBCreateDerivesStatsAndSlug(t *testing.T) {
 	db := openTestDB(t)
 
-	route, err := db.Create(CreateRequest{
+	route, err := db.Create(t.Context(), CreateRequest{
 		Filename: "kemmelberg-loop.gpx",
 		GPX:      exampleGPX(t),
 	})
@@ -92,7 +92,7 @@ func TestDBCreateRejectsBadGPX(t *testing.T) {
 		"not xml":   []byte("this is not a GPX file"),
 		"one point": []byte(`<gpx version="1.1"><trk><trkseg><trkpt lat="50" lon="3"/></trkseg></trk></gpx>`),
 	} {
-		if _, err := db.Create(CreateRequest{Filename: name + ".gpx", GPX: body}); err == nil {
+		if _, err := db.Create(t.Context(), CreateRequest{Filename: name + ".gpx", GPX: body}); err == nil {
 			t.Errorf("%s: expected an error, got none", name)
 		}
 	}
@@ -103,11 +103,11 @@ func TestDBCreateDisambiguatesSlugs(t *testing.T) {
 	db := openTestDB(t)
 	raw := exampleGPX(t)
 
-	first, err := db.Create(CreateRequest{Name: "Kemmelberg Loop", GPX: raw})
+	first, err := db.Create(t.Context(), CreateRequest{Name: "Kemmelberg Loop", GPX: raw})
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := db.Create(CreateRequest{Name: "Kemmelberg Loop", GPX: raw})
+	second, err := db.Create(t.Context(), CreateRequest{Name: "Kemmelberg Loop", GPX: raw})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,13 +123,13 @@ func TestDBCreateDisambiguatesSlugs(t *testing.T) {
 func TestDBRenameChangesContentHash(t *testing.T) {
 	db := openTestDB(t)
 
-	route, err := db.Create(CreateRequest{Name: "Before", GPX: exampleGPX(t)})
+	route, err := db.Create(t.Context(), CreateRequest{Name: "Before", GPX: exampleGPX(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	renamed := "After"
-	updated, err := db.Update(route.Slug, UpdateRequest{Name: &renamed})
+	updated, err := db.Update(t.Context(), route.Slug, UpdateRequest{Name: &renamed})
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
@@ -143,17 +143,17 @@ func TestDBRenameChangesContentHash(t *testing.T) {
 func TestDBListSkipsDisabledRoutes(t *testing.T) {
 	db := openTestDB(t)
 
-	route, err := db.Create(CreateRequest{Name: "Hidden", GPX: exampleGPX(t)})
+	route, err := db.Create(t.Context(), CreateRequest{Name: "Hidden", GPX: exampleGPX(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	disabled := false
-	if _, err := db.Update(route.Slug, UpdateRequest{Enabled: &disabled}); err != nil {
+	if _, err := db.Update(t.Context(), route.Slug, UpdateRequest{Enabled: &disabled}); err != nil {
 		t.Fatal(err)
 	}
 
-	routes, _, err := db.List()
+	routes, _, err := db.List(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,18 +165,18 @@ func TestDBListSkipsDisabledRoutes(t *testing.T) {
 func TestDBDeleteAndMissingLookups(t *testing.T) {
 	db := openTestDB(t)
 
-	route, err := db.Create(CreateRequest{Name: "Doomed", GPX: exampleGPX(t)})
+	route, err := db.Create(t.Context(), CreateRequest{Name: "Doomed", GPX: exampleGPX(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Delete(route.Slug); err != nil {
+	if err := db.Delete(t.Context(), route.Slug); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 
-	if err := db.Delete(route.Slug); !errors.Is(err, ErrNotFound) {
+	if err := db.Delete(t.Context(), route.Slug); !errors.Is(err, ErrNotFound) {
 		t.Errorf("second delete: err = %v, want ErrNotFound", err)
 	}
-	if _, err := db.GPX(route.Slug); !errors.Is(err, ErrNotFound) {
+	if _, err := db.GPX(t.Context(), route.Slug); !errors.Is(err, ErrNotFound) {
 		t.Errorf("GPX after delete: err = %v, want ErrNotFound", err)
 	}
 }
@@ -185,12 +185,12 @@ func TestDBRoundTripsTargets(t *testing.T) {
 	db := openTestDB(t)
 
 	only := []string{"garmin:wilant"}
-	route, err := db.Create(CreateRequest{Name: "Private", GPX: exampleGPX(t), Targets: &only})
+	route, err := db.Create(t.Context(), CreateRequest{Name: "Private", GPX: exampleGPX(t), Targets: &only})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	routes, _, err := db.List()
+	routes, _, err := db.List(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +220,7 @@ func TestEachEngine(t *testing.T) {
 			t.Run("create and read back", func(t *testing.T) {
 				db := open(t)
 
-				route, err := db.Create(CreateRequest{
+				route, err := db.Create(t.Context(), CreateRequest{
 					Filename:   "kemmelberg-loop.gpx",
 					Descript:   "Cobbles",
 					Tags:       []string{"gravel", "hills"},
@@ -245,7 +245,7 @@ func TestEachEngine(t *testing.T) {
 
 				// The GPX blob has to survive the round trip byte for byte, or
 				// the file that reaches the device is not the one uploaded.
-				raw, err := db.GPX(route.Slug)
+				raw, err := db.GPX(t.Context(), route.Slug)
 				if err != nil {
 					t.Fatalf("GPX: %v", err)
 				}
@@ -257,21 +257,21 @@ func TestEachEngine(t *testing.T) {
 			t.Run("list skips disabled", func(t *testing.T) {
 				db := open(t)
 
-				visible, err := db.Create(CreateRequest{Name: "Visible", GPX: exampleGPX(t)})
+				visible, err := db.Create(t.Context(), CreateRequest{Name: "Visible", GPX: exampleGPX(t)})
 				if err != nil {
 					t.Fatal(err)
 				}
-				hidden, err := db.Create(CreateRequest{Name: "Hidden", GPX: exampleGPX(t)})
+				hidden, err := db.Create(t.Context(), CreateRequest{Name: "Hidden", GPX: exampleGPX(t)})
 				if err != nil {
 					t.Fatal(err)
 				}
 
 				off := false
-				if _, err := db.Update(hidden.Slug, UpdateRequest{Enabled: &off}); err != nil {
+				if _, err := db.Update(t.Context(), hidden.Slug, UpdateRequest{Enabled: &off}); err != nil {
 					t.Fatal(err)
 				}
 
-				routes, _, err := db.List()
+				routes, _, err := db.List(t.Context())
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -283,12 +283,12 @@ func TestEachEngine(t *testing.T) {
 			t.Run("rename changes the hash", func(t *testing.T) {
 				db := open(t)
 
-				route, err := db.Create(CreateRequest{Name: "Before", GPX: exampleGPX(t)})
+				route, err := db.Create(t.Context(), CreateRequest{Name: "Before", GPX: exampleGPX(t)})
 				if err != nil {
 					t.Fatal(err)
 				}
 				after := "After"
-				updated, err := db.Update(route.Slug, UpdateRequest{Name: &after})
+				updated, err := db.Update(t.Context(), route.Slug, UpdateRequest{Name: &after})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -301,13 +301,13 @@ func TestEachEngine(t *testing.T) {
 				db := open(t)
 
 				only := []string{"garmin:wilant"}
-				if _, err := db.Create(CreateRequest{
+				if _, err := db.Create(t.Context(), CreateRequest{
 					Name: "Private", GPX: exampleGPX(t), Targets: &only,
 				}); err != nil {
 					t.Fatal(err)
 				}
 
-				routes, _, err := db.List()
+				routes, _, err := db.List(t.Context())
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -322,11 +322,11 @@ func TestEachEngine(t *testing.T) {
 			t.Run("slug disambiguation", func(t *testing.T) {
 				db := open(t)
 
-				first, err := db.Create(CreateRequest{Name: "Same Name", GPX: exampleGPX(t)})
+				first, err := db.Create(t.Context(), CreateRequest{Name: "Same Name", GPX: exampleGPX(t)})
 				if err != nil {
 					t.Fatal(err)
 				}
-				second, err := db.Create(CreateRequest{Name: "Same Name", GPX: exampleGPX(t)})
+				second, err := db.Create(t.Context(), CreateRequest{Name: "Same Name", GPX: exampleGPX(t)})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -338,24 +338,24 @@ func TestEachEngine(t *testing.T) {
 			t.Run("delete", func(t *testing.T) {
 				db := open(t)
 
-				route, err := db.Create(CreateRequest{Name: "Doomed", GPX: exampleGPX(t)})
+				route, err := db.Create(t.Context(), CreateRequest{Name: "Doomed", GPX: exampleGPX(t)})
 				if err != nil {
 					t.Fatal(err)
 				}
-				if err := db.Delete(route.Slug); err != nil {
+				if err := db.Delete(t.Context(), route.Slug); err != nil {
 					t.Fatalf("delete: %v", err)
 				}
-				if err := db.Delete(route.Slug); !errors.Is(err, ErrNotFound) {
+				if err := db.Delete(t.Context(), route.Slug); !errors.Is(err, ErrNotFound) {
 					t.Errorf("second delete: %v, want ErrNotFound", err)
 				}
-				if _, err := db.GPX(route.Slug); !errors.Is(err, ErrNotFound) {
+				if _, err := db.GPX(t.Context(), route.Slug); !errors.Is(err, ErrNotFound) {
 					t.Errorf("GPX after delete: %v, want ErrNotFound", err)
 				}
 			})
 
 			t.Run("rejects bad gpx", func(t *testing.T) {
 				db := open(t)
-				if _, err := db.Create(CreateRequest{Name: "Bad", GPX: []byte("nope")}); err == nil {
+				if _, err := db.Create(t.Context(), CreateRequest{Name: "Bad", GPX: []byte("nope")}); err == nil {
 					t.Error("bad GPX accepted")
 				}
 			})

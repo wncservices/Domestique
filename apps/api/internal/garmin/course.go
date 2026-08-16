@@ -2,6 +2,7 @@ package garmin
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,7 +36,7 @@ const coursePath = "/course-service/course"
 // The file may be FIT, GPX or TCX as far as Connect is concerned. Domestique
 // sends FIT: a GPX navigates as a breadcrumb line with nothing said at a
 // junction, and a FIT course can carry turn cues.
-func (c *Client) ImportCourse(filename string, data []byte) (string, error) {
+func (c *Client) ImportCourse(ctx context.Context, filename string, data []byte) (string, error) {
 	if len(data) == 0 {
 		return "", errors.New("garmin: refusing to upload an empty course")
 	}
@@ -43,7 +44,7 @@ func (c *Client) ImportCourse(filename string, data []byte) (string, error) {
 		filename = "course.fit"
 	}
 
-	bearer, err := c.bearerToken()
+	bearer, err := c.bearerToken(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -61,7 +62,7 @@ func (c *Client) ImportCourse(filename string, data []byte) (string, error) {
 		return "", err
 	}
 
-	raw, status, err := c.do(http.MethodPost, c.APIBase+coursePath+"/import", &body,
+	raw, status, err := c.do(ctx, http.MethodPost, c.APIBase+coursePath+"/import", &body,
 		form.FormDataContentType(),
 		header{"Authorization", "Bearer " + bearer},
 		// Connect's services answer HTML to a browser-shaped request and JSON
@@ -86,15 +87,15 @@ func (c *Client) ImportCourse(filename string, data []byte) (string, error) {
 	if id, err := courseID(raw); err == nil {
 		return id, nil
 	}
-	return c.saveCourse(raw)
+	return c.saveCourse(ctx, raw)
 }
 
 // saveCourse turns a parsed course into a saved one.
 //
 // The body is what /import handed back with one addition: /import never sets
 // coursePrivacy, but the save endpoint rejects the DTO without a valid value.
-func (c *Client) saveCourse(parsed []byte) (string, error) {
-	bearer, err := c.bearerToken()
+func (c *Client) saveCourse(ctx context.Context, parsed []byte) (string, error) {
+	bearer, err := c.bearerToken(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -104,7 +105,7 @@ func (c *Client) saveCourse(parsed []byte) (string, error) {
 		return "", err
 	}
 
-	raw, status, err := c.do(http.MethodPost, c.APIBase+coursePath, bytes.NewReader(body),
+	raw, status, err := c.do(ctx, http.MethodPost, c.APIBase+coursePath, bytes.NewReader(body),
 		"application/json",
 		header{"Authorization", "Bearer " + bearer},
 		header{"Accept", "application/json"},
@@ -133,17 +134,17 @@ func (c *Client) saveCourse(parsed []byte) (string, error) {
 }
 
 // DeleteCourse removes a course from the account.
-func (c *Client) DeleteCourse(id string) error {
+func (c *Client) DeleteCourse(ctx context.Context, id string) error {
 	if strings.TrimSpace(id) == "" {
 		return errors.New("garmin: no course id to delete")
 	}
 
-	bearer, err := c.bearerToken()
+	bearer, err := c.bearerToken(ctx)
 	if err != nil {
 		return err
 	}
 
-	raw, status, err := c.do(http.MethodDelete, c.APIBase+coursePath+"/"+id, nil, "",
+	raw, status, err := c.do(ctx, http.MethodDelete, c.APIBase+coursePath+"/"+id, nil, "",
 		header{"Authorization", "Bearer " + bearer},
 		header{"Accept", "application/json"},
 		header{"X-Requested-With", "XMLHttpRequest"},
@@ -356,13 +357,13 @@ type courseSummaryDTO struct {
 }
 
 // ListCourses lists every course already on the account.
-func (c *Client) ListCourses() ([]Course, error) {
-	bearer, err := c.bearerToken()
+func (c *Client) ListCourses(ctx context.Context) ([]Course, error) {
+	bearer, err := c.bearerToken(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	raw, status, err := c.do(http.MethodGet, c.APIBase+coursesOwnerPath, nil, "",
+	raw, status, err := c.do(ctx, http.MethodGet, c.APIBase+coursesOwnerPath, nil, "",
 		header{"Authorization", "Bearer " + bearer},
 		header{"Accept", "application/json"},
 		header{"X-Requested-With", "XMLHttpRequest"},
@@ -402,17 +403,17 @@ func (c *Client) ListCourses() ([]Course, error) {
 // DownloadGPX fetches a course's track as GPX — the format this app already
 // parses everywhere else (internal/gpx), so a downloaded course needs no new
 // parser to become a Route.
-func (c *Client) DownloadGPX(courseID string) ([]byte, error) {
+func (c *Client) DownloadGPX(ctx context.Context, courseID string) ([]byte, error) {
 	if strings.TrimSpace(courseID) == "" {
 		return nil, errors.New("garmin: no course id to download")
 	}
 
-	bearer, err := c.bearerToken()
+	bearer, err := c.bearerToken(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	raw, status, err := c.do(http.MethodGet, c.APIBase+coursePath+"/gpx/"+courseID, nil, "",
+	raw, status, err := c.do(ctx, http.MethodGet, c.APIBase+coursePath+"/gpx/"+courseID, nil, "",
 		header{"Authorization", "Bearer " + bearer},
 		header{"Accept", "*/*"},
 		header{"X-Requested-With", "XMLHttpRequest"},

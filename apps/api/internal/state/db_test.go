@@ -66,7 +66,7 @@ func TestDBStoreEachEngine(t *testing.T) {
 			t.Run("record and read back", func(t *testing.T) {
 				store := open(t)
 
-				if err := store.Record(Entry{
+				if err := store.Record(t.Context(), Entry{
 					AccountID: "garmin:one", Slug: "kemmelberg-loop",
 					RemoteID: "remote-1", ContentHash: "abc", Name: "Kemmelberg Loop",
 				}); err != nil {
@@ -92,13 +92,13 @@ func TestDBStoreEachEngine(t *testing.T) {
 				store := open(t)
 
 				base := Entry{AccountID: "garmin:one", Slug: "loop", RemoteID: "r1", ContentHash: "v1"}
-				if err := store.Record(base); err != nil {
+				if err := store.Record(t.Context(), base); err != nil {
 					t.Fatal(err)
 				}
 				updated := base
 				updated.ContentHash = "v2"
 				updated.RemoteID = "r2"
-				if err := store.Record(updated); err != nil {
+				if err := store.Record(t.Context(), updated); err != nil {
 					t.Fatal(err)
 				}
 
@@ -117,7 +117,7 @@ func TestDBStoreEachEngine(t *testing.T) {
 				store := open(t)
 
 				for _, account := range []string{"garmin:one", "wahoo:two"} {
-					if err := store.Record(Entry{
+					if err := store.Record(t.Context(), Entry{
 						AccountID: account, Slug: "loop",
 						RemoteID: "remote-" + account, ContentHash: "abc",
 					}); err != nil {
@@ -130,7 +130,7 @@ func TestDBStoreEachEngine(t *testing.T) {
 					t.Errorf("garmin view = %+v", garmin)
 				}
 
-				if err := store.Forget("garmin:one", "loop"); err != nil {
+				if err := store.Forget(t.Context(), "garmin:one", "loop"); err != nil {
 					t.Fatal(err)
 				}
 				if len(mustForAccount(t, store, "garmin:one")) != 0 {
@@ -142,7 +142,7 @@ func TestDBStoreEachEngine(t *testing.T) {
 			})
 
 			t.Run("forget is harmless when nothing matches", func(t *testing.T) {
-				if err := open(t).Forget("garmin:one", "never-existed"); err != nil {
+				if err := open(t).Forget(t.Context(), "garmin:one", "never-existed"); err != nil {
 					t.Errorf("forget on a missing entry returned %v", err)
 				}
 			})
@@ -161,7 +161,7 @@ func TestDBStoreEachEngine(t *testing.T) {
 					{AccountID: "garmin:one", Slug: "beta"},
 					{AccountID: "garmin:one", Slug: "alpha"},
 				} {
-					if err := store.Record(e); err != nil {
+					if err := store.Record(t.Context(), e); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -186,7 +186,7 @@ func TestDBStateSurvivesRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := first.Record(Entry{
+	if err := first.Record(t.Context(), Entry{
 		AccountID: "garmin:one", Slug: "loop", RemoteID: "remote-1", ContentHash: "abc",
 	}); err != nil {
 		t.Fatal(err)
@@ -212,7 +212,7 @@ func TestDBStateSurvivesRestart(t *testing.T) {
 func TestMigrateIsIdempotent(t *testing.T) {
 	store := openSQLiteStore(t).(*DBStore)
 
-	if err := store.Record(Entry{AccountID: "a", Slug: "b", RemoteID: "r", ContentHash: "h"}); err != nil {
+	if err := store.Record(t.Context(), Entry{AccountID: "a", Slug: "b", RemoteID: "r", ContentHash: "h"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.migrate(); err != nil {

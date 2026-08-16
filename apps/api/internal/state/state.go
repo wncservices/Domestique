@@ -7,6 +7,7 @@
 package state
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -32,10 +33,10 @@ type Entry struct {
 // re-pushes every route to every device, and panicking takes the server down.
 // The caller has to decide, so it has to be told.
 type Store interface {
-	All() ([]Entry, error)
-	ForAccount(accountID string) (map[string]Entry, error)
-	Record(e Entry) error
-	Forget(accountID, slug string) error
+	All(ctx context.Context) ([]Entry, error)
+	ForAccount(ctx context.Context, accountID string) (map[string]Entry, error)
+	Record(ctx context.Context, e Entry) error
+	Forget(ctx context.Context, accountID, slug string) error
 }
 
 type fileStore struct {
@@ -66,7 +67,7 @@ func Open(path string) (Store, error) {
 	return s, nil
 }
 
-func (s *fileStore) All() ([]Entry, error) {
+func (s *fileStore) All(context.Context) ([]Entry, error) {
 	out := make([]Entry, 0, len(s.entries))
 	for _, e := range s.entries {
 		out = append(out, e)
@@ -80,7 +81,7 @@ func (s *fileStore) All() ([]Entry, error) {
 	return out, nil
 }
 
-func (s *fileStore) ForAccount(accountID string) (map[string]Entry, error) {
+func (s *fileStore) ForAccount(_ context.Context, accountID string) (map[string]Entry, error) {
 	out := map[string]Entry{}
 	for _, e := range s.entries {
 		if e.AccountID == accountID {
@@ -90,13 +91,13 @@ func (s *fileStore) ForAccount(accountID string) (map[string]Entry, error) {
 	return out, nil
 }
 
-func (s *fileStore) Record(e Entry) error {
+func (s *fileStore) Record(_ context.Context, e Entry) error {
 	e.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	s.entries[key(e.AccountID, e.Slug)] = e
 	return s.flush()
 }
 
-func (s *fileStore) Forget(accountID, slug string) error {
+func (s *fileStore) Forget(_ context.Context, accountID, slug string) error {
 	delete(s.entries, key(accountID, slug))
 	return s.flush()
 }
@@ -108,7 +109,7 @@ func (s *fileStore) flush() error {
 		return err
 	}
 
-	entries, err := s.All()
+	entries, err := s.All(context.Background())
 	if err != nil {
 		return err
 	}
