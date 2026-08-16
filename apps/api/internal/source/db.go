@@ -11,6 +11,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/XSAM/otelsql"
+	"go.opentelemetry.io/otel/attribute"
+
 	_ "github.com/jackc/pgx/v5/stdlib" // PostgreSQL, for the deployed instance
 	_ "modernc.org/sqlite"             // SQLite, pure Go: no cgo, so the image stays small
 
@@ -80,7 +83,7 @@ func OpenDB(dsn string) (*DB, error) {
 		connString = dsn + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
 	}
 
-	db, err := sql.Open(d.Driver, connString)
+	db, err := otelsql.Open(d.Driver, connString, otelsql.WithAttributes(attribute.String("db.system", d.Name)))
 	if err != nil {
 		return nil, err
 	}

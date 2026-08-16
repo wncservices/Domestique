@@ -3,6 +3,7 @@ module github.com/wncservices/domestique/apps/api
 go 1.26.6
 
 require (
+	github.com/XSAM/otelsql v0.43.0
 	github.com/coreos/go-oidc/v3 v3.20.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/muktihari/fit v0.28.3

@@ -423,6 +423,25 @@ cluster already does observability (see `lab/AGENTS.md`'s Observability wiring):
 - **`runServe` now catches SIGTERM** (`signal.NotifyContext`) specifically so the trace batch
   exporter gets a chance to flush before a pod restart kills the process — previously the server
   had no graceful shutdown of any kind, relying on the OS to just end it.
+- **DB queries carry real spans, nested under the request that triggered them**, not disconnected
+  roots. That took a real prerequisite: `source.Library` and `state.Store` threaded no
+  `context.Context` at all before this — not through either interface, both implementations, the
+  CLI, or `internal/sync`'s diff engine — so `internal/source/db.go` and `internal/state/db.go`
+  switch from `sql.Open` to `github.com/XSAM/otelsql`'s `Open`, and every query uses
+  `QueryContext`/`ExecContext`/`QueryRowContext` instead of the context-less versions. Verified
+  against real decoded OTLP protobuf (a throwaway collector using
+  `go.opentelemetry.io/proto/otlp`), not assumed: a `GET /api/routes` request's `SELECT ... FROM
+  routes` span carries the HTTP server span's own id as `parent_span_id`.
+  `accounts.Store` (a separate package) is **not** included — deliberately out of scope, so its
+  queries still show up as disconnected root spans; a real gap, not an oversight, and a candidate
+  for its own follow-up if it matters.
+- **Outbound HTTP calls carry spans too**, on the same principle: `oidcflow`, `komoot.Client` and
+  `garmin.Client` each wrap their `http.Client`'s `Transport` in `otelhttp.NewTransport`, and each
+  needed the same context-threading treatment as the DB before that Transport had a real parent to
+  attach to — `komoot.Client`/`garmin.Client` took no `context.Context` anywhere originally, unlike
+  `oidcflow` which already did. `garmin.Client`'s threading runs through `internal/targets`
+  (`Target`/`Courses` interfaces, the `Garmin`/`Wahoo` adapters) and `internal/sync` (`BuildPlan`,
+  `Apply`), since the push path is the same call chain `state.Store` already required touching.
 
 ## Security guardrails
 
