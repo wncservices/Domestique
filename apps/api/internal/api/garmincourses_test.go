@@ -183,6 +183,13 @@ func TestGarminCourseImportCreatesRoutes(t *testing.T) {
 	if len(routes) != 1 || routes[0].Name != "Kemmelberg Loop" {
 		t.Errorf("library = %+v, want the imported route", routes)
 	}
+	// Tagged the same way a Komoot import is: a plain "garmin" origin tag
+	// plus "garmin:<course id>" — the latter not load-bearing for dedup
+	// (garminTrackedRemoteIDs reads sync_state, not tags) but the origin
+	// should still be visible on the route itself.
+	if got := routes[0].Tags; len(got) != 2 || got[0] != "garmin" || got[1] != "garmin:1" {
+		t.Errorf("tags = %v, want [garmin garmin:1]", got)
+	}
 }
 
 // A route synced back from Garmin already exists on the account it came

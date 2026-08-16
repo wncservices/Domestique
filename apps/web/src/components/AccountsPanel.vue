@@ -219,17 +219,16 @@ async function unlink(account: Account) {
           class="w-full pl-7"
         >
           <div class="flex flex-wrap gap-1.5">
-            <UBadge
+            <UTooltip
               v-for="device in devices"
               :key="device.id"
-              color="neutral"
-              variant="subtle"
-              size="sm"
-              icon="i-lucide-watch"
+              text="Garmin Connect's own record of when this device last synced with it — not whether Domestique has pushed a route to it. A course reaches the device the next time it syncs with Connect, the same way it always has."
             >
-              {{ device.name }}
-              <span class="ml-1 text-dimmed">· {{ lastSync(device) }}</span>
-            </UBadge>
+              <UBadge color="neutral" variant="subtle" size="sm" icon="i-lucide-watch">
+                {{ device.name }}
+                <span class="ml-1 text-dimmed">· {{ lastSync(device) }}</span>
+              </UBadge>
+            </UTooltip>
           </div>
         </div>
       </div>
