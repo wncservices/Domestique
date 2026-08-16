@@ -1,5 +1,115 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:recommended"],
-  "dependencyDashboard": true
+  "extends": ["config:recommended", "schedule:weekly"],
+  "dependencyDashboard": true,
+  "packageRules": [
+    {
+      "matchManagers": ["gomod"],
+      "groupName": "go dependencies"
+    },
+    {
+      "matchManagers": ["npm"],
+      "groupName": "web dependencies"
+    },
+    {
+      "matchManagers": ["github-actions"],
+      "groupName": "github actions"
+    },
+    {
+      "matchDepNames": ["node"],
+      "groupName": "Node toolchain (Dockerfile, compose.yaml, .nvmrc, .tool-versions)"
+    },
+    {
+      "matchDepNames": ["golang"],
+      "groupName": "Go toolchain (Dockerfile, compose.yaml, .tool-versions)"
+    },
+    {
+      "matchDepNames": ["golangci/golangci-lint"],
+      "groupName": "golangci-lint (.tool-versions, ci.yml)"
+    }
+  ],
+  "dockerfile": {
+    "enabled": false
+  },
+  "docker-compose": {
+    "enabled": false
+  },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "fileMatch": ["^Dockerfile$"],
+      "matchStrings": [
+        "FROM --platform=\\$BUILDPLATFORM node:(?<currentValue>[\\d.]+)-alpine AS web"
+      ],
+      "depNameTemplate": "node",
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "fileMatch": ["^Dockerfile$"],
+      "matchStrings": [
+        "FROM --platform=\\$BUILDPLATFORM golang:(?<currentValue>[\\d.]+)-alpine AS api"
+      ],
+      "depNameTemplate": "golang",
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "fileMatch": ["^compose\\.yaml$"],
+      "matchStrings": ["image: node:(?<currentValue>[\\d.]+)-alpine"],
+      "depNameTemplate": "node",
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "fileMatch": ["^compose\\.yaml$"],
+      "matchStrings": ["image: golang:(?<currentValue>[\\d.]+)-alpine"],
+      "depNameTemplate": "golang",
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "fileMatch": ["^\\.nvmrc$"],
+      "matchStrings": ["(?<currentValue>[\\d.]+)"],
+      "depNameTemplate": "node",
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "fileMatch": ["^\\.tool-versions$"],
+      "matchStrings": ["nodejs (?<currentValue>[\\d.]+)"],
+      "depNameTemplate": "node",
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "fileMatch": ["^\\.tool-versions$"],
+      "matchStrings": ["golang (?<currentValue>[\\d.]+)"],
+      "depNameTemplate": "golang",
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "fileMatch": ["^\\.tool-versions$"],
+      "matchStrings": ["golangci-lint (?<currentValue>[\\d.]+)"],
+      "depNameTemplate": "golangci/golangci-lint",
+      "datasourceTemplate": "github-releases",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "fileMatch": ["^\\.github/workflows/ci\\.yml$"],
+      "matchStrings": ["GOLANGCI_LINT_VERSION: v(?<currentValue>[\\d.]+)"],
+      "depNameTemplate": "golangci/golangci-lint",
+      "datasourceTemplate": "github-releases",
+      "versioningTemplate": "semver"
+    }
+  ]
 }
