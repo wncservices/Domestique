@@ -64,17 +64,15 @@ func TestLandingIsServedOnlyOnTheApex(t *testing.T) {
 	}
 }
 
-// Browsers request /favicon.ico on their own, regardless of the <link
-// rel="icon"> tag either page declares — the build only ever produces
-// favicon.svg, so without a rewrite this fell through to whatever unknown
-// paths get on that host: the landing page's own content on the apex, or
-// (mode: oidc, anonymous) a redirect on the app host. Either way, an HTML
-// response or a redirect where a browser wanted an icon.
-func TestFaviconIcoServesTheSVGFavicon(t *testing.T) {
+// The build now produces a real favicon.ico (browsers request it on their
+// own, regardless of the <link rel="icon"> tag either page declares) — it
+// must be served as itself, not swept up by the landing page or the SPA
+// shell, on either host.
+func TestFaviconIcoServesTheRealFavicon(t *testing.T) {
 	web := fstest.MapFS{
 		"index.html":   {Data: []byte("<html>APP</html>")},
 		"landing.html": {Data: []byte("<html>LANDING</html>")},
-		"favicon.svg":  {Data: []byte("<svg>ICON</svg>")},
+		"favicon.ico":  {Data: []byte("ICOBYTES")},
 	}
 
 	for _, tc := range []struct{ name, host string }{
@@ -89,24 +87,21 @@ func TestFaviconIcoServesTheSVGFavicon(t *testing.T) {
 			rec := httptest.NewRecorder()
 			srv.spaHandler().ServeHTTP(rec, req)
 
-			if rec.Code != http.StatusOK || rec.Body.String() != "<svg>ICON</svg>" {
-				t.Errorf("status %d body %q, want the svg favicon", rec.Code, rec.Body.String())
-			}
-			if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "svg") {
-				t.Errorf("Content-Type = %q, want an svg type", ct)
+			if rec.Code != http.StatusOK || rec.Body.String() != "ICOBYTES" {
+				t.Errorf("status %d body %q, want the real favicon.ico", rec.Code, rec.Body.String())
 			}
 		})
 	}
 }
 
-// The same rewrite has to survive the anonymous mode: oidc redirect on the
-// app host — the one path that answered with a 302 rather than HTML, which
-// is just as unusable to a browser's favicon.ico probe.
+// Real files are exempted from the anonymous mode: oidc redirect the same
+// way /assets/... is — the one path that answered with a 302 rather than the
+// file, which is just as unusable to a browser's favicon.ico probe.
 func TestFaviconIcoSurvivesTheAnonymousOIDCRedirect(t *testing.T) {
 	web := fstest.MapFS{
 		"index.html":   {Data: []byte("<html>APP</html>")},
 		"landing.html": {Data: []byte("<html>LANDING</html>")},
-		"favicon.svg":  {Data: []byte("<svg>ICON</svg>")},
+		"favicon.ico":  {Data: []byte("ICOBYTES")},
 	}
 	srv := &Server{WebFS: web, LandingHost: "domestique.dev", Auth: oidcAuthenticator(t)}
 
@@ -115,8 +110,8 @@ func TestFaviconIcoSurvivesTheAnonymousOIDCRedirect(t *testing.T) {
 	rec := httptest.NewRecorder()
 	srv.spaHandler().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK || rec.Body.String() != "<svg>ICON</svg>" {
-		t.Errorf("status %d body %q, want the svg favicon, not the redirect", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK || rec.Body.String() != "ICOBYTES" {
+		t.Errorf("status %d body %q, want the favicon, not the redirect", rec.Code, rec.Body.String())
 	}
 }
 
