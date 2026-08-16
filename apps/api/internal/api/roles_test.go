@@ -548,3 +548,32 @@ func (h *authHarness) routeTargets(t *testing.T) []string {
 	}
 	return library.Routes[0].Targets
 }
+
+// /api/config's Source names the database host and port — internal cluster
+// topology, not a rider's business, even though it carries no password (see
+// dbx.Redact). Only an admin should see it at all.
+func TestConfigSourceIsAdminOnly(t *testing.T) {
+	h := newAuthHarness(t, nil)
+
+	configFor := func(user, groups string) string {
+		t.Helper()
+		resp := h.as(user, groups, http.MethodGet, "/api/config", "")
+		var body struct {
+			Source string `json:"source"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		return body.Source
+	}
+
+	if got := configFor("wilant", "domestique-admins"); got == "" {
+		t.Error("admin got no source, want the database description")
+	}
+	if got := configFor("wilant", "cyclists"); got != "" {
+		t.Errorf("rider got source %q, want it withheld", got)
+	}
+	if got := configFor("guest", "guests"); got != "" {
+		t.Errorf("viewer got source %q, want it withheld", got)
+	}
+}

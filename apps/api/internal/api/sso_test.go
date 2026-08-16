@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -55,6 +56,7 @@ func newFakeIssuer(t *testing.T) *fakeIssuer {
 			"authorization_endpoint": f.server.URL + "/authorize",
 			"token_endpoint":         f.server.URL + "/token",
 			"jwks_uri":               f.server.URL + "/jwks",
+			"end_session_endpoint":   f.server.URL + "/end-session",
 		})
 	})
 	mux.HandleFunc("/jwks", func(w http.ResponseWriter, r *http.Request) {
@@ -506,10 +508,86 @@ func TestSSOLogoutEndsTheSessionForReal(t *testing.T) {
 	if err := json.NewDecoder(logoutResp.Body).Decode(&body); err != nil {
 		t.Fatal(err)
 	}
+	// No LandingHost configured on this harness — everyone gets the app, so
+	// the fallback (this request's own origin) is the right landing place.
+	// The end-session endpoint itself lives on the issuer, a separate
+	// httptest server from h.base (the app).
+	if !strings.HasPrefix(body.RedirectTo, h.issuer.server.URL+"/end-session?") {
+		t.Errorf("redirectTo = %q, want the issuer's end-session endpoint", body.RedirectTo)
+	}
+	if !strings.Contains(body.RedirectTo, "post_logout_redirect_uri="+url.QueryEscape(h.base+"/")) {
+		t.Errorf("redirectTo = %q, want it to carry this harness's own origin as the post-logout uri", body.RedirectTo)
+	}
 
 	me := meBody(t, h.get("/api/me"))
 	if me["authenticated"] != false {
 		t.Errorf("me = %v after logout, want anonymous", me)
+	}
+}
+
+// The app host (app.domestique.dev) is where a logout request is made from,
+// but it is not where a now-anonymous visitor belongs — mode: oidc redirects
+// anonymous visitors to LandingHost everywhere else (spaHandler), and
+// logout must land there too rather than on a host that just bounces them
+// straight back. Found live: this used to redirect back to the app host.
+func TestSSOLogoutRedirectsToTheLandingHostNotTheAppHost(t *testing.T) {
+	issuer := newFakeIssuer(t)
+
+	flow, err := oidcflow.New(context.Background(), oidcflow.Config{
+		Issuer: issuer.server.URL, ClientID: "domestique-test", ClientSecret: "test-secret",
+		Scopes: []string{"openid"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	authenticator, err := auth.New(auth.Config{
+		Mode: auth.ModeOIDC,
+		OIDC: auth.OIDCConfig{
+			Issuer: issuer.server.URL, ClientID: "domestique-test",
+			RedirectURL: "https://app.domestique.test/sso/callback",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := &api.Server{
+		Auth:        authenticator,
+		OIDC:        flow,
+		LandingHost: "domestique.test",
+	}
+	server := httptest.NewServer(srv.Handler())
+	t.Cleanup(server.Close)
+
+	// The request itself carries the app host, not the landing one — the
+	// bug this test exists for is redirectTo copying r.Host instead of
+	// looking at LandingHost.
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/sso/logout", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "app.domestique.test"
+	resp, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	var body struct {
+		RedirectTo string `json:"redirectTo"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+
+	wantURI := "post_logout_redirect_uri=" + url.QueryEscape("https://domestique.test/")
+	if !strings.Contains(body.RedirectTo, wantURI) {
+		t.Errorf("redirectTo = %q, want it to carry the landing host (%s), not app.domestique.test",
+			body.RedirectTo, wantURI)
+	}
+	if strings.Contains(body.RedirectTo, "app.domestique.test") {
+		t.Errorf("redirectTo = %q, still carries the app host it should not", body.RedirectTo)
 	}
 }
 
