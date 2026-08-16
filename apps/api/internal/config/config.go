@@ -37,6 +37,17 @@ type KomootConfig struct {
 	IncludeRecorded bool `yaml:"include_recorded,omitempty"`
 }
 
+// WahooConfig is how riders connect their own Wahoo account.
+//
+// The client id/secret are NOT here, same rule as Komoot's credentials:
+// WAHOO_CLIENT_ID and WAHOO_CLIENT_SECRET come from the environment,
+// sourced from Vault in a cluster. RedirectURL is not a secret — it must
+// equal, exactly, what is registered with Wahoo — so it belongs in a config
+// file meant to be readable, the same way auth.oidc.redirect_url does.
+type WahooConfig struct {
+	RedirectURL string `yaml:"redirect_url,omitempty"`
+}
+
 // Config is domestique.yaml.
 //
 // Deliberately small. Accounts are not here: they are linked by riders through
@@ -57,6 +68,7 @@ type Config struct {
 	Web    WebConfig    `yaml:"web"`
 	Auth   auth.Config  `yaml:"auth"`
 	Komoot KomootConfig `yaml:"komoot"`
+	Wahoo  WahooConfig  `yaml:"wahoo"`
 }
 
 // DefaultDSN is where a database library lives unless configured otherwise.

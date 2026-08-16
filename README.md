@@ -342,7 +342,7 @@ The Helm chart lives in its own repo now — [Domestique-chart](https://github.c
 | 1 | Library, diff engine, CLI, API, web UI | ✅ |
 | 2 | GPX → FIT course conversion, with inferred turn cues | ✅ |
 | 3 | Garmin: sign-in, FIT course upload, push wired to the library, course import + de-duplication | ✅ |
-| 4 | Wahoo push (Cloud API) | ⬜ stub, needs approved API access |
+| 4 | Wahoo push (Cloud API) | 🟡 OAuth2 connect/callback ✅, route push ⬜ |
 | 5 | Deploy: Helm chart ✅, `mode: oidc` (Auth0 + Google) ✅, admin People page ✅, scheduled reconcile ⬜, Vault-backed tokens ✅ | 🟡 |
 | 6 | Metrics (`/api/metrics`, push success/failure) ✅, OpenTelemetry tracing ✅, `ServiceMonitor` + alert rules ⬜ | 🟡 |
 

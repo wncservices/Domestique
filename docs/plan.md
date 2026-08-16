@@ -143,7 +143,7 @@ test can establish that a real head unit accepts the file.
 | 1e | One storage model: the filesystem library removed | ✅ |
 | 2 | GPX → FIT course conversion, with inferred turn cues | ✅ |
 | 3 | Garmin push, course import, de-duplication | ✅ |
-| 4 | Wahoo push | ⬜ stub, **blocked** on API access |
+| 4 | Wahoo push | 🟡 API access granted, OAuth2 connect/callback ✅, route push ⬜ |
 | 5 | Deploy: Helm chart ✅, ArgoCD ✅, `mode: oidc` (Auth0 + Google) ✅, admin People page ✅, Vault-backed credentials ✅, scheduled reconcile ⬜ | 🟡 |
 | 6 | Metrics (`/api/metrics`, push success/failure per account) ✅, OpenTelemetry tracing (HTTP, DB, every outbound call) ✅, `ServiceMonitor` + alert rules ⬜ | 🟡 |
 
