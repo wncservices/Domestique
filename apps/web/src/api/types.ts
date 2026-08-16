@@ -255,6 +255,27 @@ export interface GarminConnection {
   consumer?: GarminConsumer
 }
 
+/** One rider's authorization of their own Wahoo account.
+ *
+ *  Unlike Garmin/Komoot there is no sign-in form here — connecting is a
+ *  redirect to Wahoo's own consent screen (`/wahoo/connect`), so this
+ *  carries no email/password fields to fill in, only status to show. */
+export interface WahooConnection {
+  connected: boolean
+  email?: string
+  displayName?: string
+  updatedAt?: string
+  /** When the stored access token stops working — unlike Garmin's rough
+   *  one-year guess, this is exact, and expiring it does not mean
+   *  reconnecting: a refresh happens automatically at the next push. */
+  expiresAt?: string
+  expired?: boolean
+  /** False when a connection could not be stored or completed; see `unavailable`. */
+  canConnect: boolean
+  /** Why connecting is not on offer, in words worth showing. */
+  unavailable?: string
+}
+
 /** A head unit registered to a connected Garmin account.
  *
  *  Informational: a course is pushed to the account and Connect syncs it to
