@@ -1270,6 +1270,7 @@ func (s *Server) targetFactory() targets.Factory {
 	return targets.Factory{
 		Track:  s.Source.Track,
 		Garmin: s.garminCourses,
+		Wahoo:  s.wahooRoutes,
 		// Off, matching the download's default. The cues are inferred from
 		// the track's shape, not authored, and a wrong one at a junction is
 		// worse than none — not something to opt a rider into silently on

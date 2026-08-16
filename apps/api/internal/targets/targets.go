@@ -37,11 +37,8 @@ type Courses interface {
 // UI can say "not wired up" rather than offering a push that always fails.
 func Implemented(p model.Provider) bool {
 	switch p {
-	case model.ProviderGarmin:
+	case model.ProviderGarmin, model.ProviderWahoo:
 		return true
-	case model.ProviderWahoo:
-		// Phase 4. See wahoo.go.
-		return false
 	default:
 		return false
 	}
@@ -59,6 +56,10 @@ type Factory struct {
 	Track func(ctx context.Context, slug string) ([]gpx.Point, error)
 	// Garmin resolves the signed-in Garmin client for a rider.
 	Garmin func(rider string) (Courses, error)
+	// Wahoo resolves the signed-in Wahoo client for a rider. Takes a
+	// context because resolving one can mean refreshing an expired access
+	// token — see Wahoo's own Routes field doc comment.
+	Wahoo func(ctx context.Context, rider string) (WahooRoutes, error)
 	// TurnCues asks adapters for cues inferred from the track's geometry.
 	TurnCues bool
 	// Log receives what is worth knowing and not worth failing over.
@@ -77,7 +78,12 @@ func (f Factory) Build(account model.Account) (Target, error) {
 			Log:      f.Log,
 		}, nil
 	case model.ProviderWahoo:
-		return &Wahoo{Account: account}, nil
+		return &Wahoo{
+			Account: account,
+			Track:   f.Track,
+			Routes:  f.Wahoo,
+			Log:     f.Log,
+		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported provider %q", account.Provider)
 	}

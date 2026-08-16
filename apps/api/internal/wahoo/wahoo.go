@@ -17,12 +17,14 @@ package wahoo
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -231,6 +233,137 @@ func (c *Client) Me(ctx context.Context, accessToken string) (Profile, error) {
 		return Profile{}, fmt.Errorf("wahoo: unreadable profile response: %s", snippet(body))
 	}
 	return p, nil
+}
+
+// workoutTypeFamilyBiking is Wahoo's fixed classification for every route
+// this app pushes — the Workout Type Family the Cloud API docs list as
+// "0 = BIKING". Not configurable: this is a cycling route library, and
+// nothing here has ever produced any other kind of route.
+const workoutTypeFamilyBiking = 0
+
+// RouteRequest is what CreateRoute/UpdateRoute send to Wahoo's Cloud API.
+type RouteRequest struct {
+	ExternalID  string
+	Name        string
+	Description string
+	// UpdatedAt is route[provider_updated_at] — when this route last
+	// changed on our side, since we are the "external" system from Wahoo's
+	// point of view.
+	UpdatedAt time.Time
+	DistanceM float64
+	AscentM   float64
+	StartLat  float64
+	StartLng  float64
+	Filename  string
+	// FIT is the raw course file. Wahoo will not take a GPX — see
+	// internal/targets/wahoo.go's doc comment for why.
+	FIT []byte
+}
+
+// routeResponse is the Cloud API's shape for a route object — this package
+// reads only the id, the one field CreateRoute/UpdateRoute have to return.
+type routeResponse struct {
+	ID int64 `json:"id"`
+}
+
+// CreateRoute pushes a new route and returns Wahoo's id for it.
+func (c *Client) CreateRoute(ctx context.Context, accessToken string, route RouteRequest) (string, error) {
+	return c.routeRequest(ctx, http.MethodPost, c.APIBase+"/v1/routes", accessToken, route)
+}
+
+// UpdateRoute replaces an existing route's file and metadata in place.
+//
+// Unlike Garmin's course service, Wahoo's routes are a real REST resource —
+// a PUT here is what it says it is, not an import-then-delete dance.
+func (c *Client) UpdateRoute(ctx context.Context, accessToken, id string, route RouteRequest) (string, error) {
+	return c.routeRequest(ctx, http.MethodPut, c.APIBase+"/v1/routes/"+id, accessToken, route)
+}
+
+// DeleteRoute removes a route from the account.
+func (c *Client) DeleteRoute(ctx context.Context, accessToken, id string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.APIBase+"/v1/routes/"+id, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return fmt.Errorf("wahoo: delete route: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return fmt.Errorf("wahoo: reading delete response: %w", err)
+	}
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("wahoo: delete route returned %d: %s", resp.StatusCode, snippet(body))
+	}
+	return nil
+}
+
+// routeRequest is Create and Update's shared shape: same form-encoded body,
+// same response parsing, different method and URL.
+//
+// route[file] carries a data URI, not bare base64 — "data:application/vnd.fit;base64,<...>",
+// exactly as the Cloud API docs show it. Getting this wrong silently produces
+// a 422 with no field-level detail worth trusting, which cost real time to
+// track down; it is written out here so nobody has to rediscover it.
+func (c *Client) routeRequest(ctx context.Context, method, endpoint, accessToken string, route RouteRequest) (string, error) {
+	if len(route.FIT) == 0 {
+		return "", errors.New("wahoo: refusing to push a route with no course file")
+	}
+
+	form := url.Values{
+		"route[external_id]":            {route.ExternalID},
+		"route[name]":                   {route.Name},
+		"route[provider_updated_at]":    {route.UpdatedAt.UTC().Format(time.RFC3339)},
+		"route[workout_type_family_id]": {strconv.Itoa(workoutTypeFamilyBiking)},
+		"route[start_lat]":              {strconv.FormatFloat(route.StartLat, 'f', -1, 64)},
+		"route[start_lng]":              {strconv.FormatFloat(route.StartLng, 'f', -1, 64)},
+		"route[distance]":               {strconv.FormatFloat(route.DistanceM, 'f', -1, 64)},
+		"route[ascent]":                 {strconv.FormatFloat(route.AscentM, 'f', -1, 64)},
+		"route[file]":                   {"data:application/vnd.fit;base64," + base64.StdEncoding.EncodeToString(route.FIT)},
+	}
+	if route.Description != "" {
+		form.Set("route[description]", route.Description)
+	}
+	if route.Filename != "" {
+		form.Set("route[filename]", route.Filename)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, strings.NewReader(form.Encode()))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("wahoo: route request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", fmt.Errorf("wahoo: reading route response: %w", err)
+	}
+	if resp.StatusCode >= 300 {
+		return "", fmt.Errorf("wahoo: route request returned %d: %s", resp.StatusCode, snippet(body))
+	}
+
+	var parsed routeResponse
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return "", fmt.Errorf("wahoo: unreadable route response: %s", snippet(body))
+	}
+	if parsed.ID == 0 {
+		return "", fmt.Errorf("wahoo: route response carried no id: %s", snippet(body))
+	}
+	return strconv.FormatInt(parsed.ID, 10), nil
 }
 
 func snippet(raw []byte) string {

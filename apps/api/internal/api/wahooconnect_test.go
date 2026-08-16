@@ -2,9 +2,11 @@ package api_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -16,22 +18,35 @@ import (
 	"github.com/wncservices/domestique/apps/api/internal/providerlink"
 	"github.com/wncservices/domestique/apps/api/internal/secrets"
 	"github.com/wncservices/domestique/apps/api/internal/source"
+	"github.com/wncservices/domestique/apps/api/internal/state"
 	"github.com/wncservices/domestique/apps/api/internal/wahoo"
 )
 
-// fakeWahooUpstream stands in for api.wahooligan.com: a token endpoint and a
-// profile endpoint, just enough to exercise Exchange and Me for real rather
-// than mocking the wahoo.Client itself.
+// fakeWahooUpstream stands in for api.wahooligan.com: token, profile and
+// routes endpoints, just enough to exercise Exchange/Me/CreateRoute/
+// UpdateRoute/DeleteRoute for real rather than mocking wahoo.Client itself.
 type fakeWahooUpstream struct {
 	server *httptest.Server
 	// failToken, when set, makes /oauth/token answer with this error code
 	// instead of a token — for the "wahoo did not accept the code" path.
 	failToken string
+	// tokenCalls counts /oauth/token hits, so a refresh can be told apart
+	// from the original exchange by the access token it hands back.
+	tokenCalls int
+	// nextRouteID is what the next POST /v1/routes returns as "id".
+	nextRouteID int
+
+	// createdRoutes/updatedRoutes/deletedRoutes/routeAuth record what
+	// reached the routes endpoints, for tests that care what a push sent.
+	createdRoutes []url.Values
+	updatedRoutes map[string]url.Values
+	deletedRoutes []string
+	routeAuth     []string
 }
 
 func newFakeWahooUpstream(t *testing.T) *fakeWahooUpstream {
 	t.Helper()
-	f := &fakeWahooUpstream{}
+	f := &fakeWahooUpstream{nextRouteID: 1, updatedRoutes: map[string]url.Values{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/oauth/token", func(w http.ResponseWriter, r *http.Request) {
 		if f.failToken != "" {
@@ -39,13 +54,39 @@ func newFakeWahooUpstream(t *testing.T) *fakeWahooUpstream {
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": f.failToken})
 			return
 		}
+		f.tokenCalls++
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"access_token": "at-1", "refresh_token": "rt-1",
+			"access_token": fmt.Sprintf("at-%d", f.tokenCalls), "refresh_token": "rt-1",
 			"expires_in": 3600, "scope": "user_read routes_read routes_write",
 		})
 	})
 	mux.HandleFunc("/v1/user", func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(wahoo.Profile{ID: 7, Email: "rider@example.test", First: "Rider", Last: "One"})
+	})
+	mux.HandleFunc("/v1/routes", func(w http.ResponseWriter, r *http.Request) {
+		f.routeAuth = append(f.routeAuth, r.Header.Get("Authorization"))
+		if err := r.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		f.createdRoutes = append(f.createdRoutes, r.PostForm)
+		id := f.nextRouteID
+		f.nextRouteID++
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": id})
+	})
+	mux.HandleFunc("/v1/routes/", func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimPrefix(r.URL.Path, "/v1/routes/")
+		f.routeAuth = append(f.routeAuth, r.Header.Get("Authorization"))
+		switch r.Method {
+		case http.MethodPut:
+			if err := r.ParseForm(); err != nil {
+				t.Fatal(err)
+			}
+			f.updatedRoutes[id] = r.PostForm
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": id})
+		case http.MethodDelete:
+			f.deletedRoutes = append(f.deletedRoutes, id)
+			w.WriteHeader(http.StatusNoContent)
+		}
 	})
 	f.server = httptest.NewServer(mux)
 	t.Cleanup(f.server.Close)
@@ -60,6 +101,7 @@ type wahooHarness struct {
 	links    *providerlink.Store
 	accounts *accounts.Store
 	upstream *fakeWahooUpstream
+	db       *source.DB
 }
 
 // newWahooHarness builds a server with Wahoo configured against a fake
@@ -93,6 +135,10 @@ func newWahooHarness(t *testing.T, withKey bool) *wahooHarness {
 	if err != nil {
 		t.Fatal(err)
 	}
+	stateStore, err := state.UseDB(db.Conn(), db.DSN())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	authenticator, err := auth.New(auth.Config{
 		Mode:  auth.ModeProxy,
@@ -105,6 +151,8 @@ func newWahooHarness(t *testing.T, withKey bool) *wahooHarness {
 	upstream := newFakeWahooUpstream(t)
 
 	srv := &api.Server{
+		Source:   db,
+		Store:    stateStore,
 		Auth:     authenticator,
 		Links:    links,
 		Accounts: accountStore,
@@ -134,7 +182,7 @@ func newWahooHarness(t *testing.T, withKey bool) *wahooHarness {
 
 	return &wahooHarness{
 		t: t, client: client, base: server.URL, box: box,
-		links: links, accounts: accountStore, upstream: upstream,
+		links: links, accounts: accountStore, upstream: upstream, db: db,
 	}
 }
 

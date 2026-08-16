@@ -1,0 +1,114 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+
+	"github.com/wncservices/domestique/apps/api/internal/providerlink"
+	"github.com/wncservices/domestique/apps/api/internal/targets"
+	"github.com/wncservices/domestique/apps/api/internal/wahoo"
+)
+
+// wahooRoutes resolves one rider's Wahoo client from their stored
+// connection, refreshing an expired access token along the way.
+//
+// Every failure here is "this rider cannot push to Wahoo," never "the push
+// is broken" — one account failing must leave the rest of the plan alone,
+// the same contract garminCourses keeps.
+//
+// Unlike Garmin, an expired token is not the end of the connection: Wahoo
+// issued a refresh token for exactly this, so a stale access token is
+// refreshed transparently here rather than asking the rider to reconnect —
+// reconnecting is reserved for when the refresh token itself no longer
+// works (revoked, or Wahoo expired it for inactivity).
+func (s *Server) wahooRoutes(ctx context.Context, rider string) (targets.WahooRoutes, error) {
+	if s.Wahoo == nil {
+		return nil, errors.New("this deployment has no Wahoo app credentials configured")
+	}
+	if s.Links == nil || rider == "" {
+		return nil, errors.New("no Wahoo sign-in to push with")
+	}
+
+	_, secret, err := s.Links.Secret(wahooProvider, rider)
+	if err != nil {
+		return nil, fmt.Errorf("%s has not connected Wahoo: %w", rider, err)
+	}
+
+	var session wahoo.Session
+	if err := json.Unmarshal([]byte(secret), &session); err != nil {
+		return nil, fmt.Errorf("the stored Wahoo sign-in for %s is unreadable: %w", rider, err)
+	}
+
+	if session.Expired() {
+		refreshed, err := s.Wahoo.Refresh(ctx, session.RefreshToken)
+		if err != nil {
+			return nil, fmt.Errorf("%s's Wahoo sign-in could not be refreshed: reconnect it in Settings: %w", rider, err)
+		}
+		session = refreshed
+
+		// #nosec G117 -- gosec flags AccessToken as a marshaled secret-looking
+		// field; this JSON exists only long enough to reach providerlink.Save
+		// a few lines down, which seals it with the app's AES-256-GCM key
+		// before it reaches the database. Same false positive as
+		// handleWahooCallback's identical marshal in wahooconnect.go.
+		sealed, err := json.Marshal(session)
+		if err != nil {
+			return nil, fmt.Errorf("encoding the refreshed wahoo session: %w", err)
+		}
+		// Save is a full upsert, not a patch — Email/DisplayName have to be
+		// carried forward explicitly or a refresh silently blanks them.
+		link, err := s.Links.Get(wahooProvider, rider)
+		if err != nil {
+			return nil, fmt.Errorf("re-reading the wahoo connection for %s: %w", rider, err)
+		}
+		if _, err := s.Links.Save(wahooProvider, rider, providerlink.Connection{
+			Email: link.Email, DisplayName: link.DisplayName, Secret: string(sealed),
+		}); err != nil {
+			return nil, fmt.Errorf("storing the refreshed wahoo session: %w", err)
+		}
+	}
+
+	return wahooSessionClient{client: s.Wahoo, token: session.AccessToken}, nil
+}
+
+// wahooSessionClient adapts *wahoo.Client (whose route methods take an
+// access token per call, since one Client is shared deployment-wide across
+// every rider) to targets.WahooRoutes (whose methods take none, resolved
+// once per push by wahooRoutes above) — the same bridging role
+// LiveGarmin.resume's returned *garmin.Client plays for Garmin, just as an
+// explicit wrapper instead of structural fit, because a shared client
+// genuinely needs the token as a parameter where Garmin's per-rider client
+// instance does not.
+type wahooSessionClient struct {
+	client *wahoo.Client
+	token  string
+}
+
+func (c wahooSessionClient) CreateRoute(ctx context.Context, route targets.WahooRoute) (string, error) {
+	return c.client.CreateRoute(ctx, c.token, toWahooRouteRequest(route))
+}
+
+func (c wahooSessionClient) UpdateRoute(ctx context.Context, id string, route targets.WahooRoute) (string, error) {
+	return c.client.UpdateRoute(ctx, c.token, id, toWahooRouteRequest(route))
+}
+
+func (c wahooSessionClient) DeleteRoute(ctx context.Context, id string) error {
+	return c.client.DeleteRoute(ctx, c.token, id)
+}
+
+func toWahooRouteRequest(route targets.WahooRoute) wahoo.RouteRequest {
+	return wahoo.RouteRequest{
+		ExternalID:  route.ExternalID,
+		Name:        route.Name,
+		Description: route.Description,
+		UpdatedAt:   route.UpdatedAt,
+		DistanceM:   route.DistanceM,
+		AscentM:     route.AscentM,
+		StartLat:    route.StartLat,
+		StartLng:    route.StartLng,
+		Filename:    route.Filename,
+		FIT:         route.FIT,
+	}
+}
