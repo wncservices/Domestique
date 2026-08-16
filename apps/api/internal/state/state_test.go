@@ -16,7 +16,7 @@ func tempState(t *testing.T) string {
 // fail. A failure here is a broken test, not a case under test.
 func mustAll(t *testing.T, store Store) []Entry {
 	t.Helper()
-	entries, err := store.All()
+	entries, err := store.All(t.Context())
 	if err != nil {
 		t.Fatalf("All: %v", err)
 	}
@@ -25,7 +25,7 @@ func mustAll(t *testing.T, store Store) []Entry {
 
 func mustForAccount(t *testing.T, store Store, accountID string) map[string]Entry {
 	t.Helper()
-	entries, err := store.ForAccount(accountID)
+	entries, err := store.ForAccount(t.Context(), accountID)
 	if err != nil {
 		t.Fatalf("ForAccount(%s): %v", accountID, err)
 	}
@@ -50,7 +50,7 @@ func TestStateSurvivesReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Record(Entry{
+	if err := store.Record(t.Context(), Entry{
 		AccountID: "garmin:wilant", Slug: "kemmelberg-loop",
 		RemoteID: "remote-1", ContentHash: "abc", Name: "Kemmelberg Loop",
 	}); err != nil {
@@ -81,13 +81,13 @@ func TestRecordUpdatesInPlace(t *testing.T) {
 	}
 
 	base := Entry{AccountID: "garmin:wilant", Slug: "loop", RemoteID: "r1", ContentHash: "v1"}
-	if err := store.Record(base); err != nil {
+	if err := store.Record(t.Context(), base); err != nil {
 		t.Fatal(err)
 	}
 
 	updated := base
 	updated.ContentHash = "v2"
-	if err := store.Record(updated); err != nil {
+	if err := store.Record(t.Context(), updated); err != nil {
 		t.Fatal(err)
 	}
 
@@ -109,7 +109,7 @@ func TestForAccountIsolatesAccounts(t *testing.T) {
 	}
 
 	for _, account := range []string{"garmin:wilant", "wahoo:friend"} {
-		if err := store.Record(Entry{
+		if err := store.Record(t.Context(), Entry{
 			AccountID: account, Slug: "loop",
 			RemoteID: "remote-" + account, ContentHash: "abc",
 		}); err != nil {
@@ -125,7 +125,7 @@ func TestForAccountIsolatesAccounts(t *testing.T) {
 		t.Errorf("unknown account returned %d entries", len(got))
 	}
 
-	if err := store.Forget("garmin:wilant", "loop"); err != nil {
+	if err := store.Forget(t.Context(), "garmin:wilant", "loop"); err != nil {
 		t.Fatal(err)
 	}
 	if len(mustForAccount(t, store, "garmin:wilant")) != 0 {
@@ -141,7 +141,7 @@ func TestForgetUnknownEntryIsHarmless(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Forget("garmin:wilant", "never-existed"); err != nil {
+	if err := store.Forget(t.Context(), "garmin:wilant", "never-existed"); err != nil {
 		t.Errorf("forget on a missing entry returned %v", err)
 	}
 }
@@ -157,7 +157,7 @@ func TestAllIsSortedForStableOutput(t *testing.T) {
 		{AccountID: "garmin:wilant", Slug: "beta"},
 		{AccountID: "garmin:wilant", Slug: "alpha"},
 	} {
-		if err := store.Record(e); err != nil {
+		if err := store.Record(t.Context(), e); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -195,7 +195,7 @@ func TestOpenCreatesParentDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Record(Entry{AccountID: "a", Slug: "b"}); err != nil {
+	if err := store.Record(t.Context(), Entry{AccountID: "a", Slug: "b"}); err != nil {
 		t.Fatalf("record into a nested path: %v", err)
 	}
 	if _, err := os.Stat(path); err != nil {

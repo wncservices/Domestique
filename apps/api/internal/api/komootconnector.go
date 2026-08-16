@@ -1,6 +1,10 @@
 package api
 
-import "github.com/wncservices/domestique/apps/api/internal/komoot"
+import (
+	"context"
+
+	"github.com/wncservices/domestique/apps/api/internal/komoot"
+)
 
 // LiveKomoot is the real connector: it talks to Komoot.
 //
@@ -10,9 +14,9 @@ import "github.com/wncservices/domestique/apps/api/internal/komoot"
 type LiveKomoot struct{}
 
 // Connect signs in and returns the session to keep in the password's place.
-func (LiveKomoot) Connect(email, password string) (KomootImporter, KomootSession, error) {
+func (LiveKomoot) Connect(ctx context.Context, email, password string) (KomootImporter, KomootSession, error) {
 	client := komoot.New()
-	if err := client.Login(email, password); err != nil {
+	if err := client.Login(ctx, email, password); err != nil {
 		return nil, KomootSession{}, err
 	}
 

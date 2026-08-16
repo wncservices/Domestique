@@ -1,6 +1,7 @@
 package sync
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -16,7 +17,7 @@ type fakeTarget struct {
 	err                       error
 }
 
-func (f *fakeTarget) Create(route model.Route) (string, error) {
+func (f *fakeTarget) Create(_ context.Context, route model.Route) (string, error) {
 	if f.err != nil {
 		return "", f.err
 	}
@@ -24,7 +25,7 @@ func (f *fakeTarget) Create(route model.Route) (string, error) {
 	return "remote-" + route.Slug, nil
 }
 
-func (f *fakeTarget) Update(remoteID string, route model.Route) (string, error) {
+func (f *fakeTarget) Update(_ context.Context, remoteID string, route model.Route) (string, error) {
 	if f.err != nil {
 		return "", f.err
 	}
@@ -32,7 +33,7 @@ func (f *fakeTarget) Update(remoteID string, route model.Route) (string, error) 
 	return remoteID, nil
 }
 
-func (f *fakeTarget) Delete(remoteID string) error {
+func (f *fakeTarget) Delete(_ context.Context, remoteID string) error {
 	if f.err != nil {
 		return f.err
 	}
@@ -43,7 +44,7 @@ func (f *fakeTarget) Delete(remoteID string) error {
 // forAccount keeps the assertions readable now that the read can fail.
 func forAccount(t *testing.T, store state.Store, accountID string) map[string]state.Entry {
 	t.Helper()
-	entries, err := store.ForAccount(accountID)
+	entries, err := store.ForAccount(t.Context(), accountID)
 	if err != nil {
 		t.Fatalf("ForAccount(%s): %v", accountID, err)
 	}
@@ -53,7 +54,7 @@ func forAccount(t *testing.T, store state.Store, accountID string) map[string]st
 // mustPlan is the same idea for BuildPlan.
 func mustPlan(t *testing.T, routes []model.Route, linked []model.Account, store state.Store) model.Plan {
 	t.Helper()
-	plan, err := BuildPlan(routes, linked, store)
+	plan, err := BuildPlan(t.Context(), routes, linked, store)
 	if err != nil {
 		t.Fatalf("BuildPlan: %v", err)
 	}
@@ -75,7 +76,7 @@ func TestApplyCreatesAndRecordsState(t *testing.T) {
 		Route: &model.Route{RouteMeta: model.RouteMeta{Name: "Loop"}, Slug: "loop", ContentHash: "v1"},
 	}}}
 
-	if failures := Apply(plan, store, map[string]targets.Target{"garmin:one": target}, nil); len(failures) != 0 {
+	if failures := Apply(t.Context(), plan, store, map[string]targets.Target{"garmin:one": target}, nil); len(failures) != 0 {
 		t.Fatalf("failures: %v", failures)
 	}
 
@@ -100,7 +101,7 @@ func TestApplyUpdateKeepsRemoteID(t *testing.T) {
 		Route:    &model.Route{RouteMeta: model.RouteMeta{Name: "Loop"}, Slug: "loop", ContentHash: "v2"},
 	}}}
 
-	if failures := Apply(plan, store, map[string]targets.Target{"garmin:one": target}, nil); len(failures) != 0 {
+	if failures := Apply(t.Context(), plan, store, map[string]targets.Target{"garmin:one": target}, nil); len(failures) != 0 {
 		t.Fatalf("failures: %v", failures)
 	}
 
@@ -115,7 +116,7 @@ func TestApplyUpdateKeepsRemoteID(t *testing.T) {
 
 func TestApplyDeleteForgetsState(t *testing.T) {
 	store, target := newStore(t), &fakeTarget{}
-	if err := store.Record(state.Entry{
+	if err := store.Record(t.Context(), state.Entry{
 		AccountID: "garmin:one", Slug: "loop", RemoteID: "remote-abc", ContentHash: "v1",
 	}); err != nil {
 		t.Fatal(err)
@@ -125,7 +126,7 @@ func TestApplyDeleteForgetsState(t *testing.T) {
 		Op: model.OpDelete, AccountID: "garmin:one", Slug: "loop", RemoteID: "remote-abc",
 	}}}
 
-	if failures := Apply(plan, store, map[string]targets.Target{"garmin:one": target}, nil); len(failures) != 0 {
+	if failures := Apply(t.Context(), plan, store, map[string]targets.Target{"garmin:one": target}, nil); len(failures) != 0 {
 		t.Fatalf("failures: %v", failures)
 	}
 	if len(target.deletes) != 1 {
@@ -147,7 +148,7 @@ func TestApplyIsolatesFailures(t *testing.T) {
 		{Op: model.OpCreate, AccountID: "wahoo:two", Slug: "loop", Route: ptr(route("loop", "v1"))},
 	}}
 
-	failures := Apply(plan, store, map[string]targets.Target{
+	failures := Apply(t.Context(), plan, store, map[string]targets.Target{
 		"garmin:one": healthy,
 		"wahoo:two":  broken,
 	}, nil)
@@ -172,7 +173,7 @@ func TestApplyReportsMissingAdapter(t *testing.T) {
 		Op: model.OpCreate, AccountID: "garmin:ghost", Slug: "loop", Route: ptr(route("loop", "v1")),
 	}}}
 
-	failures := Apply(plan, store, map[string]targets.Target{}, nil)
+	failures := Apply(t.Context(), plan, store, map[string]targets.Target{}, nil)
 	if len(failures) != 1 || !strings.Contains(failures[0].Error(), "garmin:ghost") {
 		t.Errorf("failures = %v, want one naming the account", failures)
 	}
@@ -202,7 +203,7 @@ func TestApplyCallsOnResultForEveryChange(t *testing.T) {
 		calls = append(calls, call{item.AccountID, item.Op, err != nil})
 	}
 
-	Apply(plan, store, map[string]targets.Target{
+	Apply(t.Context(), plan, store, map[string]targets.Target{
 		"garmin:one": healthy,
 		"wahoo:two":  broken,
 	}, onResult)
@@ -227,7 +228,7 @@ func TestApplySkipsNoops(t *testing.T) {
 		Op: model.OpNoop, AccountID: "garmin:one", Slug: "loop", Route: ptr(route("loop", "v1")),
 	}}}
 
-	if failures := Apply(plan, store, map[string]targets.Target{"garmin:one": target}, nil); len(failures) != 0 {
+	if failures := Apply(t.Context(), plan, store, map[string]targets.Target{"garmin:one": target}, nil); len(failures) != 0 {
 		t.Fatalf("failures: %v", failures)
 	}
 	if len(target.creates)+len(target.updates)+len(target.deletes) != 0 {

@@ -28,6 +28,7 @@
 package garmin
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -38,6 +39,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 const (
@@ -118,8 +121,9 @@ func New() *Client {
 	jar, _ := cookiejar.New(nil)
 	return &Client{
 		HTTP: &http.Client{
-			Timeout: defaultTimeout,
-			Jar:     jar,
+			Timeout:   defaultTimeout,
+			Jar:       jar,
+			Transport: otelhttp.NewTransport(http.DefaultTransport),
 			// A redirect would carry the Authorization header to wherever it
 			// points, which is the same credential-disclosure problem
 			// allowedHost exists to prevent. The SSO flow is followed
@@ -222,7 +226,7 @@ func blocked(status int, body []byte) bool {
 //
 // The password is used here and nowhere else: what comes back is a Session,
 // and that is what a caller stores in its place.
-func (c *Client) Login(email, password string) error {
+func (c *Client) Login(ctx context.Context, email, password string) error {
 	if email == "" || password == "" {
 		return errors.New("garmin: email and password are both required")
 	}
@@ -231,21 +235,21 @@ func (c *Client) Login(email, password string) error {
 	// sets cookies the later requests are expected to carry. Skipping it
 	// worked for a while and is the kind of difference from a real browser
 	// that bot protection notices, so it is no longer skipped.
-	if err := c.preflight(); err != nil {
+	if err := c.preflight(ctx); err != nil {
 		return err
 	}
 
-	csrf, err := c.signinPage()
+	csrf, err := c.signinPage(ctx)
 	if err != nil {
 		return err
 	}
 
-	ticket, err := c.submitCredentials(email, password, csrf)
+	ticket, err := c.submitCredentials(ctx, email, password, csrf)
 	if err != nil {
 		return err
 	}
 
-	if err := c.exchangeTicket(ticket); err != nil {
+	if err := c.exchangeTicket(ctx, ticket); err != nil {
 		return err
 	}
 
@@ -296,9 +300,9 @@ func (c *Client) embedParams() url.Values {
 }
 
 // preflight loads the widget, for its cookies.
-func (c *Client) preflight() error {
+func (c *Client) preflight(ctx context.Context) error {
 	endpoint := c.SSOBase + "/embed?" + c.embedParams().Encode()
-	body, status, err := c.do(http.MethodGet, endpoint, nil, "")
+	body, status, err := c.do(ctx, http.MethodGet, endpoint, nil, "")
 	if err != nil {
 		return fmt.Errorf("garmin: loading the sign-in widget: %w", err)
 	}
@@ -308,9 +312,9 @@ func (c *Client) preflight() error {
 	return nil
 }
 
-func (c *Client) signinPage() (csrf string, err error) {
+func (c *Client) signinPage(ctx context.Context) (csrf string, err error) {
 	endpoint := c.SSOBase + "/signin?" + c.signinParams().Encode()
-	body, status, err := c.do(http.MethodGet, endpoint, nil, "",
+	body, status, err := c.do(ctx, http.MethodGet, endpoint, nil, "",
 		header{"Referer", c.SSOBase + "/embed?" + c.embedParams().Encode()})
 	if err != nil {
 		return "", fmt.Errorf("garmin: fetching the sign-in page: %w", err)
@@ -326,7 +330,7 @@ func (c *Client) signinPage() (csrf string, err error) {
 	return string(match[1]), nil
 }
 
-func (c *Client) submitCredentials(email, password, csrf string) (ticket string, err error) {
+func (c *Client) submitCredentials(ctx context.Context, email, password, csrf string) (ticket string, err error) {
 	form := url.Values{
 		"username": {email},
 		"password": {password},
@@ -335,7 +339,7 @@ func (c *Client) submitCredentials(email, password, csrf string) (ticket string,
 	}
 
 	endpoint := c.SSOBase + "/signin?" + c.signinParams().Encode()
-	body, status, err := c.do(http.MethodPost, endpoint, strings.NewReader(form.Encode()),
+	body, status, err := c.do(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()),
 		"application/x-www-form-urlencoded",
 		// A browser posts a form from the page it just loaded. Without this
 		// the request looks like it came from nowhere.
@@ -376,7 +380,7 @@ func (c *Client) submitCredentials(email, password, csrf string) (ticket string,
 }
 
 // exchangeTicket turns a service ticket into the OAuth1 token pair.
-func (c *Client) exchangeTicket(ticket string) error {
+func (c *Client) exchangeTicket(ctx context.Context, ticket string) error {
 	if err := c.loadConsumer(); err != nil {
 		return err
 	}
@@ -392,7 +396,7 @@ func (c *Client) exchangeTicket(ticket string) error {
 		return err
 	}
 
-	body, status, err := c.do(http.MethodGet, endpoint, nil, "", header{"Authorization", signed})
+	body, status, err := c.do(ctx, http.MethodGet, endpoint, nil, "", header{"Authorization", signed})
 	if err != nil {
 		return err
 	}
@@ -420,7 +424,7 @@ type header struct{ Name, Value string }
 //
 // The bearer lasts about a day and the OAuth1 token about a year, so this is
 // the routine that runs on essentially every call — hence the cache.
-func (c *Client) bearerToken() (string, error) {
+func (c *Client) bearerToken(ctx context.Context) (string, error) {
 	if c.bearer != "" && c.now().Before(c.bearerTill) {
 		return c.bearer, nil
 	}
@@ -438,7 +442,7 @@ func (c *Client) bearerToken() (string, error) {
 		return "", err
 	}
 
-	body, status, err := c.do(http.MethodPost, endpoint, strings.NewReader(""),
+	body, status, err := c.do(ctx, http.MethodPost, endpoint, strings.NewReader(""),
 		"application/x-www-form-urlencoded", header{"Authorization", signed})
 	if err != nil {
 		return "", err
@@ -500,12 +504,12 @@ func (c *Client) allowedHost(raw string) error {
 }
 
 // do performs a request and reads a capped body.
-func (c *Client) do(method, endpoint string, body io.Reader, contentType string, extra ...header) ([]byte, int, error) {
+func (c *Client) do(ctx context.Context, method, endpoint string, body io.Reader, contentType string, extra ...header) ([]byte, int, error) {
 	if err := c.allowedHost(endpoint); err != nil {
 		return nil, 0, err
 	}
 
-	req, err := http.NewRequest(method, endpoint, body)
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, body)
 	if err != nil {
 		return nil, 0, err
 	}

@@ -9,6 +9,7 @@ package api_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -55,7 +56,7 @@ type fakeTarget struct {
 	ledger  *fakeLedger
 }
 
-func (f *fakeTarget) Create(route model.Route) (string, error) {
+func (f *fakeTarget) Create(_ context.Context, route model.Route) (string, error) {
 	if f.account.ID == f.ledger.failOn {
 		return "", fmt.Errorf("provider is having a bad day")
 	}
@@ -63,7 +64,7 @@ func (f *fakeTarget) Create(route model.Route) (string, error) {
 	return "remote-" + route.Slug, nil
 }
 
-func (f *fakeTarget) Update(remoteID string, route model.Route) (string, error) {
+func (f *fakeTarget) Update(_ context.Context, remoteID string, route model.Route) (string, error) {
 	if f.account.ID == f.ledger.failOn {
 		return "", fmt.Errorf("provider is having a bad day")
 	}
@@ -71,7 +72,7 @@ func (f *fakeTarget) Update(remoteID string, route model.Route) (string, error) 
 	return remoteID, nil
 }
 
-func (f *fakeTarget) Delete(string) error {
+func (f *fakeTarget) Delete(context.Context, string) error {
 	if f.account.ID == f.ledger.failOn {
 		return fmt.Errorf("provider is having a bad day")
 	}

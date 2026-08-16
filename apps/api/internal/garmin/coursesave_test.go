@@ -52,7 +52,7 @@ func TestImportSavesTheParsedCourse(t *testing.T) {
 
 	c := newTestClient(t, srv)
 
-	id, err := c.ImportCourse("ride.fit", []byte("FIT-BYTES"))
+	id, err := c.ImportCourse(t.Context(), "ride.fit", []byte("FIT-BYTES"))
 	if err != nil {
 		t.Fatalf("import failed: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestImportStopsWhenTheParseAlreadyHasAnID(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	id, err := newTestClient(t, srv).ImportCourse("ride.fit", []byte("FIT"))
+	id, err := newTestClient(t, srv).ImportCourse(t.Context(), "ride.fit", []byte("FIT"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func TestImportReportsAFailedSave(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if _, err := newTestClient(t, srv).ImportCourse("ride.fit", []byte("FIT")); err == nil {
+	if _, err := newTestClient(t, srv).ImportCourse(t.Context(), "ride.fit", []byte("FIT")); err == nil {
 		t.Fatal("a failed save reported success")
 	} else if !strings.Contains(err.Error(), "saving the course") {
 		t.Errorf("err = %v, want it to name the save", err)
@@ -128,7 +128,7 @@ func TestImportReportsARefusedSessionOnSave(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := newTestClient(t, srv).ImportCourse("ride.fit", []byte("FIT"))
+	_, err := newTestClient(t, srv).ImportCourse(t.Context(), "ride.fit", []byte("FIT"))
 	if err == nil || !strings.Contains(err.Error(), "sign in again") {
 		t.Errorf("err = %v, want it to say to sign in again", err)
 	}
@@ -155,7 +155,7 @@ func TestSaveSetsTheConfirmedPrivacyFields(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if _, err := newTestClient(t, srv).ImportCourse("ride.fit", []byte("FIT")); err != nil {
+	if _, err := newTestClient(t, srv).ImportCourse(t.Context(), "ride.fit", []byte("FIT")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -199,7 +199,7 @@ func TestSaveKeepsARulePKConnectAlreadySet(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if _, err := newTestClient(t, srv).ImportCourse("ride.fit", []byte("FIT")); err != nil {
+	if _, err := newTestClient(t, srv).ImportCourse(t.Context(), "ride.fit", []byte("FIT")); err != nil {
 		t.Fatal(err)
 	}
 	if saved["rulePK"] != float64(1) {
@@ -234,7 +234,7 @@ func TestSaveFailureKeepsEnoughOfTheBodyToBeUseful(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := newTestClient(t, srv).ImportCourse("ride.fit", []byte("FIT"))
+	_, err := newTestClient(t, srv).ImportCourse(t.Context(), "ride.fit", []byte("FIT"))
 	if err == nil {
 		t.Fatal("a rejected save reported success")
 	}

@@ -26,7 +26,7 @@ func seedRider(t *testing.T, dsn, rider string) {
 	}
 	defer db.Close()
 
-	if _, err := db.Create(source.CreateRequest{
+	if _, err := db.Create(t.Context(), source.CreateRequest{
 		Filename: "ride.gpx", Name: "A Ride", UploadedBy: rider, GPX: []byte(exampleGPX),
 	}); err != nil {
 		t.Fatal(err)
@@ -44,7 +44,7 @@ func seedRider(t *testing.T, dsn, rider string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := stateStore.Record(state.Entry{
+	if err := stateStore.Record(t.Context(), state.Entry{
 		AccountID: accounts.ID(model.ProviderGarmin, rider), Slug: "a-ride",
 		RemoteID: "remote-1", ContentHash: "hash-1", UpdatedAt: time.Now().UTC().Format(time.RFC3339),
 	}); err != nil {
@@ -115,7 +115,7 @@ func TestRenameRiderMovesEveryTable(t *testing.T) {
 	defer db.Close()
 
 	// routes.uploaded_by
-	routes, _, err := db.List()
+	routes, _, err := db.List(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func TestRenameRiderMovesEveryTable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	entries, err := stateStore.All()
+	entries, err := stateStore.All(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +205,7 @@ func TestRenameRiderAbortsOnConflictAndWritesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	entries, err := stateStore.All()
+	entries, err := stateStore.All(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,7 +262,7 @@ func TestRenameRiderReplaceKeepsTheOldRidersRowOnConflict(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	entries, err := stateStore.All()
+	entries, err := stateStore.All(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -346,7 +346,7 @@ func TestRenameRiderReplaceClearsOrphanedSyncStateWithNoAccount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	entries, err := stateStore.All()
+	entries, err := stateStore.All(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -392,7 +392,7 @@ func TestRenameRiderReplaceDryRunWritesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	entries, err := stateStore.All()
+	entries, err := stateStore.All(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}

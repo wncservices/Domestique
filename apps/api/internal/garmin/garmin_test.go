@@ -110,7 +110,7 @@ func newFakeConnect(t *testing.T) (*Client, *fakeConnect) {
 func TestLoginExchangesThePasswordForTokens(t *testing.T) {
 	c, fake := newFakeConnect(t)
 
-	if err := c.Login(testEmail, testPassword); err != nil {
+	if err := c.Login(t.Context(), testEmail, testPassword); err != nil {
 		t.Fatalf("Login failed: %v", err)
 	}
 
@@ -132,7 +132,7 @@ func TestLoginDistinguishesMFAFromBadCredentials(t *testing.T) {
 	t.Run("mfa", func(t *testing.T) {
 		c, fake := newFakeConnect(t)
 		fake.mfa = true
-		if err := c.Login(testEmail, testPassword); !errors.Is(err, ErrMFARequired) {
+		if err := c.Login(t.Context(), testEmail, testPassword); !errors.Is(err, ErrMFARequired) {
 			t.Errorf("error = %v, want ErrMFARequired", err)
 		}
 	})
@@ -140,7 +140,7 @@ func TestLoginDistinguishesMFAFromBadCredentials(t *testing.T) {
 	t.Run("bad password", func(t *testing.T) {
 		c, fake := newFakeConnect(t)
 		fake.wrongPass = true
-		if err := c.Login(testEmail, testPassword); !errors.Is(err, ErrBadCredentials) {
+		if err := c.Login(t.Context(), testEmail, testPassword); !errors.Is(err, ErrBadCredentials) {
 			t.Errorf("error = %v, want ErrBadCredentials", err)
 		}
 	})
@@ -148,10 +148,10 @@ func TestLoginDistinguishesMFAFromBadCredentials(t *testing.T) {
 
 func TestLoginRequiresBothFields(t *testing.T) {
 	c, _ := newFakeConnect(t)
-	if err := c.Login("", testPassword); err == nil {
+	if err := c.Login(t.Context(), "", testPassword); err == nil {
 		t.Error("an empty email was accepted")
 	}
-	if err := c.Login(testEmail, ""); err == nil {
+	if err := c.Login(t.Context(), testEmail, ""); err == nil {
 		t.Error("an empty password was accepted")
 	}
 }
@@ -163,12 +163,12 @@ func TestBearerIsCachedThenRefreshed(t *testing.T) {
 	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
 	c.Now = func() time.Time { return now }
 
-	if err := c.Login(testEmail, testPassword); err != nil {
+	if err := c.Login(t.Context(), testEmail, testPassword); err != nil {
 		t.Fatal(err)
 	}
 
 	for range 3 {
-		if _, err := c.bearerToken(); err != nil {
+		if _, err := c.bearerToken(t.Context()); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -178,7 +178,7 @@ func TestBearerIsCachedThenRefreshed(t *testing.T) {
 
 	// Past the hour the fake grants.
 	now = now.Add(2 * time.Hour)
-	if _, err := c.bearerToken(); err != nil {
+	if _, err := c.bearerToken(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	if fake.oauth2Calls != 2 {
@@ -191,7 +191,7 @@ func TestResumeSkipsTheSSOFlow(t *testing.T) {
 	c, fake := newFakeConnect(t)
 	c.Resume(Session{OAuth1Token: "tok-1", OAuth1Secret: "sec-1"})
 
-	if _, err := c.bearerToken(); err != nil {
+	if _, err := c.bearerToken(t.Context()); err != nil {
 		t.Fatalf("bearerToken after Resume: %v", err)
 	}
 	if fake.oauth1Calls != 0 {
@@ -204,7 +204,7 @@ func TestResumeSkipsTheSSOFlow(t *testing.T) {
 
 func TestBearerWithoutASessionFails(t *testing.T) {
 	c, _ := newFakeConnect(t)
-	if _, err := c.bearerToken(); err == nil {
+	if _, err := c.bearerToken(t.Context()); err == nil {
 		t.Error("a bearer was issued without a session")
 	}
 }
@@ -217,7 +217,7 @@ func TestMissingConsumerIsNamed(t *testing.T) {
 	t.Setenv(EnvConsumerKey, "")
 	t.Setenv(EnvConsumerSecret, "")
 
-	err := c.Login(testEmail, testPassword)
+	err := c.Login(t.Context(), testEmail, testPassword)
 	if !errors.Is(err, ErrNoConsumer) {
 		t.Errorf("error = %v, want ErrNoConsumer", err)
 	}
@@ -244,7 +244,7 @@ func TestConsumerComesFromTheEnvironment(t *testing.T) {
 // verify it the way the server would rather than trusting it by inspection.
 func TestOAuth1SignatureVerifies(t *testing.T) {
 	c, fake := newFakeConnect(t)
-	if err := c.Login(testEmail, testPassword); err != nil {
+	if err := c.Login(t.Context(), testEmail, testPassword); err != nil {
 		t.Fatal(err)
 	}
 
@@ -395,7 +395,7 @@ func TestCloudflareBlockIsItsOwnError(t *testing.T) {
 			client.SSOBase, client.APIBase, client.WebBase = server.URL, server.URL, server.URL
 			client.SetConsumer("k", "s")
 
-			err := client.Login("rider@example.com", "pw")
+			err := client.Login(t.Context(), "rider@example.com", "pw")
 			if !errors.Is(err, ErrBlocked) {
 				t.Errorf("Login error = %v, want ErrBlocked", err)
 			}
@@ -422,7 +422,7 @@ func TestPlainRejectionIsStillBadCredentials(t *testing.T) {
 	client.SSOBase, client.APIBase, client.WebBase = server.URL, server.URL, server.URL
 	client.SetConsumer("k", "s")
 
-	if err := client.Login("rider@example.com", "pw"); !errors.Is(err, ErrBadCredentials) {
+	if err := client.Login(t.Context(), "rider@example.com", "pw"); !errors.Is(err, ErrBadCredentials) {
 		t.Errorf("Login error = %v, want ErrBadCredentials", err)
 	}
 }
@@ -443,7 +443,7 @@ func TestLoginLoadsTheWidgetFirst(t *testing.T) {
 	client := New()
 	client.SSOBase, client.APIBase, client.WebBase = server.URL, server.URL, server.URL
 	client.SetConsumer("k", "s")
-	_ = client.Login("rider@example.com", "pw")
+	_ = client.Login(t.Context(), "rider@example.com", "pw")
 
 	if len(order) == 0 || !strings.HasSuffix(order[0], "/embed") {
 		t.Errorf("request order = %v, want the widget loaded first", order)
@@ -470,7 +470,7 @@ func TestRejectedCredentialsInEitherDialect(t *testing.T) {
 			client.SSOBase, client.APIBase, client.WebBase = server.URL, server.URL, server.URL
 			client.SetConsumer("k", "s")
 
-			if err := client.Login("rider@example.com", "pw"); !errors.Is(err, ErrBadCredentials) {
+			if err := client.Login(t.Context(), "rider@example.com", "pw"); !errors.Is(err, ErrBadCredentials) {
 				t.Errorf("Login error = %v, want ErrBadCredentials", err)
 			}
 		})

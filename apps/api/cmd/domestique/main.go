@@ -16,9 +16,11 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"text/tabwriter"
 	"time"
 
@@ -41,6 +43,7 @@ import (
 	"github.com/wncservices/domestique/apps/api/internal/state"
 	"github.com/wncservices/domestique/apps/api/internal/sync"
 	"github.com/wncservices/domestique/apps/api/internal/targets"
+	"github.com/wncservices/domestique/apps/api/internal/telemetry"
 )
 
 const usage = `Domestique — fetch-and-carry for cycling routes
@@ -218,7 +221,7 @@ func runFIT(src *source.DB, args []string, out string, cues bool) error {
 	}
 	slug := args[0]
 
-	raw, err := src.GPX(slug)
+	raw, err := src.GPX(context.Background(), slug)
 	if err != nil {
 		return err
 	}
@@ -228,7 +231,7 @@ func runFIT(src *source.DB, args []string, out string, cues bool) error {
 	}
 
 	name := slug
-	if routes, _, listErr := src.List(); listErr == nil {
+	if routes, _, listErr := src.List(context.Background()); listErr == nil {
 		for _, route := range routes {
 			if route.Slug == slug {
 				name = route.Name
@@ -288,7 +291,7 @@ func komootClient() (*komoot.Client, error) {
 	}
 
 	client := komoot.New()
-	if err := client.Login(email, password); err != nil {
+	if err := client.Login(context.Background(), email, password); err != nil {
 		return nil, err
 	}
 	return client, nil
@@ -306,7 +309,7 @@ func runKomoot(dst *source.DB, cfg *config.Config, args []string) error {
 		return err
 	}
 
-	tours, err := client.Tours(cfg.Komoot.IncludeRecorded)
+	tours, err := client.Tours(context.Background(), cfg.Komoot.IncludeRecorded)
 	if err != nil {
 		return err
 	}
@@ -336,12 +339,12 @@ func runKomoot(dst *source.DB, cfg *config.Config, args []string) error {
 				continue
 			}
 
-			raw, err := client.GPX(tour.ID)
+			raw, err := client.GPX(context.Background(), tour.ID)
 			if err != nil {
 				problems = append(problems, fmt.Sprintf("%s (%s): %v", tour.Name, tour.ID, err))
 				continue
 			}
-			if _, err := dst.Create(source.CreateRequest{
+			if _, err := dst.Create(context.Background(), source.CreateRequest{
 				Filename: tour.Name + ".gpx",
 				Name:     tour.Name,
 				Descript: fmt.Sprintf("Imported from Komoot (tour %s)", tour.ID),
@@ -427,7 +430,7 @@ func openState(src *source.DB) (state.Store, error) {
 }
 
 func runValidate(src *source.DB, linked []model.Account) error {
-	routes, problems, err := src.List()
+	routes, problems, err := src.List(context.Background())
 	if err != nil {
 		return err
 	}
@@ -450,12 +453,12 @@ func runValidate(src *source.DB, linked []model.Account) error {
 }
 
 func runPlan(src *source.DB, linked []model.Account, store state.Store) error {
-	routes, problems, err := src.List()
+	routes, problems, err := src.List(context.Background())
 	if err != nil {
 		return err
 	}
 
-	plan, err := sync.BuildPlan(routes, linked, store)
+	plan, err := sync.BuildPlan(context.Background(), routes, linked, store)
 	if err != nil {
 		return err
 	}
@@ -465,12 +468,12 @@ func runPlan(src *source.DB, linked []model.Account, store state.Store) error {
 }
 
 func runPush(src *source.DB, linked []model.Account, store state.Store, dryRun bool) error {
-	routes, problems, err := src.List()
+	routes, problems, err := src.List(context.Background())
 	if err != nil {
 		return err
 	}
 
-	plan, err := sync.BuildPlan(routes, linked, store)
+	plan, err := sync.BuildPlan(context.Background(), routes, linked, store)
 	if err != nil {
 		return err
 	}
@@ -493,7 +496,7 @@ func runPush(src *source.DB, linked []model.Account, store state.Store, dryRun b
 		byAccount[account.ID] = target
 	}
 
-	failures := sync.Apply(plan, store, byAccount, nil)
+	failures := sync.Apply(context.Background(), plan, store, byAccount, nil)
 	if err := reportProblems(problems); err != nil {
 		return err
 	}
@@ -563,7 +566,7 @@ func runImport(dst *source.DB, from string) error {
 			continue
 		}
 
-		created, createErr := dst.Create(source.CreateRequest{
+		created, createErr := dst.Create(context.Background(), source.CreateRequest{
 			Filename: importName(path),
 			GPX:      raw,
 		})
@@ -584,7 +587,7 @@ func runImport(dst *source.DB, from string) error {
 func runState(store state.Store) error {
 	fmt.Println(describeStore(store))
 
-	entries, err := store.All()
+	entries, err := store.All(context.Background())
 	if err != nil {
 		return err
 	}
@@ -602,7 +605,7 @@ func runState(store state.Store) error {
 }
 
 func runServe(src *source.DB, cfg *config.Config, store state.Store, addr, webDir string) error {
-	if _, problems, err := src.List(); err != nil {
+	if _, problems, err := src.List(context.Background()); err != nil {
 		return err
 	} else if len(problems) > 0 {
 		for _, p := range problems {
@@ -611,6 +614,16 @@ func runServe(src *source.DB, cfg *config.Config, store state.Store, addr, webDi
 	}
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	// Traces only actually export once OTEL_EXPORTER_OTLP_ENDPOINT (or
+	// _TRACES_ENDPOINT) is set — see internal/telemetry's own doc. Shutdown
+	// flushes whatever the batch exporter is still holding; wired to the
+	// same signal-triggered shutdown as the HTTP server below so a pod
+	// restart does not drop the last few seconds of spans.
+	shutdownTraces, err := telemetry.Setup(context.Background(), "domestique", version)
+	if err != nil {
+		return fmt.Errorf("telemetry: %w", err)
+	}
 
 	authenticator, err := auth.New(cfg.Auth)
 	if err != nil {
@@ -791,10 +804,31 @@ func runServe(src *source.DB, cfg *config.Config, store state.Store, addr, webDi
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
+	// SIGTERM is what a pod restart actually sends. Without catching it, the
+	// process just dies where it stands — dropping in-flight requests and,
+	// now that there is a batch trace exporter, whatever spans it was still
+	// holding since the last export tick.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := httpSrv.Shutdown(shutdownCtx); err != nil {
+			log.Warn("http server shutdown", "err", err)
+		}
+	}()
+
 	log.Info("listening", "addr", addr, "library", src.Describe(),
 		"auth", authenticator.Mode())
 	if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
+	}
+
+	flushCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := shutdownTraces(flushCtx); err != nil {
+		log.Warn("telemetry shutdown", "err", err)
 	}
 	return nil
 }

@@ -1,9 +1,13 @@
 package state
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"time"
+
+	"github.com/XSAM/otelsql"
+	"go.opentelemetry.io/otel/attribute"
 
 	_ "github.com/jackc/pgx/v5/stdlib" // PostgreSQL
 	_ "modernc.org/sqlite"             // SQLite
@@ -55,7 +59,7 @@ func OpenDB(dsn string) (*DBStore, error) {
 		connString = dsn + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
 	}
 
-	db, err := sql.Open(d.Driver, connString)
+	db, err := otelsql.Open(d.Driver, connString, otelsql.WithAttributes(attribute.String("db.system", d.Name)))
 	if err != nil {
 		return nil, err
 	}
@@ -105,8 +109,8 @@ func (s *DBStore) Describe() string {
 	return fmt.Sprintf("%s database %s", s.dialect.Name, dbx.Redact(s.dsn))
 }
 
-func (s *DBStore) All() ([]Entry, error) {
-	rows, err := s.db.Query(`
+func (s *DBStore) All(ctx context.Context) ([]Entry, error) {
+	rows, err := s.db.QueryContext(ctx, `
         SELECT account_id, slug, remote_id, content_hash, name, updated_at
         FROM sync_state ORDER BY account_id, slug`)
 	if err != nil {
@@ -129,8 +133,8 @@ func (s *DBStore) All() ([]Entry, error) {
 	return out, nil
 }
 
-func (s *DBStore) ForAccount(accountID string) (map[string]Entry, error) {
-	entries, err := s.All()
+func (s *DBStore) ForAccount(ctx context.Context, accountID string) (map[string]Entry, error) {
+	entries, err := s.All(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -144,10 +148,10 @@ func (s *DBStore) ForAccount(accountID string) (map[string]Entry, error) {
 	return out, nil
 }
 
-func (s *DBStore) Record(e Entry) error {
+func (s *DBStore) Record(ctx context.Context, e Entry) error {
 	e.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 
-	_, err := s.db.Exec(s.dialect.Rebind(`
+	_, err := s.db.ExecContext(ctx, s.dialect.Rebind(`
         INSERT INTO sync_state (account_id, slug, remote_id, content_hash, name, updated_at)
         VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT (account_id, slug) DO UPDATE SET
@@ -159,8 +163,8 @@ func (s *DBStore) Record(e Entry) error {
 	return err
 }
 
-func (s *DBStore) Forget(accountID, slug string) error {
-	_, err := s.db.Exec(
+func (s *DBStore) Forget(ctx context.Context, accountID, slug string) error {
+	_, err := s.db.ExecContext(ctx,
 		s.dialect.Rebind(`DELETE FROM sync_state WHERE account_id = ? AND slug = ?`),
 		accountID, slug)
 	return err

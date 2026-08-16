@@ -13,6 +13,7 @@
 package source
 
 import (
+	"context"
 	"errors"
 
 	"github.com/wncservices/domestique/apps/api/internal/gpx"
@@ -51,10 +52,10 @@ type UpdateRequest struct {
 // the interface exists so tests can substitute something simpler.
 type Library interface {
 	Describe() string
-	List() ([]model.Route, []string, error)
-	Track(slug string) ([]gpx.Point, error)
-	GPX(slug string) ([]byte, error)
-	Create(req CreateRequest) (model.Route, error)
-	Update(slug string, req UpdateRequest) (model.Route, error)
-	Delete(slug string) error
+	List(ctx context.Context) ([]model.Route, []string, error)
+	Track(ctx context.Context, slug string) ([]gpx.Point, error)
+	GPX(ctx context.Context, slug string) ([]byte, error)
+	Create(ctx context.Context, req CreateRequest) (model.Route, error)
+	Update(ctx context.Context, slug string, req UpdateRequest) (model.Route, error)
+	Delete(ctx context.Context, slug string) error
 }

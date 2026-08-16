@@ -149,7 +149,7 @@ func (s *Server) handleGarminConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	session, err := s.Garmin.Connect(consumer, body.Email, body.Password)
+	session, err := s.Garmin.Connect(r.Context(), consumer, body.Email, body.Password)
 	if err != nil {
 		s.writeGarminLoginError(w, rider, err)
 		return
@@ -345,7 +345,7 @@ func (s *Server) handleGarminDevices(w http.ResponseWriter, r *http.Request) {
 	}
 
 	consumer, _ := s.garminConsumer()
-	devices, err := s.Garmin.Devices(consumer, session)
+	devices, err := s.Garmin.Devices(r.Context(), consumer, session)
 	if err != nil {
 		// An undocumented endpoint that moved is Garmin's problem, not a
 		// fault in the connection — which still works for everything else.

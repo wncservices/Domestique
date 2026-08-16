@@ -71,7 +71,7 @@ type courseRecord struct {
 func TestImportCourseSendsTheFileAsConnectDoes(t *testing.T) {
 	c, rec := courseFake(t, http.StatusOK, `{"courseId":123456}`)
 
-	id, err := c.ImportCourse("kemmelberg-loop.fit", []byte("FIT-BYTES"))
+	id, err := c.ImportCourse(t.Context(), "kemmelberg-loop.fit", []byte("FIT-BYTES"))
 	if err != nil {
 		t.Fatalf("ImportCourse: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestImportCourseReadsTheIdHoweverItIsSpelled(t *testing.T) {
 		`{"courseId":123456}`, `{"id":123456}`, `{"coursePk":123456}`, `{"courseId":"123456"}`,
 	} {
 		c, _ := courseFake(t, http.StatusOK, body)
-		id, err := c.ImportCourse("c.fit", []byte("x"))
+		id, err := c.ImportCourse(t.Context(), "c.fit", []byte("x"))
 		if err != nil {
 			t.Errorf("%s: %v", body, err)
 			continue
@@ -120,14 +120,14 @@ func TestImportCourseReadsTheIdHoweverItIsSpelled(t *testing.T) {
 
 func TestImportCourseWithoutAnIdIsAnError(t *testing.T) {
 	c, _ := courseFake(t, http.StatusOK, `{"messages":["ok"]}`)
-	if _, err := c.ImportCourse("c.fit", []byte("x")); err == nil {
+	if _, err := c.ImportCourse(t.Context(), "c.fit", []byte("x")); err == nil {
 		t.Error("a response with no id was accepted")
 	}
 }
 
 func TestImportCourseRefusesAnEmptyFile(t *testing.T) {
 	c, rec := courseFake(t, http.StatusOK, `{"courseId":1}`)
-	if _, err := c.ImportCourse("c.fit", nil); err == nil {
+	if _, err := c.ImportCourse(t.Context(), "c.fit", nil); err == nil {
 		t.Error("an empty course was uploaded")
 	}
 	if rec.calls != 0 {
@@ -137,7 +137,7 @@ func TestImportCourseRefusesAnEmptyFile(t *testing.T) {
 
 func TestImportCourseSurfacesRejection(t *testing.T) {
 	c, _ := courseFake(t, http.StatusUnauthorized, `{"error":"nope"}`)
-	_, err := c.ImportCourse("c.fit", []byte("x"))
+	_, err := c.ImportCourse(t.Context(), "c.fit", []byte("x"))
 	if err == nil || !strings.Contains(err.Error(), "sign in again") {
 		t.Errorf("error = %v, want it to say the session was refused", err)
 	}
@@ -145,7 +145,7 @@ func TestImportCourseSurfacesRejection(t *testing.T) {
 
 func TestDeleteCourse(t *testing.T) {
 	c, rec := courseFake(t, http.StatusOK, "")
-	if err := c.DeleteCourse("123456"); err != nil {
+	if err := c.DeleteCourse(t.Context(), "123456"); err != nil {
 		t.Fatal(err)
 	}
 	if rec.deleted != "123456" || rec.method != http.MethodDelete {
@@ -156,14 +156,14 @@ func TestDeleteCourse(t *testing.T) {
 // Deleting something already gone is the state the caller asked for.
 func TestDeleteCourseToleratesAMissingCourse(t *testing.T) {
 	c, _ := courseFake(t, http.StatusNotFound, "")
-	if err := c.DeleteCourse("123456"); err != nil {
+	if err := c.DeleteCourse(t.Context(), "123456"); err != nil {
 		t.Errorf("deleting an absent course errored: %v", err)
 	}
 }
 
 func TestDeleteCourseNeedsAnId(t *testing.T) {
 	c, _ := courseFake(t, http.StatusOK, "")
-	if err := c.DeleteCourse("  "); err == nil {
+	if err := c.DeleteCourse(t.Context(), "  "); err == nil {
 		t.Error("an empty id was accepted")
 	}
 }
@@ -181,7 +181,7 @@ func TestRequestsToAnotherHostAreRefused(t *testing.T) {
 		"http://169.254.169.254/latest/meta-data/",
 		"https://sso.garmin.com.evil.example.com/sso/signin",
 	} {
-		_, _, err := c.do(http.MethodGet, elsewhere, nil, "")
+		_, _, err := c.do(t.Context(), http.MethodGet, elsewhere, nil, "")
 		if err == nil {
 			t.Errorf("%s was allowed", elsewhere)
 			continue

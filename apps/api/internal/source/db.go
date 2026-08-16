@@ -1,6 +1,7 @@
 package source
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -9,6 +10,9 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/XSAM/otelsql"
+	"go.opentelemetry.io/otel/attribute"
 
 	_ "github.com/jackc/pgx/v5/stdlib" // PostgreSQL, for the deployed instance
 	_ "modernc.org/sqlite"             // SQLite, pure Go: no cgo, so the image stays small
@@ -79,7 +83,7 @@ func OpenDB(dsn string) (*DB, error) {
 		connString = dsn + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
 	}
 
-	db, err := sql.Open(d.Driver, connString)
+	db, err := otelsql.Open(d.Driver, connString, otelsql.WithAttributes(attribute.String("db.system", d.Name)))
 	if err != nil {
 		return nil, err
 	}
@@ -112,8 +116,8 @@ func (d *DB) Describe() string {
 	return fmt.Sprintf("%s database %s", d.dialect.Name, dbx.Redact(d.dsn))
 }
 
-func (d *DB) List() ([]model.Route, []string, error) {
-	rows, err := d.db.Query(d.query(`
+func (d *DB) List(ctx context.Context) ([]model.Route, []string, error) {
+	rows, err := d.db.QueryContext(ctx, d.query(`
         SELECT slug, name, description, tags, targets, enabled,
                distance_m, ascent_m, start_lat, start_lng, point_count,
                content_hash, updated_at, uploaded_by
@@ -151,24 +155,24 @@ func (d *DB) List() ([]model.Route, []string, error) {
 	return routes, nil, rows.Err()
 }
 
-func (d *DB) Track(slug string) ([]gpx.Point, error) {
-	raw, err := d.GPX(slug)
+func (d *DB) Track(ctx context.Context, slug string) ([]gpx.Point, error) {
+	raw, err := d.GPX(ctx, slug)
 	if err != nil {
 		return nil, err
 	}
 	return gpx.ParsePoints(raw)
 }
 
-func (d *DB) GPX(slug string) ([]byte, error) {
+func (d *DB) GPX(ctx context.Context, slug string) ([]byte, error) {
 	var raw []byte
-	err := d.db.QueryRow(d.query(`SELECT gpx FROM routes WHERE slug = ?`), slug).Scan(&raw)
+	err := d.db.QueryRowContext(ctx, d.query(`SELECT gpx FROM routes WHERE slug = ?`), slug).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	return raw, err
 }
 
-func (d *DB) Create(req CreateRequest) (model.Route, error) {
+func (d *DB) Create(ctx context.Context, req CreateRequest) (model.Route, error) {
 	points, stats, err := analyse(req.GPX)
 	if err != nil {
 		return model.Route{}, err
@@ -182,13 +186,13 @@ func (d *DB) Create(req CreateRequest) (model.Route, error) {
 		name = "Untitled route"
 	}
 
-	slug, err := d.uniqueSlug(Slugify(name))
+	slug, err := d.uniqueSlug(ctx, Slugify(name))
 	if err != nil {
 		return model.Route{}, err
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	_, err = d.db.Exec(d.query(`
+	_, err = d.db.ExecContext(ctx, d.query(`
         INSERT INTO routes (slug, name, description, tags, targets, enabled, gpx,
                             distance_m, ascent_m, start_lat, start_lng, point_count,
                             content_hash, uploaded_by, created_at, updated_at)
@@ -200,11 +204,11 @@ func (d *DB) Create(req CreateRequest) (model.Route, error) {
 		return model.Route{}, err
 	}
 
-	return d.get(slug)
+	return d.get(ctx, slug)
 }
 
-func (d *DB) Update(slug string, req UpdateRequest) (model.Route, error) {
-	current, err := d.get(slug)
+func (d *DB) Update(ctx context.Context, slug string, req UpdateRequest) (model.Route, error) {
+	current, err := d.get(ctx, slug)
 	if err != nil {
 		return model.Route{}, err
 	}
@@ -234,7 +238,7 @@ func (d *DB) Update(slug string, req UpdateRequest) (model.Route, error) {
 		}
 		current.Stats = stats
 		current.ContentHash = gpx.ContentHash(points, current.Name, current.Description)
-		_, err = d.db.Exec(d.query(`
+		_, err = d.db.ExecContext(ctx, d.query(`
             UPDATE routes SET name=?, description=?, tags=?, targets=?, enabled=?, gpx=?,
                    distance_m=?, ascent_m=?, start_lat=?, start_lng=?, point_count=?,
                    content_hash=?, updated_at=?
@@ -246,18 +250,18 @@ func (d *DB) Update(slug string, req UpdateRequest) (model.Route, error) {
 		if err != nil {
 			return model.Route{}, err
 		}
-		return d.get(slug)
+		return d.get(ctx, slug)
 	}
 
 	// Metadata-only edit. The name feeds the content hash — a rename is a real
 	// change as far as the providers are concerned — so recompute it.
-	points, err := d.Track(slug)
+	points, err := d.Track(ctx, slug)
 	if err != nil {
 		return model.Route{}, err
 	}
 	current.ContentHash = gpx.ContentHash(points, current.Name, current.Description)
 
-	_, err = d.db.Exec(d.query(`
+	_, err = d.db.ExecContext(ctx, d.query(`
         UPDATE routes SET name=?, description=?, tags=?, targets=?, enabled=?,
                content_hash=?, updated_at=?
         WHERE slug=?`),
@@ -267,11 +271,11 @@ func (d *DB) Update(slug string, req UpdateRequest) (model.Route, error) {
 	if err != nil {
 		return model.Route{}, err
 	}
-	return d.get(slug)
+	return d.get(ctx, slug)
 }
 
-func (d *DB) Delete(slug string) error {
-	result, err := d.db.Exec(d.query(`DELETE FROM routes WHERE slug = ?`), slug)
+func (d *DB) Delete(ctx context.Context, slug string) error {
+	result, err := d.db.ExecContext(ctx, d.query(`DELETE FROM routes WHERE slug = ?`), slug)
 	if err != nil {
 		return err
 	}
@@ -281,14 +285,14 @@ func (d *DB) Delete(slug string) error {
 	return nil
 }
 
-func (d *DB) get(slug string) (model.Route, error) {
+func (d *DB) get(ctx context.Context, slug string) (model.Route, error) {
 	var (
 		route   model.Route
 		tags    string
 		targets sql.NullString
 		enabled bool
 	)
-	err := d.db.QueryRow(d.query(`
+	err := d.db.QueryRowContext(ctx, d.query(`
         SELECT slug, name, description, tags, targets, enabled,
                distance_m, ascent_m, start_lat, start_lng, point_count,
                content_hash, updated_at, uploaded_by
@@ -315,14 +319,14 @@ func (d *DB) get(slug string) (model.Route, error) {
 }
 
 // uniqueSlug appends -2, -3, … so two rides up the same hill can share a name.
-func (d *DB) uniqueSlug(base string) (string, error) {
+func (d *DB) uniqueSlug(ctx context.Context, base string) (string, error) {
 	if base == "" {
 		base = "route"
 	}
 	candidate := base
 	for attempt := 2; attempt < 1000; attempt++ {
 		var exists int
-		err := d.db.QueryRow(
+		err := d.db.QueryRowContext(ctx,
 			d.query(`SELECT COUNT(1) FROM routes WHERE slug = ?`), candidate).Scan(&exists)
 		if err != nil {
 			return "", err

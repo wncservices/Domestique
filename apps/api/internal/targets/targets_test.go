@@ -41,13 +41,13 @@ func TestStubsFailLoudly(t *testing.T) {
 		"wahoo":                    &Wahoo{},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := target.Create(model.Route{}); err == nil {
+			if _, err := target.Create(t.Context(), model.Route{}); err == nil {
 				t.Error("Create returned no error")
 			}
-			if _, err := target.Update("id", model.Route{}); err == nil {
+			if _, err := target.Update(t.Context(), "id", model.Route{}); err == nil {
 				t.Error("Update returned no error")
 			}
-			if err := target.Delete("id"); err == nil {
+			if err := target.Delete(t.Context(), "id"); err == nil {
 				t.Error("Delete returned no error")
 			}
 		})

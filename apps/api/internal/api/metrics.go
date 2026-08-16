@@ -1,24 +1,36 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.opentelemetry.io/otel/attribute"
+	otelprom "go.opentelemetry.io/otel/exporters/prometheus"
+	"go.opentelemetry.io/otel/metric"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 
 	"github.com/wncservices/domestique/apps/api/internal/model"
 )
 
-// Package-level, registered against the default registry: one process, one
-// set of metrics, no reason to thread a registry through Server for this.
+// Package-level, registered against a private registry: one process, one set
+// of metrics, no reason to thread a registry through Server for this.
+// Recorded through the OTel metrics API rather than prometheus/client_golang
+// directly, so this app's metrics and traces (internal/telemetry) share one
+// instrumentation story — but still exposed as Prometheus text at
+// GET /api/metrics, because that is what this deployment's ServiceMonitor
+// scrapes, not an OTLP metrics pipeline.
 var (
-	httpRequestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "domestique_http_requests_total",
-		Help: "HTTP requests by method and status.",
-	}, []string{"method", "status"})
+	metricsRegistry = prometheus.NewRegistry()
+	meter           = newMeter(metricsRegistry)
+
+	httpRequestsTotal = must(meter.Int64Counter(
+		"domestique_http_requests_total",
+		metric.WithDescription("HTTP requests by method and status."),
+	))
 
 	// No path label, deliberately: several routes carry a route slug or
 	// account id in the path (/api/routes/{slug}, /api/accounts/{id}), and
@@ -26,10 +38,10 @@ var (
 	// series forever — unbounded cardinality that grows with the library,
 	// not with the code. method+status stays bounded by the handful of
 	// verbs and status codes this API actually returns.
-	httpRequestDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
-		Name: "domestique_http_request_duration_seconds",
-		Help: "HTTP request duration by method and status.",
-	}, []string{"method", "status"})
+	httpRequestDuration = must(meter.Float64Histogram(
+		"domestique_http_request_duration_seconds",
+		metric.WithDescription("HTTP request duration by method and status."),
+	))
 
 	// The two metrics docs/plan.md's own "Phase 6" describes: a staleness
 	// gauge and a per-account error counter, so an alert can catch "pushes
@@ -38,22 +50,59 @@ var (
 	// id used everywhere else in this codebase) rather than splitting
 	// provider/rider into two labels — one id an operator already
 	// recognizes, not two they have to mentally rejoin.
-	pushLastSuccessTimestamp = promauto.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "domestique_push_last_success_timestamp_seconds",
-		Help: "Unix time of the last successful push per account, by op (create/update/delete).",
-	}, []string{"account", "op"})
+	pushLastSuccessTimestamp = must(meter.Float64Gauge(
+		"domestique_push_last_success_timestamp_seconds",
+		metric.WithDescription("Unix time of the last successful push per account, by op (create/update/delete)."),
+	))
 
-	pushErrorsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "domestique_push_errors_total",
-		Help: "Failed push attempts per account.",
-	}, []string{"account", "op"})
+	pushErrorsTotal = must(meter.Int64Counter(
+		"domestique_push_errors_total",
+		metric.WithDescription("Failed push attempts per account."),
+	))
 )
+
+// newMeter gives metrics.go its own MeterProvider bound to reg, independent
+// of whatever internal/telemetry sets as the *global* one for traces. Kept
+// separate on purpose: GET /api/metrics has to work in every test and in
+// `just demo` on a laptop, none of which call telemetry.Setup, and a package
+// var initializer has no error path to fail through if it depended on that
+// call having happened first.
+func newMeter(reg *prometheus.Registry) metric.Meter {
+	exporter, err := otelprom.New(
+		otelprom.WithRegisterer(reg),
+		// Prometheus has no first-class notion of instrumentation scope or
+		// target resource — without these, the bridge invents an
+		// otel_scope_* label on every single series plus a target_info
+		// gauge, none of which this deployment's dashboards or alerts have
+		// any use for. One process, one meter: which scope produced a
+		// metric is not information worth a label.
+		otelprom.WithoutScopeInfo(),
+		otelprom.WithoutTargetInfo(),
+	)
+	if err != nil {
+		panic(err)
+	}
+	return sdkmetric.NewMeterProvider(sdkmetric.WithReader(exporter)).
+		Meter("github.com/wncservices/domestique/apps/api/internal/api")
+}
+
+// must panics on the error a package-level instrument constructor can only
+// return for a malformed name or a conflicting redeclaration — both are bugs
+// in this file, not something a request can trigger, so there is nothing a
+// caller could do with the error that panicking at startup does not already
+// do better.
+func must[T any](v T, err error) T {
+	if err != nil {
+		panic(err)
+	}
+	return v
+}
 
 // metricsHandler is /api/metrics itself — exempted from auth in authenticate,
 // the same way /api/health and /api/config already are: a scraper has no
 // rider identity to present.
 func metricsHandler() http.Handler {
-	return promhttp.Handler()
+	return promhttp.HandlerFor(metricsRegistry, promhttp.HandlerOpts{Registry: metricsRegistry})
 }
 
 // instrument records the two HTTP metrics above around every request. Wraps
@@ -66,9 +115,12 @@ func instrument(next http.Handler) http.Handler {
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rec, r)
 
-		status := strconv.Itoa(rec.status)
-		httpRequestsTotal.WithLabelValues(r.Method, status).Inc()
-		httpRequestDuration.WithLabelValues(r.Method, status).Observe(time.Since(started).Seconds())
+		attrs := metric.WithAttributes(
+			attribute.String("method", r.Method),
+			attribute.String("status", strconv.Itoa(rec.status)),
+		)
+		httpRequestsTotal.Add(r.Context(), 1, attrs)
+		httpRequestDuration.Record(r.Context(), time.Since(started).Seconds(), attrs)
 	})
 }
 
@@ -89,14 +141,23 @@ func (r *statusRecorder) WriteHeader(status int) {
 // seam that lets internal/sync stay pure and unaware that metrics exist at
 // all, per its own package doc. Noop items are skipped: they mean nothing
 // changed, not that a push succeeded or failed.
+//
+// context.Background(), not a request context: sync.Apply's onResult
+// callback carries none today. Metric recording does not need span linkage
+// the way a trace does, so this is a placeholder for the eventual real
+// context, not a gap that needs its own fix first.
 func (s *Server) recordPushResult(item model.PlanItem, err error) {
 	if item.Op == model.OpNoop {
 		return
 	}
-	op := string(item.Op)
+	attrs := metric.WithAttributes(
+		attribute.String("account", item.AccountID),
+		attribute.String("op", string(item.Op)),
+	)
+	ctx := context.Background()
 	if err != nil {
-		pushErrorsTotal.WithLabelValues(item.AccountID, op).Inc()
+		pushErrorsTotal.Add(ctx, 1, attrs)
 		return
 	}
-	pushLastSuccessTimestamp.WithLabelValues(item.AccountID, op).SetToCurrentTime()
+	pushLastSuccessTimestamp.Record(ctx, float64(time.Now().Unix()), attrs)
 }

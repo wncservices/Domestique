@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -42,10 +43,10 @@ type fakeConnector struct {
 
 type fakeImporter struct{ tours []komoot.Tour }
 
-func (f *fakeImporter) Tours(bool) ([]komoot.Tour, error) { return f.tours, nil }
-func (f *fakeImporter) GPX(string) ([]byte, error)        { return []byte("<gpx/>"), nil }
+func (f *fakeImporter) Tours(context.Context, bool) ([]komoot.Tour, error) { return f.tours, nil }
+func (f *fakeImporter) GPX(context.Context, string) ([]byte, error)        { return []byte("<gpx/>"), nil }
 
-func (c *fakeConnector) Connect(email, password string) (api.KomootImporter, api.KomootSession, error) {
+func (c *fakeConnector) Connect(_ context.Context, email, password string) (api.KomootImporter, api.KomootSession, error) {
 	c.email, c.password = email, password
 	if c.fail {
 		return nil, api.KomootSession{}, http.ErrNotSupported
@@ -382,7 +383,7 @@ type slowImporter struct {
 	failFor  string
 }
 
-func (s *slowImporter) Tours(bool) ([]komoot.Tour, error) {
+func (s *slowImporter) Tours(context.Context, bool) ([]komoot.Tour, error) {
 	out := make([]komoot.Tour, 0, 12)
 	for i := range 12 {
 		out = append(out, komoot.Tour{ID: fmt.Sprintf("tour-%d", i), Name: fmt.Sprintf("Tour %d", i)})
@@ -390,7 +391,7 @@ func (s *slowImporter) Tours(bool) ([]komoot.Tour, error) {
 	return out, nil
 }
 
-func (s *slowImporter) GPX(id string) ([]byte, error) {
+func (s *slowImporter) GPX(_ context.Context, id string) ([]byte, error) {
 	s.mu.Lock()
 	s.inFlight++
 	s.calls++

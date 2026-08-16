@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -34,14 +35,14 @@ type fakePeople struct {
 	findErr   error
 }
 
-func (f *fakePeople) ListPeople(string, ...string) ([]auth0mgmt.Person, error) {
+func (f *fakePeople) ListPeople(context.Context, string, ...string) ([]auth0mgmt.Person, error) {
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
 	return f.people, nil
 }
 
-func (f *fakePeople) Invite(email, name string, roleNames []string) (auth0mgmt.Person, error) {
+func (f *fakePeople) Invite(_ context.Context, email, name string, roleNames []string) (auth0mgmt.Person, error) {
 	if f.inviteErr != nil {
 		return auth0mgmt.Person{}, f.inviteErr
 	}
@@ -54,7 +55,7 @@ func (f *fakePeople) Invite(email, name string, roleNames []string) (auth0mgmt.P
 	return person, nil
 }
 
-func (f *fakePeople) SetRoles(userID string, roleNames []string) error {
+func (f *fakePeople) SetRoles(_ context.Context, userID string, roleNames []string) error {
 	if f.rolesErr != nil {
 		return f.rolesErr
 	}
@@ -65,7 +66,7 @@ func (f *fakePeople) SetRoles(userID string, roleNames []string) error {
 	return nil
 }
 
-func (f *fakePeople) SendInviteEmail(email string) error {
+func (f *fakePeople) SendInviteEmail(_ context.Context, email string) error {
 	if f.emailErr != nil {
 		return f.emailErr
 	}
@@ -73,7 +74,7 @@ func (f *fakePeople) SendInviteEmail(email string) error {
 	return nil
 }
 
-func (f *fakePeople) FindByEmail(email string) ([]auth0mgmt.Person, error) {
+func (f *fakePeople) FindByEmail(_ context.Context, email string) ([]auth0mgmt.Person, error) {
 	if f.findErr != nil {
 		return nil, f.findErr
 	}

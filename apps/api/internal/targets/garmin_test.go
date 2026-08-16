@@ -1,6 +1,7 @@
 package targets
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -20,7 +21,7 @@ type fakeCourses struct {
 	deleteErr error
 }
 
-func (f *fakeCourses) ImportCourse(filename string, data []byte) (string, error) {
+func (f *fakeCourses) ImportCourse(_ context.Context, filename string, data []byte) (string, error) {
 	f.filenames = append(f.filenames, filename)
 	f.imported = append(f.imported, data)
 	if f.importErr != nil {
@@ -32,7 +33,7 @@ func (f *fakeCourses) ImportCourse(filename string, data []byte) (string, error)
 	return "course-1", nil
 }
 
-func (f *fakeCourses) DeleteCourse(id string) error {
+func (f *fakeCourses) DeleteCourse(_ context.Context, id string) error {
 	f.deleted = append(f.deleted, id)
 	return f.deleteErr
 }
@@ -48,7 +49,7 @@ func aTrack() []gpx.Point {
 func aGarmin(courses *fakeCourses) *Garmin {
 	return &Garmin{
 		Account: model.Account{ID: "garmin:wilant", Provider: model.ProviderGarmin, Rider: "wilant"},
-		Track:   func(string) ([]gpx.Point, error) { return aTrack(), nil },
+		Track:   func(context.Context, string) ([]gpx.Point, error) { return aTrack(), nil },
 		Courses: func(string) (Courses, error) { return courses, nil },
 	}
 }
@@ -63,7 +64,7 @@ func aRoute() model.Route {
 // breadcrumb line with nothing said at a junction.
 func TestCreateUploadsAFITCourse(t *testing.T) {
 	courses := &fakeCourses{}
-	id, err := aGarmin(courses).Create(aRoute())
+	id, err := aGarmin(courses).Create(t.Context(), aRoute())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +88,7 @@ func TestCreateUploadsAFITCourse(t *testing.T) {
 // course they already had.
 func TestUpdateImportsBeforeDeleting(t *testing.T) {
 	courses := &fakeCourses{importID: "course-2"}
-	id, err := aGarmin(courses).Update("course-1", aRoute())
+	id, err := aGarmin(courses).Update(t.Context(), "course-1", aRoute())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +107,7 @@ func TestUpdateImportsBeforeDeleting(t *testing.T) {
 // have, and the unchanged state means the next push tries again.
 func TestUpdateKeepsTheOldCourseWhenTheImportFails(t *testing.T) {
 	courses := &fakeCourses{importErr: errors.New("garmin: 503")}
-	if _, err := aGarmin(courses).Update("course-1", aRoute()); err == nil {
+	if _, err := aGarmin(courses).Update(t.Context(), "course-1", aRoute()); err == nil {
 		t.Fatal("a failed import reported success")
 	}
 	if len(courses.deleted) != 0 {
@@ -124,7 +125,7 @@ func TestUpdateReturnsTheNewIDEvenIfTheOldOneSurvives(t *testing.T) {
 	g := aGarmin(courses)
 	g.Log = func(string, ...any) { logged = true }
 
-	id, err := g.Update("course-1", aRoute())
+	id, err := g.Update(t.Context(), "course-1", aRoute())
 	if err != nil {
 		t.Fatalf("a surviving old course failed the push: %v", err)
 	}
@@ -140,7 +141,7 @@ func TestUpdateReturnsTheNewIDEvenIfTheOldOneSurvives(t *testing.T) {
 // dereference and not a provider error.
 func TestWithoutASessionTheErrorSaysWhatToDo(t *testing.T) {
 	g := &Garmin{Account: model.Account{Rider: "wilant"}}
-	_, err := g.Create(aRoute())
+	_, err := g.Create(t.Context(), aRoute())
 	if err == nil || !strings.Contains(err.Error(), "Settings") {
 		t.Errorf("err = %v, want it to point at Settings", err)
 	}
@@ -152,7 +153,7 @@ func TestClientErrorsAreReturnedNotPanicked(t *testing.T) {
 	g := aGarmin(&fakeCourses{})
 	g.Courses = func(string) (Courses, error) { return nil, errors.New("expired") }
 
-	if _, err := g.Create(aRoute()); err == nil || !strings.Contains(err.Error(), "expired") {
+	if _, err := g.Create(t.Context(), aRoute()); err == nil || !strings.Contains(err.Error(), "expired") {
 		t.Errorf("err = %v, want the resolver's", err)
 	}
 }
@@ -160,9 +161,9 @@ func TestClientErrorsAreReturnedNotPanicked(t *testing.T) {
 // A track that cannot be read is not a course worth uploading.
 func TestATrackThatCannotBeReadFailsThePush(t *testing.T) {
 	g := aGarmin(&fakeCourses{})
-	g.Track = func(string) ([]gpx.Point, error) { return nil, errors.New("no such route") }
+	g.Track = func(context.Context, string) ([]gpx.Point, error) { return nil, errors.New("no such route") }
 
-	if _, err := g.Create(aRoute()); err == nil {
+	if _, err := g.Create(t.Context(), aRoute()); err == nil {
 		t.Fatal("an unreadable track reported success")
 	}
 }

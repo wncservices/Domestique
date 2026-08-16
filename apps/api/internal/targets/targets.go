@@ -5,6 +5,7 @@
 package targets
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/wncservices/domestique/apps/api/internal/gpx"
@@ -14,11 +15,11 @@ import (
 // Target is one rider's account on one provider.
 type Target interface {
 	// Create pushes a new route and returns the provider's id for it.
-	Create(route model.Route) (string, error)
+	Create(ctx context.Context, route model.Route) (string, error)
 	// Update replaces an existing route and returns the (possibly new) id.
-	Update(remoteID string, route model.Route) (string, error)
+	Update(ctx context.Context, remoteID string, route model.Route) (string, error)
 	// Delete removes a route from the account.
-	Delete(remoteID string) error
+	Delete(ctx context.Context, remoteID string) error
 }
 
 // Courses is the slice of a provider's client an adapter needs to push.
@@ -27,9 +28,9 @@ type Target interface {
 // internal/garmin stays a client with no opinion about syncing.
 type Courses interface {
 	// ImportCourse uploads a course file and returns the provider's id.
-	ImportCourse(filename string, data []byte) (string, error)
+	ImportCourse(ctx context.Context, filename string, data []byte) (string, error)
 	// DeleteCourse removes one.
-	DeleteCourse(id string) error
+	DeleteCourse(ctx context.Context, id string) error
 }
 
 // Implemented reports whether pushes to a provider actually work yet, so the
@@ -55,7 +56,7 @@ func Implemented(p model.Provider) bool {
 // something a person can act on rather than a nil dereference.
 type Factory struct {
 	// Track returns a route's points by slug.
-	Track func(slug string) ([]gpx.Point, error)
+	Track func(ctx context.Context, slug string) ([]gpx.Point, error)
 	// Garmin resolves the signed-in Garmin client for a rider.
 	Garmin func(rider string) (Courses, error)
 	// TurnCues asks adapters for cues inferred from the track's geometry.

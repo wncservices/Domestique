@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -16,11 +17,11 @@ import (
 // no wrapper is needed the way LiveGarmin needs one, since none of these
 // methods need translating into a different shape first.
 type PeopleConnector interface {
-	ListPeople(gateRole string, permissionRoles ...string) ([]auth0mgmt.Person, error)
-	Invite(email, name string, roleNames []string) (auth0mgmt.Person, error)
-	SetRoles(userID string, roleNames []string) error
-	SendInviteEmail(email string) error
-	FindByEmail(email string) ([]auth0mgmt.Person, error)
+	ListPeople(ctx context.Context, gateRole string, permissionRoles ...string) ([]auth0mgmt.Person, error)
+	Invite(ctx context.Context, email, name string, roleNames []string) (auth0mgmt.Person, error)
+	SetRoles(ctx context.Context, userID string, roleNames []string) error
+	SendInviteEmail(ctx context.Context, email string) error
+	FindByEmail(ctx context.Context, email string) ([]auth0mgmt.Person, error)
 }
 
 type personDTO struct {
@@ -131,7 +132,7 @@ func (s *Server) handlePeopleList(w http.ResponseWriter, r *http.Request) {
 		permissionRoles = append(permissionRoles, riderRole)
 	}
 
-	people, err := s.People.ListPeople(gate, permissionRoles...)
+	people, err := s.People.ListPeople(r.Context(), gate, permissionRoles...)
 	if err != nil {
 		s.logger().Warn("listing people failed", "err", err)
 		writeJSON(w, http.StatusBadGateway, map[string]string{
@@ -191,7 +192,7 @@ func (s *Server) handlePeopleInvite(w http.ResponseWriter, r *http.Request) {
 	// creating, and inviting, a second identity for the same person: they
 	// already have a way to sign in, they just weren't let past the gate
 	// role yet.
-	existing, err := s.People.FindByEmail(body.Email)
+	existing, err := s.People.FindByEmail(r.Context(), body.Email)
 	if err != nil {
 		s.logger().Warn("checking for an existing account failed", "email", body.Email, "err", err)
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
@@ -204,7 +205,7 @@ func (s *Server) handlePeopleInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(existing) == 1 {
-		if err := s.People.SetRoles(existing[0].UserID, roleNames); err != nil {
+		if err := s.People.SetRoles(r.Context(), existing[0].UserID, roleNames); err != nil {
 			s.logger().Warn("granting access to an existing account failed", "email", body.Email, "err", err)
 			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 			return
@@ -216,7 +217,7 @@ func (s *Server) handlePeopleInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	person, err := s.People.Invite(body.Email, body.Name, roleNames)
+	person, err := s.People.Invite(r.Context(), body.Email, body.Name, roleNames)
 	if err != nil {
 		s.logger().Warn("inviting a person failed", "email", body.Email, "err", err)
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
@@ -225,7 +226,7 @@ func (s *Server) handlePeopleInvite(w http.ResponseWriter, r *http.Request) {
 
 	// The account and its access both exist at this point — a failure past
 	// here means the invite email needs resending, not starting over.
-	if err := s.People.SendInviteEmail(body.Email); err != nil {
+	if err := s.People.SendInviteEmail(r.Context(), body.Email); err != nil {
 		s.logger().Warn("sending the invite email failed", "email", body.Email, "err", err)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"person": s.personDTO(person),
@@ -269,7 +270,7 @@ func (s *Server) handlePeopleSetRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.People.SetRoles(id, roleNames); err != nil {
+	if err := s.People.SetRoles(r.Context(), id, roleNames); err != nil {
 		s.logger().Warn("changing a person's role failed", "id", id, "err", err)
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return

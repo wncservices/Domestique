@@ -391,6 +391,60 @@ folder afterwards.
 data. `examples/routes/` holds one synthetic route for the demo, and the
 `.gitignore` blocks `/routes/` and `data/`.
 
+## Observability
+
+Metrics and traces take deliberately different paths out, matching how every other app in the
+cluster already does observability (see `lab/AGENTS.md`'s Observability wiring):
+
+- **Metrics stay pull-based.** `internal/api/metrics.go` owns its own `sdkmetric.MeterProvider`
+  bound to a private `prometheus.Registry`, so `GET /api/metrics` works in every test and in
+  `just demo` on a laptop — neither calls `internal/telemetry.Setup`. Instruments are recorded
+  through the OTel metrics API (`Int64Counter`, `Float64Histogram`, `Float64Gauge`) rather than
+  `prometheus/client_golang` directly, but the wire format and metric names
+  (`domestique_http_requests_total`, `domestique_http_request_duration_seconds`,
+  `domestique_push_last_success_timestamp_seconds`, `domestique_push_errors_total`) are unchanged
+  — a ServiceMonitor scrapes Prometheus text, not an OTLP metrics pipeline, so that is what stays
+  exposed. `otelprom.WithoutScopeInfo()` and `WithoutTargetInfo()` are both set on purpose: without
+  them the Prometheus bridge invents an `otel_scope_*` label on every series plus a `target_info`
+  gauge, cardinality nothing here has a use for.
+- **Traces are push-based.** `internal/telemetry.Setup` installs the global `TracerProvider` and
+  exports spans over OTLP HTTP to the OTel Collector, the same way Traefik already does. It is a
+  no-op — no exporter, no background retry loop — unless `OTEL_EXPORTER_OTLP_ENDPOINT` or
+  `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` is set; those are the OTel SDK's own standard env vars,
+  read by `otlptracehttp.New` itself, so this package never hardcodes a collector address. A
+  laptop running `just demo`/`just api` has neither set and gets a real no-op provider, not a
+  batch exporter quietly retrying against `localhost:4318` forever.
+- **`otelhttp.NewHandler` wraps the whole mux**, outermost in `Server.Handler()` — before
+  `authenticate`/`logRequests`/`instrument` — so it extracts any inbound `traceparent` (from
+  Traefik) before anything else runs, and every outbound call a handler makes downstream has a
+  real parent span to attach to. Span names are `METHOD /raw/path` (`WithSpanNameFormatter`),
+  including any slug or id in the path — fine for traces, unlike the metrics labels above, since a
+  span is already one row per request rather than an aggregated series.
+- **`runServe` now catches SIGTERM** (`signal.NotifyContext`) specifically so the trace batch
+  exporter gets a chance to flush before a pod restart kills the process — previously the server
+  had no graceful shutdown of any kind, relying on the OS to just end it.
+- **DB queries carry real spans, nested under the request that triggered them**, not disconnected
+  roots. That took a real prerequisite: `source.Library` and `state.Store` threaded no
+  `context.Context` at all before this — not through either interface, both implementations, the
+  CLI, or `internal/sync`'s diff engine — so `internal/source/db.go` and `internal/state/db.go`
+  switch from `sql.Open` to `github.com/XSAM/otelsql`'s `Open`, and every query uses
+  `QueryContext`/`ExecContext`/`QueryRowContext` instead of the context-less versions. Verified
+  against real decoded OTLP protobuf (a throwaway collector using
+  `go.opentelemetry.io/proto/otlp`), not assumed: a `GET /api/routes` request's `SELECT ... FROM
+  routes` span carries the HTTP server span's own id as `parent_span_id`.
+  `accounts.Store` (a separate package) is **not** included — deliberately out of scope, so its
+  queries still show up as disconnected root spans; a real gap, not an oversight, and a candidate
+  for its own follow-up if it matters.
+- **Outbound HTTP calls carry spans too**, on the same principle: `oidcflow`, `komoot.Client`,
+  `garmin.Client` and `auth0mgmt.Client` each wrap their `http.Client`'s `Transport` in
+  `otelhttp.NewTransport`, and each needed the same context-threading treatment as the DB before
+  that Transport had a real parent to attach to — only `oidcflow` already threaded
+  `context.Context` anywhere; the other three took none. `garmin.Client`'s threading runs through
+  `internal/targets` (`Target`/`Courses` interfaces, the `Garmin`/`Wahoo` adapters) and
+  `internal/sync` (`BuildPlan`, `Apply`), since the push path is the same call chain `state.Store`
+  already required touching. `auth0mgmt.Client`'s threading runs through `api.PeopleConnector` and
+  every People-page handler.
+
 ## Security guardrails
 
 This repository is **public**. Everything below assumes a reader who is not you.
@@ -567,14 +621,15 @@ conversion navigates as a breadcrumb line with no turn cues. See `docs/plan.md`.
 
 - Go: standard library first. The dependencies are `gopkg.in/yaml.v3`, `modernc.org/sqlite`
   (pure Go, so no cgo), `github.com/jackc/pgx/v5`, `github.com/muktihari/fit`,
-  `github.com/coreos/go-oidc/v3` and `github.com/prometheus/client_golang`. That is the budget —
+  `github.com/coreos/go-oidc/v3` and the `go.opentelemetry.io/otel` family. That is the budget —
   add to it only for something genuinely hard, as FIT encoding was, and as OIDC discovery/JWKS/
   ID-token verification is: a spec where writing it yourself means writing the vulnerabilities
   yourself. `golang.org/x/oauth2` appears in `go.sum` only as go-oidc's own indirect dependency —
   the token exchange itself is one POST and a JSON parse, hand-rolled rather than pulling in a
-  second direct dependency for it. `client_golang` is the same call for metrics: concurrency-safe
-  counters, gauges and histograms with correct label handling are exactly the kind of thing worth
-  not hand-rolling and getting subtly wrong under load.
+  second direct dependency for it. OpenTelemetry is the same call for observability:
+  concurrency-safe instruments, span/trace-context propagation and the OTLP wire protocol are
+  exactly the kind of thing worth not hand-rolling and getting subtly wrong under load — see
+  **Observability** below for how tracing and metrics are actually wired.
 - `gofmt` is the formatter; `go vet` must be clean.
 - Vue: `<script setup lang="ts">`, no state-management library — the app is one screen and
   `ref`/`computed` cover it.

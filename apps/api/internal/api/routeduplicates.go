@@ -44,7 +44,7 @@ func (s *Server) handleRouteDuplicates(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	routes, _, err := s.Source.List()
+	routes, _, err := s.Source.List(r.Context())
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -55,7 +55,7 @@ func (s *Server) handleRouteDuplicates(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, groupDuplicateRoutes(routes, func(rt model.Route) routeDTO {
-		return s.toRouteDTO(rt, linked)
+		return s.toRouteDTO(r.Context(), rt, linked)
 	}))
 }
 

@@ -59,7 +59,7 @@ func TestGarminCourseListFlagsAlreadyTrackedCoursesAsImported(t *testing.T) {
 	h.garmin.listCourses = []garmin.Course{
 		{ID: "999", Name: "Already Pushed", DistanceM: 10000, ActivityType: "cycling"},
 	}
-	if err := h.store.Record(state.Entry{
+	if err := h.store.Record(t.Context(), state.Entry{
 		AccountID: "garmin:wilant", Slug: "already-pushed", RemoteID: "999",
 		ContentHash: "irrelevant-here", UpdatedAt: "2026-01-01T00:00:00Z",
 	}); err != nil {
@@ -86,7 +86,7 @@ func TestGarminCourseListFlagsLikelyDuplicatesByDistanceAndStartPoint(t *testing
 	h := newConnectHarness(t, true)
 	h.connectGarmin("wilant")
 
-	route, err := h.db.Create(source.CreateRequest{
+	route, err := h.db.Create(t.Context(), source.CreateRequest{
 		Filename: "kemmelberg-loop.gpx", Name: "Kemmelberg Loop", GPX: exampleGPX(t),
 	})
 	if err != nil {
@@ -176,7 +176,7 @@ func TestGarminCourseImportCreatesRoutes(t *testing.T) {
 		t.Errorf("skipped = %+v, want none", result.Skipped)
 	}
 
-	routes, _, err := h.db.List()
+	routes, _, err := h.db.List(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +206,7 @@ func TestGarminCourseImportRecordsSyncStateForTheSourceAccount(t *testing.T) {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 
-	routes, _, err := h.db.List()
+	routes, _, err := h.db.List(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +215,7 @@ func TestGarminCourseImportRecordsSyncStateForTheSourceAccount(t *testing.T) {
 	}
 	route := routes[0]
 
-	recorded, err := h.store.ForAccount("garmin:wilant")
+	recorded, err := h.store.ForAccount(t.Context(), "garmin:wilant")
 	if err != nil {
 		t.Fatal(err)
 	}

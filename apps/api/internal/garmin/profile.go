@@ -1,6 +1,7 @@
 package garmin
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,13 +33,13 @@ func (p Profile) Name() string {
 //
 // Undocumented like the rest, so callers treat a failure as "no name known"
 // rather than "sign-in failed" — see api.LiveGarmin.
-func (c *Client) Profile() (Profile, error) {
-	bearer, err := c.bearerToken()
+func (c *Client) Profile(ctx context.Context) (Profile, error) {
+	bearer, err := c.bearerToken(ctx)
 	if err != nil {
 		return Profile{}, err
 	}
 
-	raw, status, err := c.do(http.MethodGet, c.APIBase+"/userprofile-service/socialProfile", nil, "",
+	raw, status, err := c.do(ctx, http.MethodGet, c.APIBase+"/userprofile-service/socialProfile", nil, "",
 		header{"Authorization", "Bearer " + bearer},
 		header{"Accept", "application/json"},
 		header{"X-Requested-With", "XMLHttpRequest"},
