@@ -109,6 +109,15 @@ func (s *Server) handleGarminCourseList(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, out)
 }
 
+// garminTagPrefix marks a route as synced back from Garmin, the same way
+// komootTagPrefix does for Komoot — dedup itself still runs on sync_state
+// (garminTrackedRemoteIDs, below), not this tag; it exists so the origin is
+// visible on the route itself, in the library and not just in the account
+// it happened to come from.
+const garminTagPrefix = "garmin:"
+
+func garminTag(id string) string { return garminTagPrefix + id }
+
 // garminTrackedRemoteIDs is the set of Garmin course ids this app has
 // already recorded pushing to the caller's own linked account — the
 // exact-match half of dedup, free of any heuristic.
@@ -365,6 +374,7 @@ func (s *Server) handleGarminCourseImport(w http.ResponseWriter, r *http.Request
 			Filename:   course.Name + ".gpx",
 			Name:       course.Name,
 			Descript:   fmt.Sprintf("Synced back from Garmin (course %s)", id),
+			Tags:       []string{"garmin", garminTag(id)},
 			UploadedBy: identity.User,
 			GPX:        got.gpx,
 		})

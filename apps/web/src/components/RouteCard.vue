@@ -20,6 +20,16 @@ const distance = computed(() => `${(props.route.distanceM / 1000).toFixed(1)} km
 const ascent = computed(() => `${Math.round(props.route.ascentM)} m`)
 const gpxUrl = computed(() => api.gpxUrl(props.route.slug))
 
+// Provider imports tag a route with their own id ("komoot:12345",
+// "garmin:502255241") so re-imports can be detected — see komootTag/garminTag
+// server-side. Useful for dedup, meaningless as a badge: nobody reading the
+// card needs to see the id, only that the route came from Komoot or Garmin,
+// which the plain "komoot"/"garmin" tag alongside it already says.
+const INTERNAL_TAG_PREFIXES = ['komoot:', 'garmin:']
+const visibleTags = computed(() =>
+  props.route.tags.filter((tag) => !INTERNAL_TAG_PREFIXES.some((prefix) => tag.startsWith(prefix))),
+)
+
 const confirming = ref(false)
 const deleting = ref(false)
 
@@ -125,14 +135,10 @@ async function remove() {
         <dt class="text-[0.7rem] uppercase tracking-wide text-dimmed">Ascent</dt>
         <dd class="tabular-nums">{{ ascent }}</dd>
       </div>
-      <div>
-        <dt class="text-[0.7rem] uppercase tracking-wide text-dimmed">Points</dt>
-        <dd class="tabular-nums">{{ route.pointCount.toLocaleString() }}</dd>
-      </div>
     </dl>
 
-    <div v-if="route.tags.length" class="flex flex-wrap gap-1.5">
-      <UBadge v-for="tag in route.tags" :key="tag" color="neutral" variant="soft" size="sm">
+    <div v-if="visibleTags.length" class="flex flex-wrap gap-1.5">
+      <UBadge v-for="tag in visibleTags" :key="tag" color="neutral" variant="soft" size="sm">
         {{ tag }}
       </UBadge>
     </div>

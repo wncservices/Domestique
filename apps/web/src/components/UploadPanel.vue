@@ -2,9 +2,9 @@
 import { computed, ref } from 'vue'
 import { useToast } from '@nuxt/ui/composables'
 import { api } from '@/api/client'
-import type { Account, Me } from '@/api/types'
+import type { Account } from '@/api/types'
 
-const props = defineProps<{ accounts: Account[]; me?: Me | null }>()
+const props = defineProps<{ accounts: Account[] }>()
 const emit = defineEmits<{ uploaded: [] }>()
 
 const toast = useToast()
@@ -14,13 +14,8 @@ const name = ref('')
 const description = ref('')
 const tags = ref('')
 const selectedTargets = ref<string[]>([])
-const uploadedBy = ref(localStorage.getItem('domestique.rider') ?? '')
 
 const busy = ref(false)
-
-/** When signed in, ownership comes from the session — the server ignores this
- *  field anyway, so asking for it would be a lie. */
-const knowsWhoYouAre = computed(() => Boolean(props.me?.authenticated && props.me?.user))
 
 const targetOptions = computed(() =>
   props.accounts.map((a) => ({ label: a.label || a.id, value: a.id })),
@@ -55,12 +50,9 @@ async function submit() {
       tags: tags.value.trim(),
       // Empty means "use the library default targets".
       targets: selectedTargets.value.join(','),
-      uploadedBy: uploadedBy.value.trim(),
+      // Ownership always comes from the session — the server ignores this
+      // field when one exists, so there is nothing for the uploader to set.
     })
-    if (!knowsWhoYouAre.value) {
-      // Remember who is uploading; it is the same person most of the time.
-      localStorage.setItem('domestique.rider', uploadedBy.value.trim())
-    }
     toast.add({
       title: 'Route added',
       description: `“${created.name}” is in the library.`,
@@ -99,17 +91,14 @@ async function submit() {
         @update:model-value="onFileChange($event as File | null)"
       />
 
-      <div class="grid gap-3 sm:grid-cols-2">
+      <div class="grid gap-3">
         <UFormField label="Name">
           <UInput v-model="name" placeholder="Kemmelberg Loop" class="w-full" />
         </UFormField>
-        <UFormField v-if="!knowsWhoYouAre" label="Uploaded by">
-          <UInput v-model="uploadedBy" placeholder="wilant" class="w-full" />
-        </UFormField>
-        <UFormField label="Description" class="sm:col-span-2">
+        <UFormField label="Description">
           <UInput v-model="description" placeholder="Optional" class="w-full" />
         </UFormField>
-        <UFormField label="Tags" hint="comma separated" class="sm:col-span-2">
+        <UFormField label="Tags" hint="comma separated">
           <UInput v-model="tags" placeholder="gravel, hills" class="w-full" />
         </UFormField>
       </div>

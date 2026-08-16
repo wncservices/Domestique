@@ -29,16 +29,23 @@ async function load(): Promise<void> {
     // config() and me() answer for anonymous visitors too (both exempted
     // server-side, api/server.go's authenticate) — every mode reaches this
     // page signed out at least once. The rest of the library is a rider's
-    // own data, gated behind actually being signed in, so it is only worth
-    // asking for once me() says so: fetching it anonymously would just be a
-    // guaranteed 401, and bundling that into the same Promise.all used to
-    // fail the whole load — including config and identity — over a
+    // own data, gated behind actually holding read access, so it is only
+    // worth asking for once me() says so: fetching it without that would
+    // just be a guaranteed 401, and bundling that into the same Promise.all
+    // used to fail the whole load — including config and identity — over a
     // rejection that was completely expected.
+    //
+    // Checked via permissions, not identity.authenticated: that field means
+    // "did this request go through a real login" (see its own doc comment
+    // in types.ts), which is correctly false under mode: none — nobody logs
+    // in, everyone is the local admin — but that is a different question
+    // from "can this identity read the library." Gating on it here made
+    // mode: none's own library page permanently empty.
     const [appConfig, identity] = await Promise.all([api.config(), api.me()])
     config.value = appConfig
     me.value = identity
 
-    if (identity.authenticated) {
+    if (identity.permissions.includes('routes:read')) {
       const [accountList, library, currentPlan] = await Promise.all([
         api.accounts(),
         api.routes(),

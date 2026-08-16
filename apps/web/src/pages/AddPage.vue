@@ -5,13 +5,13 @@ import GarminDuplicatesPanel from '@/components/GarminDuplicatesPanel.vue'
 import KomootPanel from '@/components/KomootPanel.vue'
 import UploadPanel from '@/components/UploadPanel.vue'
 
-const { accounts, me, config, canUpload, canImportKomoot, canSyncGarmin, komootEnabled, refresh } =
+const { accounts, config, canUpload, canImportKomoot, canSyncGarmin, komootEnabled, refresh } =
   useLibrary()
 </script>
 
 <template>
   <div class="flex flex-col gap-6">
-    <UploadPanel v-if="canUpload" :accounts="accounts" :me="me" @uploaded="refresh" />
+    <UploadPanel v-if="canUpload" :accounts="accounts" @uploaded="refresh" />
 
     <UAlert
       v-else
