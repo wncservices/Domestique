@@ -28,6 +28,7 @@ import (
 	"strings"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 // EnvClientSecret is where the OIDC client secret comes from. Never the
@@ -66,6 +67,15 @@ type Flow struct {
 	httpClient *http.Client
 }
 
+// instrumentedClient is what every outbound call this package makes goes
+// through — discovery, JWKS fetches inside Verify, and the token exchange —
+// so all three show up as spans under whatever request triggered them
+// (New's caller bounds ctx with a timeout but startup has no parent request;
+// Exchange and VerifyIDToken run inside /sso/callback's).
+var instrumentedClient = &http.Client{
+	Transport: otelhttp.NewTransport(http.DefaultTransport),
+}
+
 // New runs discovery against cfg.Issuer — the one network call in this
 // feature. Callers should bound ctx with a timeout: a DNS hiccup at startup
 // must not hang `domestique serve` forever.
@@ -74,6 +84,9 @@ func New(ctx context.Context, cfg Config) (*Flow, error) {
 		return nil, errors.New("oidcflow: no client secret — set " + EnvClientSecret)
 	}
 
+	// go-oidc reads the client to use for discovery back out of ctx via
+	// oidc.ClientContext, falling back to http.DefaultClient otherwise.
+	ctx = oidc.ClientContext(ctx, instrumentedClient)
 	provider, err := oidc.NewProvider(ctx, cfg.Issuer)
 	if err != nil {
 		return nil, fmt.Errorf("oidcflow: discovery against %s: %w", cfg.Issuer, err)
@@ -105,7 +118,7 @@ func New(ctx context.Context, cfg Config) (*Flow, error) {
 		authEndpoint:       endpoints.AuthorizationEndpoint,
 		tokenEndpoint:      endpoints.TokenEndpoint,
 		endSessionEndpoint: endpoints.EndSessionEndpoint,
-		httpClient:         http.DefaultClient,
+		httpClient:         instrumentedClient,
 	}, nil
 }
 
@@ -189,7 +202,7 @@ func (f *Flow) Exchange(ctx context.Context, code, codeVerifier, redirectURI str
 // the returned token's Nonce field against the one sealed in the state
 // cookie before trusting anything else about it.
 func (f *Flow) VerifyIDToken(ctx context.Context, raw string) (*oidc.IDToken, error) {
-	return f.verifier.Verify(ctx, raw)
+	return f.verifier.Verify(oidc.ClientContext(ctx, f.httpClient), raw)
 }
 
 // EndSessionURL returns the issuer's RP-initiated logout URL, or "" if the

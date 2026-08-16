@@ -291,7 +291,7 @@ func komootClient() (*komoot.Client, error) {
 	}
 
 	client := komoot.New()
-	if err := client.Login(email, password); err != nil {
+	if err := client.Login(context.Background(), email, password); err != nil {
 		return nil, err
 	}
 	return client, nil
@@ -309,7 +309,7 @@ func runKomoot(dst *source.DB, cfg *config.Config, args []string) error {
 		return err
 	}
 
-	tours, err := client.Tours(cfg.Komoot.IncludeRecorded)
+	tours, err := client.Tours(context.Background(), cfg.Komoot.IncludeRecorded)
 	if err != nil {
 		return err
 	}
@@ -339,7 +339,7 @@ func runKomoot(dst *source.DB, cfg *config.Config, args []string) error {
 				continue
 			}
 
-			raw, err := client.GPX(tour.ID)
+			raw, err := client.GPX(context.Background(), tour.ID)
 			if err != nil {
 				problems = append(problems, fmt.Sprintf("%s (%s): %v", tour.Name, tour.ID, err))
 				continue

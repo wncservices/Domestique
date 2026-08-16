@@ -19,6 +19,7 @@ package komoot
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
@@ -28,6 +29,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 const (
@@ -79,11 +82,11 @@ func (c *Client) allowedHost(raw string) error {
 // this client was configured with. Validation happens here, before the URL is
 // used to construct anything, so there is no path that reaches the network
 // without passing it.
-func (c *Client) newRequest(rawURL string) (*http.Request, error) {
+func (c *Client) newRequest(ctx context.Context, rawURL string) (*http.Request, error) {
 	if err := c.allowedHost(rawURL); err != nil {
 		return nil, err
 	}
-	return http.NewRequest(http.MethodGet, rawURL, nil)
+	return http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 }
 
 // Client talks to Komoot as one account.
@@ -101,7 +104,8 @@ type Client struct {
 func New() *Client {
 	return &Client{
 		HTTP: &http.Client{
-			Timeout: defaultTimeout,
+			Timeout:   defaultTimeout,
+			Transport: otelhttp.NewTransport(http.DefaultTransport),
 			// Do not follow redirects. A redirect would carry the
 			// Authorization header to wherever it points.
 			CheckRedirect: func(*http.Request, []*http.Request) error {
@@ -128,12 +132,12 @@ type Tour struct {
 func (t Tour) Planned() bool { return t.Type == TypePlanned }
 
 // Login exchanges an email and password for the account's API token.
-func (c *Client) Login(email, password string) error {
+func (c *Client) Login(ctx context.Context, email, password string) error {
 	if email == "" || password == "" {
 		return fmt.Errorf("komoot: email and password are both required")
 	}
 
-	req, err := c.newRequest(fmt.Sprintf("%s/account/email/%s/", c.BaseV6, url.PathEscape(email)))
+	req, err := c.newRequest(ctx, fmt.Sprintf("%s/account/email/%s/", c.BaseV6, url.PathEscape(email)))
 	if err != nil {
 		return err
 	}
@@ -173,7 +177,7 @@ func (c *Client) DisplayName() string { return c.name }
 
 // Tours lists the account's tours, newest first. Recorded rides are filtered
 // out unless includeRecorded is set.
-func (c *Client) Tours(includeRecorded bool) ([]Tour, error) {
+func (c *Client) Tours(ctx context.Context, includeRecorded bool) ([]Tour, error) {
 	if c.userID == "" || c.token == "" {
 		return nil, fmt.Errorf("komoot: not logged in")
 	}
@@ -182,7 +186,7 @@ func (c *Client) Tours(includeRecorded bool) ([]Tour, error) {
 	var tours []Tour
 
 	for page := 0; next != "" && page < maxPages; page++ {
-		req, err := c.newRequest(next)
+		req, err := c.newRequest(ctx, next)
 		if err != nil {
 			return nil, err
 		}
@@ -236,12 +240,12 @@ func (c *Client) Tours(includeRecorded bool) ([]Tour, error) {
 //
 // Komoot returns coordinates as JSON, not GPX, so the file is built here. That
 // is fine: the rest of Domestique only ever wants lat/lon/ele.
-func (c *Client) GPX(tourID string) ([]byte, error) {
+func (c *Client) GPX(ctx context.Context, tourID string) ([]byte, error) {
 	if c.userID == "" || c.token == "" {
 		return nil, fmt.Errorf("komoot: not logged in")
 	}
 
-	req, err := c.newRequest(fmt.Sprintf(
+	req, err := c.newRequest(ctx, fmt.Sprintf(
 		"%s/tours/%s?_embedded=coordinates&format=coordinate_array",
 		c.BaseV7, url.PathEscape(tourID)))
 	if err != nil {

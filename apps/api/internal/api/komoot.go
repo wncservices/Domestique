@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -16,8 +17,8 @@ import (
 // interface so tests can substitute a fake, and so a broken third-party API
 // stays contained behind one seam.
 type KomootImporter interface {
-	Tours(includeRecorded bool) ([]komoot.Tour, error)
-	GPX(tourID string) ([]byte, error)
+	Tours(ctx context.Context, includeRecorded bool) ([]komoot.Tour, error)
+	GPX(ctx context.Context, tourID string) ([]byte, error)
 }
 
 type komootTourDTO struct {
@@ -47,7 +48,7 @@ func (s *Server) handleKomootTours(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tours, err := client.Tours(s.Config.Komoot.IncludeRecorded)
+	tours, err := client.Tours(r.Context(), s.Config.Komoot.IncludeRecorded)
 	if err != nil {
 		// Komoot's API is undocumented and moves; surface it as an upstream
 		// problem rather than a fault in this app.
@@ -97,7 +98,7 @@ func (s *Server) handleKomootImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tours, err := client.Tours(s.Config.Komoot.IncludeRecorded)
+	tours, err := client.Tours(r.Context(), s.Config.Komoot.IncludeRecorded)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
@@ -135,7 +136,7 @@ func (s *Server) handleKomootImport(w http.ResponseWriter, r *http.Request) {
 	// Small on purpose — this is somebody's personal account on an
 	// undocumented API, not a service to saturate.
 	const parallel = 4
-	downloads := fetchTours(client, wanted, parallel)
+	downloads := fetchTours(r.Context(), client, wanted, parallel)
 
 	for _, id := range wanted {
 		got := downloads[id]
@@ -181,7 +182,7 @@ type tourDownload struct {
 // Order is irrelevant here — the caller walks its own list afterwards — but
 // the results map must be complete, so every id gets an entry even when the
 // fetch failed.
-func fetchTours(client KomootImporter, ids []string, parallel int) map[string]tourDownload {
+func fetchTours(ctx context.Context, client KomootImporter, ids []string, parallel int) map[string]tourDownload {
 	out := make(map[string]tourDownload, len(ids))
 	if len(ids) == 0 {
 		return out
@@ -198,7 +199,7 @@ func fetchTours(client KomootImporter, ids []string, parallel int) map[string]to
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			gpx, err := client.GPX(id)
+			gpx, err := client.GPX(ctx, id)
 
 			mu.Lock()
 			out[id] = tourDownload{gpx: gpx, err: err}

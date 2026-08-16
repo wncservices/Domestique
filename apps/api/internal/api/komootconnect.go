@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -30,7 +31,7 @@ type KomootSession struct {
 type KomootConnector interface {
 	// Connect signs in with a password. The password is used here and
 	// nowhere else — what comes back is a session to store in its place.
-	Connect(email, password string) (KomootImporter, KomootSession, error)
+	Connect(ctx context.Context, email, password string) (KomootImporter, KomootSession, error)
 	// Resume rebuilds a client from a stored session.
 	Resume(userID, token string) KomootImporter
 }
@@ -116,7 +117,7 @@ func (s *Server) handleKomootConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, session, err := s.Connector.Connect(body.Email, body.Password)
+	_, session, err := s.Connector.Connect(r.Context(), body.Email, body.Password)
 	if err != nil {
 		// Log without the password and without the error's own body, which
 		// can echo the request.

@@ -6,6 +6,7 @@ package api_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"mime/multipart"
@@ -347,11 +348,11 @@ type fakeKomoot struct {
 	err   error
 }
 
-func (f fakeKomoot) Tours(bool) ([]komoot.Tour, error) {
+func (f fakeKomoot) Tours(context.Context, bool) ([]komoot.Tour, error) {
 	return f.tours, f.err
 }
 
-func (f fakeKomoot) GPX(id string) ([]byte, error) {
+func (f fakeKomoot) GPX(_ context.Context, id string) ([]byte, error) {
 	if f.err != nil {
 		return nil, f.err
 	}

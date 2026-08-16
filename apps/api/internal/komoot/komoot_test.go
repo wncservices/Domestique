@@ -1,6 +1,7 @@
 package komoot
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -123,7 +124,7 @@ func fakeKomoot(t *testing.T) (*Client, *httptest.Server) {
 func TestLoginExchangesPasswordForToken(t *testing.T) {
 	c, _ := fakeKomoot(t)
 
-	if err := c.Login(testEmail, testPassword); err != nil {
+	if err := c.Login(context.Background(), testEmail, testPassword); err != nil {
 		t.Fatalf("Login: %v", err)
 	}
 	if c.userID != testUserID || c.token != testToken {
@@ -137,7 +138,7 @@ func TestLoginExchangesPasswordForToken(t *testing.T) {
 func TestLoginRejectsBadCredentials(t *testing.T) {
 	c, _ := fakeKomoot(t)
 
-	err := c.Login(testEmail, "wrong")
+	err := c.Login(context.Background(), testEmail, "wrong")
 	if err == nil {
 		t.Fatal("bad password accepted")
 	}
@@ -149,21 +150,21 @@ func TestLoginRejectsBadCredentials(t *testing.T) {
 
 func TestLoginRequiresBothFields(t *testing.T) {
 	c, _ := fakeKomoot(t)
-	if err := c.Login("", testPassword); err == nil {
+	if err := c.Login(context.Background(), "", testPassword); err == nil {
 		t.Error("empty email accepted")
 	}
-	if err := c.Login(testEmail, ""); err == nil {
+	if err := c.Login(context.Background(), testEmail, ""); err == nil {
 		t.Error("empty password accepted")
 	}
 }
 
 func TestToursFiltersRecordedRides(t *testing.T) {
 	c, _ := fakeKomoot(t)
-	if err := c.Login(testEmail, testPassword); err != nil {
+	if err := c.Login(context.Background(), testEmail, testPassword); err != nil {
 		t.Fatal(err)
 	}
 
-	tours, err := c.Tours(false)
+	tours, err := c.Tours(context.Background(), false)
 	if err != nil {
 		t.Fatalf("Tours: %v", err)
 	}
@@ -190,11 +191,11 @@ func TestToursFiltersRecordedRides(t *testing.T) {
 
 func TestToursCanIncludeRecordedRides(t *testing.T) {
 	c, _ := fakeKomoot(t)
-	if err := c.Login(testEmail, testPassword); err != nil {
+	if err := c.Login(context.Background(), testEmail, testPassword); err != nil {
 		t.Fatal(err)
 	}
 
-	tours, err := c.Tours(true)
+	tours, err := c.Tours(context.Background(), true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +206,7 @@ func TestToursCanIncludeRecordedRides(t *testing.T) {
 
 func TestToursRequiresLogin(t *testing.T) {
 	c, _ := fakeKomoot(t)
-	if _, err := c.Tours(false); err == nil {
+	if _, err := c.Tours(context.Background(), false); err == nil {
 		t.Fatal("Tours worked without logging in")
 	}
 }
@@ -214,11 +215,11 @@ func TestToursRequiresLogin(t *testing.T) {
 // uses — otherwise an import lands routes nothing else can read.
 func TestGPXIsParsableByOurOwnReader(t *testing.T) {
 	c, _ := fakeKomoot(t)
-	if err := c.Login(testEmail, testPassword); err != nil {
+	if err := c.Login(context.Background(), testEmail, testPassword); err != nil {
 		t.Fatal(err)
 	}
 
-	raw, err := c.GPX("1")
+	raw, err := c.GPX(context.Background(), "1")
 	if err != nil {
 		t.Fatalf("GPX: %v", err)
 	}
@@ -245,10 +246,10 @@ func TestGPXIsParsableByOurOwnReader(t *testing.T) {
 
 func TestGPXRejectsEmptyTour(t *testing.T) {
 	c, _ := fakeKomoot(t)
-	if err := c.Login(testEmail, testPassword); err != nil {
+	if err := c.Login(context.Background(), testEmail, testPassword); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.GPX("empty"); err == nil {
+	if _, err := c.GPX(context.Background(), "empty"); err == nil {
 		t.Fatal("a tour with no coordinates produced a GPX")
 	}
 }
@@ -257,11 +258,11 @@ func TestGPXRejectsEmptyTour(t *testing.T) {
 // failing with a JSON decode error nobody can act on.
 func TestMovedEndpointGivesAReadableError(t *testing.T) {
 	c, _ := fakeKomoot(t)
-	if err := c.Login(testEmail, testPassword); err != nil {
+	if err := c.Login(context.Background(), testEmail, testPassword); err != nil {
 		t.Fatal(err)
 	}
 
-	_, err := c.GPX("moved")
+	_, err := c.GPX(context.Background(), "moved")
 	if err == nil {
 		t.Fatal("HTML response accepted")
 	}
@@ -304,7 +305,7 @@ func TestPaginationWillNotFollowAnotherHost(t *testing.T) {
 	c.BaseV7 = server.URL + "/v007"
 	c.LoginWithToken(testUserID, testToken)
 
-	_, err := c.Tours(false)
+	_, err := c.Tours(context.Background(), false)
 	if err == nil {
 		t.Fatal("off-host pagination link was followed without complaint")
 	}
@@ -370,7 +371,7 @@ func TestRequestsAcceptHAL(t *testing.T) {
 	client.BaseV6, client.BaseV7 = server.URL, server.URL
 	client.LoginWithToken("user-1", "token-1")
 
-	if _, err := client.Tours(false); err != nil {
+	if _, err := client.Tours(context.Background(), false); err != nil {
 		t.Fatalf("Tours failed: %v", err)
 	}
 	if len(accepts) == 0 {
@@ -409,7 +410,7 @@ func TestGPXAcceptsBothCoordinateShapes(t *testing.T) {
 			c.BaseV6, c.BaseV7 = server.URL, server.URL
 			c.LoginWithToken("user-1", "token-1")
 
-			raw, err := c.GPX("42")
+			raw, err := c.GPX(context.Background(), "42")
 			if err != nil {
 				t.Fatalf("GPX failed: %v", err)
 			}
@@ -434,7 +435,7 @@ func TestGPXRejectsAnEmptyTrack(t *testing.T) {
 	c.BaseV6, c.BaseV7 = server.URL, server.URL
 	c.LoginWithToken("user-1", "token-1")
 
-	if _, err := c.GPX("42"); err == nil {
+	if _, err := c.GPX(context.Background(), "42"); err == nil {
 		t.Error("an empty tour produced a GPX")
 	}
 }
