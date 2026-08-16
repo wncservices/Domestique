@@ -435,13 +435,15 @@ cluster already does observability (see `lab/AGENTS.md`'s Observability wiring):
   `accounts.Store` (a separate package) is **not** included — deliberately out of scope, so its
   queries still show up as disconnected root spans; a real gap, not an oversight, and a candidate
   for its own follow-up if it matters.
-- **Outbound HTTP calls carry spans too**, on the same principle: `oidcflow`, `komoot.Client` and
-  `garmin.Client` each wrap their `http.Client`'s `Transport` in `otelhttp.NewTransport`, and each
-  needed the same context-threading treatment as the DB before that Transport had a real parent to
-  attach to — `komoot.Client`/`garmin.Client` took no `context.Context` anywhere originally, unlike
-  `oidcflow` which already did. `garmin.Client`'s threading runs through `internal/targets`
-  (`Target`/`Courses` interfaces, the `Garmin`/`Wahoo` adapters) and `internal/sync` (`BuildPlan`,
-  `Apply`), since the push path is the same call chain `state.Store` already required touching.
+- **Outbound HTTP calls carry spans too**, on the same principle: `oidcflow`, `komoot.Client`,
+  `garmin.Client` and `auth0mgmt.Client` each wrap their `http.Client`'s `Transport` in
+  `otelhttp.NewTransport`, and each needed the same context-threading treatment as the DB before
+  that Transport had a real parent to attach to — only `oidcflow` already threaded
+  `context.Context` anywhere; the other three took none. `garmin.Client`'s threading runs through
+  `internal/targets` (`Target`/`Courses` interfaces, the `Garmin`/`Wahoo` adapters) and
+  `internal/sync` (`BuildPlan`, `Apply`), since the push path is the same call chain `state.Store`
+  already required touching. `auth0mgmt.Client`'s threading runs through `api.PeopleConnector` and
+  every People-page handler.
 
 ## Security guardrails
 

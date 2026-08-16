@@ -21,6 +21,7 @@ package auth0mgmt
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
@@ -32,6 +33,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 const (
@@ -81,8 +84,11 @@ type Client struct {
 // komoot.New defer their own first call.
 func New(cfg Config) *Client {
 	return &Client{
-		cfg:     cfg,
-		http:    &http.Client{Timeout: defaultTimeout},
+		cfg: cfg,
+		http: &http.Client{
+			Timeout:   defaultTimeout,
+			Transport: otelhttp.NewTransport(http.DefaultTransport),
+		},
 		roleIDs: map[string]string{},
 	}
 }
@@ -101,7 +107,7 @@ func (c *Client) baseURL() string {
 // one as needed. Guarded by c.mu so concurrent callers (the People page can
 // legitimately fire off ListPeople for three roles at once) share one token
 // exchange rather than each doing their own.
-func (c *Client) accessToken() (string, error) {
+func (c *Client) accessToken(ctx context.Context) (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -119,7 +125,7 @@ func (c *Client) accessToken() (string, error) {
 		return "", err
 	}
 
-	req, err := http.NewRequest(http.MethodPost, c.baseURL()+"/oauth/token", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL()+"/oauth/token", bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}
@@ -148,8 +154,8 @@ func (c *Client) accessToken() (string, error) {
 
 // do makes an authenticated Management API request and decodes a JSON
 // response into out (nil to discard the body, for a 204 No Content call).
-func (c *Client) do(method, path string, body any, out any) error {
-	token, err := c.accessToken()
+func (c *Client) do(ctx context.Context, method, path string, body any, out any) error {
+	token, err := c.accessToken(ctx)
 	if err != nil {
 		return err
 	}
@@ -163,7 +169,7 @@ func (c *Client) do(method, path string, body any, out any) error {
 		reader = bytes.NewReader(raw)
 	}
 
-	req, err := http.NewRequest(method, c.baseURL()+path, reader)
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL()+path, reader)
 	if err != nil {
 		return err
 	}
@@ -233,7 +239,7 @@ func snippet(raw []byte) string {
 // call here needs and nothing else offers a shortcut for. Resolved once per
 // name and kept — a role is renamed by a human, rarely enough that this
 // process's lifetime is a perfectly good cache horizon.
-func (c *Client) roleID(name string) (string, error) {
+func (c *Client) roleID(ctx context.Context, name string) (string, error) {
 	c.mu.Lock()
 	if id, ok := c.roleIDs[name]; ok {
 		c.mu.Unlock()
@@ -245,7 +251,7 @@ func (c *Client) roleID(name string) (string, error) {
 		ID   string `json:"id"`
 		Name string `json:"name"`
 	}
-	if err := c.do(http.MethodGet,
+	if err := c.do(ctx, http.MethodGet,
 		"/api/v2/roles?name_filter="+url.QueryEscape(name), nil, &roles); err != nil {
 		return "", err
 	}
@@ -293,7 +299,7 @@ func parseTime(s string) time.Time {
 // ListPeople's permission-role merge already relies on. search_engine=v3 is
 // required for the q parameter to be honored at all; fields/include_fields
 // keep the response to exactly what this needs.
-func (c *Client) lastSeen(userIDs []string) (map[string]roleUser, error) {
+func (c *Client) lastSeen(ctx context.Context, userIDs []string) (map[string]roleUser, error) {
 	if len(userIDs) == 0 {
 		return nil, nil
 	}
@@ -309,7 +315,7 @@ func (c *Client) lastSeen(userIDs []string) (map[string]roleUser, error) {
 	}
 
 	var users []roleUser
-	if err := c.do(http.MethodGet, "/api/v2/users?"+q.Encode(), nil, &users); err != nil {
+	if err := c.do(ctx, http.MethodGet, "/api/v2/users?"+q.Encode(), nil, &users); err != nil {
 		return nil, fmt.Errorf("looking up sign-in history: %w", err)
 	}
 	out := make(map[string]roleUser, len(users))
@@ -325,13 +331,13 @@ func (c *Client) lastSeen(userIDs []string) (map[string]roleUser, error) {
 // permission-level roles this app actually offers a choice between; any
 // other role a person holds on the tenant for unrelated reasons is not this
 // page's business and is not reported.
-func (c *Client) ListPeople(gateRole string, permissionRoles ...string) ([]Person, error) {
-	gateID, err := c.roleID(gateRole)
+func (c *Client) ListPeople(ctx context.Context, gateRole string, permissionRoles ...string) ([]Person, error) {
+	gateID, err := c.roleID(ctx, gateRole)
 	if err != nil {
 		return nil, err
 	}
 	var gateMembers []roleUser
-	if err := c.do(http.MethodGet, "/api/v2/roles/"+gateID+"/users", nil, &gateMembers); err != nil {
+	if err := c.do(ctx, http.MethodGet, "/api/v2/roles/"+gateID+"/users", nil, &gateMembers); err != nil {
 		return nil, fmt.Errorf("listing %s: %w", gateRole, err)
 	}
 
@@ -341,12 +347,12 @@ func (c *Client) ListPeople(gateRole string, permissionRoles ...string) ([]Perso
 	// regardless of how many people are on the tenant.
 	memberOf := map[string][]string{}
 	for _, roleName := range permissionRoles {
-		roleID, err := c.roleID(roleName)
+		roleID, err := c.roleID(ctx, roleName)
 		if err != nil {
 			return nil, err
 		}
 		var members []roleUser
-		if err := c.do(http.MethodGet, "/api/v2/roles/"+roleID+"/users", nil, &members); err != nil {
+		if err := c.do(ctx, http.MethodGet, "/api/v2/roles/"+roleID+"/users", nil, &members); err != nil {
 			return nil, fmt.Errorf("listing %s: %w", roleName, err)
 		}
 		for _, m := range members {
@@ -358,7 +364,7 @@ func (c *Client) ListPeople(gateRole string, permissionRoles ...string) ([]Perso
 	for i, m := range gateMembers {
 		ids[i] = m.UserID
 	}
-	seen, err := c.lastSeen(ids)
+	seen, err := c.lastSeen(ctx, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -388,9 +394,9 @@ func (c *Client) ListPeople(gateRole string, permissionRoles ...string) ([]Perso
 // them — instead of creating, and inviting, a second one for the same
 // person. Returned Persons carry no Roles; SetRoles is still the caller's
 // job.
-func (c *Client) FindByEmail(email string) ([]Person, error) {
+func (c *Client) FindByEmail(ctx context.Context, email string) ([]Person, error) {
 	var users []roleUser
-	if err := c.do(http.MethodGet, "/api/v2/users-by-email?email="+url.QueryEscape(email), nil, &users); err != nil {
+	if err := c.do(ctx, http.MethodGet, "/api/v2/users-by-email?email="+url.QueryEscape(email), nil, &users); err != nil {
 		return nil, fmt.Errorf("looking up %s: %w", email, err)
 	}
 	out := make([]Person, 0, len(users))
@@ -425,7 +431,7 @@ func randomPassword() (string, error) {
 // invite email itself — call SendInviteEmail with the result, kept as two
 // steps because the second one is a different API with no scope of its own
 // and a caller may reasonably want to retry it independently of the first.
-func (c *Client) Invite(email, name string, roleNames []string) (Person, error) {
+func (c *Client) Invite(ctx context.Context, email, name string, roleNames []string) (Person, error) {
 	password, err := randomPassword()
 	if err != nil {
 		return Person{}, err
@@ -436,7 +442,7 @@ func (c *Client) Invite(email, name string, roleNames []string) (Person, error) 
 		Email  string `json:"email"`
 		Name   string `json:"name"`
 	}
-	if err := c.do(http.MethodPost, "/api/v2/users", map[string]any{
+	if err := c.do(ctx, http.MethodPost, "/api/v2/users", map[string]any{
 		"connection":     "Username-Password-Authentication",
 		"email":          email,
 		"name":           name,
@@ -446,7 +452,7 @@ func (c *Client) Invite(email, name string, roleNames []string) (Person, error) 
 		return Person{}, fmt.Errorf("creating the account: %w", err)
 	}
 
-	if err := c.SetRoles(created.UserID, roleNames); err != nil {
+	if err := c.SetRoles(ctx, created.UserID, roleNames); err != nil {
 		return Person{}, fmt.Errorf("account created but granting access failed: %w", err)
 	}
 
@@ -456,11 +462,11 @@ func (c *Client) Invite(email, name string, roleNames []string) (Person, error) 
 // SetRoles makes userID's role membership exactly want — granting whatever
 // is missing, revoking whatever is present but not wanted. current is read
 // fresh rather than trusted from a caller's stale copy of the page.
-func (c *Client) SetRoles(userID string, want []string) error {
+func (c *Client) SetRoles(ctx context.Context, userID string, want []string) error {
 	var current []struct {
 		ID string `json:"id"`
 	}
-	if err := c.do(http.MethodGet, "/api/v2/users/"+url.PathEscape(userID)+"/roles", nil, &current); err != nil {
+	if err := c.do(ctx, http.MethodGet, "/api/v2/users/"+url.PathEscape(userID)+"/roles", nil, &current); err != nil {
 		return fmt.Errorf("reading current roles: %w", err)
 	}
 	currentIDs := make(map[string]bool, len(current))
@@ -470,7 +476,7 @@ func (c *Client) SetRoles(userID string, want []string) error {
 
 	wantIDs := make(map[string]bool, len(want))
 	for _, name := range want {
-		id, err := c.roleID(name)
+		id, err := c.roleID(ctx, name)
 		if err != nil {
 			return err
 		}
@@ -490,13 +496,13 @@ func (c *Client) SetRoles(userID string, want []string) error {
 	}
 
 	if len(toGrant) > 0 {
-		if err := c.do(http.MethodPost, "/api/v2/users/"+url.PathEscape(userID)+"/roles",
+		if err := c.do(ctx, http.MethodPost, "/api/v2/users/"+url.PathEscape(userID)+"/roles",
 			map[string]any{"roles": toGrant}, nil); err != nil {
 			return fmt.Errorf("granting roles: %w", err)
 		}
 	}
 	if len(toRevoke) > 0 {
-		if err := c.doWithBody(http.MethodDelete, "/api/v2/users/"+url.PathEscape(userID)+"/roles",
+		if err := c.doWithBody(ctx, http.MethodDelete, "/api/v2/users/"+url.PathEscape(userID)+"/roles",
 			map[string]any{"roles": toRevoke}); err != nil {
 			return fmt.Errorf("revoking roles: %w", err)
 		}
@@ -507,8 +513,8 @@ func (c *Client) SetRoles(userID string, want []string) error {
 // doWithBody is do, for the one call here (DELETE .../roles) that carries a
 // body on a method net/http's client sends fine but c.do's signature does
 // not otherwise need to distinguish from a bodyless GET/DELETE.
-func (c *Client) doWithBody(method, path string, body any) error {
-	return c.do(method, path, body, nil)
+func (c *Client) doWithBody(ctx context.Context, method, path string, body any) error {
+	return c.do(ctx, method, path, body, nil)
 }
 
 // SendInviteEmail triggers Auth0's own "reset your password" flow for
@@ -518,7 +524,7 @@ func (c *Client) doWithBody(method, path string, body any) error {
 // password and one that has forgotten its password complete the identical
 // flow. No Management API token, no scope — this call authenticates with
 // nothing but SignInClientID, Domestique's own regular_web OIDC client.
-func (c *Client) SendInviteEmail(email string) error {
+func (c *Client) SendInviteEmail(ctx context.Context, email string) error {
 	body, err := json.Marshal(map[string]string{
 		"client_id":  c.cfg.SignInClientID,
 		"email":      email,
@@ -527,7 +533,7 @@ func (c *Client) SendInviteEmail(email string) error {
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequest(http.MethodPost, c.baseURL()+"/dbconnections/change_password", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL()+"/dbconnections/change_password", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}

@@ -169,7 +169,7 @@ func TestListPeopleMergesRoleMembership(t *testing.T) {
 	f.roleMembers["role-rider"] = []string{"u2"}
 
 	c := newTestClient(t, f)
-	people, err := c.ListPeople("domestique-users", "domestique-admins", "cyclists")
+	people, err := c.ListPeople(t.Context(), "domestique-users", "domestique-admins", "cyclists")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +204,7 @@ func TestListPeopleFillsInSignInHistoryFromTheSearchEndpoint(t *testing.T) {
 	f.lastSeen["u1"] = struct{ createdAt, lastLogin string }{"2026-01-01T00:00:00.000Z", "2026-08-10T12:30:00.000Z"}
 
 	c := newTestClient(t, f)
-	people, err := c.ListPeople("domestique-users")
+	people, err := c.ListPeople(t.Context(), "domestique-users")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +228,7 @@ func TestListPeopleLeavesSignInHistoryZeroWhenTheSearchEndpointHasNone(t *testin
 	f.roleMembers["role-gate"] = []string{"u1"}
 
 	c := newTestClient(t, f)
-	people, err := c.ListPeople("domestique-users")
+	people, err := c.ListPeople(t.Context(), "domestique-users")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +241,7 @@ func TestInviteCreatesUserGrantsRolesAndSendsEmail(t *testing.T) {
 	f := newFakeTenant(t)
 	c := newTestClient(t, f)
 
-	person, err := c.Invite("new@example.com", "New Rider", []string{"domestique-users", "cyclists"})
+	person, err := c.Invite(t.Context(), "new@example.com", "New Rider", []string{"domestique-users", "cyclists"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,7 +273,7 @@ func TestInviteDoesNotItselfSendTheEmail(t *testing.T) {
 	f := newFakeTenant(t)
 	c := newTestClient(t, f)
 
-	if _, err := c.Invite("new@example.com", "New Rider", []string{"domestique-users"}); err != nil {
+	if _, err := c.Invite(t.Context(), "new@example.com", "New Rider", []string{"domestique-users"}); err != nil {
 		t.Fatal(err)
 	}
 	if len(f.changePassBody) != 0 {
@@ -285,7 +285,7 @@ func TestSendInviteEmailUsesTheSignInClientNotManagementCredentials(t *testing.T
 	f := newFakeTenant(t)
 	c := newTestClient(t, f)
 
-	if err := c.SendInviteEmail("rider@example.com"); err != nil {
+	if err := c.SendInviteEmail(t.Context(), "rider@example.com"); err != nil {
 		t.Fatal(err)
 	}
 	if len(f.changePassBody) != 1 {
@@ -305,7 +305,7 @@ func TestSetRolesGrantsMissingAndRevokesUnwanted(t *testing.T) {
 	f.userRoles["u1"] = []string{"role-rider"}
 	c := newTestClient(t, f)
 
-	if err := c.SetRoles("u1", []string{"domestique-admins"}); err != nil {
+	if err := c.SetRoles(t.Context(), "u1", []string{"domestique-admins"}); err != nil {
 		t.Fatal(err)
 	}
 	if granted := f.grantedRoles["u1"]; len(granted) != 1 || granted[0] != "role-admin" {
@@ -323,7 +323,7 @@ func TestSetRolesIsANoopWhenAlreadyCorrect(t *testing.T) {
 	f.userRoles["u1"] = []string{"role-rider"}
 	c := newTestClient(t, f)
 
-	if err := c.SetRoles("u1", []string{"cyclists"}); err != nil {
+	if err := c.SetRoles(t.Context(), "u1", []string{"cyclists"}); err != nil {
 		t.Fatal(err)
 	}
 	if len(f.grantedRoles["u1"]) != 0 || len(f.revokedRoles["u1"]) != 0 {
@@ -336,10 +336,10 @@ func TestAccessTokenIsCachedAcrossCalls(t *testing.T) {
 	f.roleMembers["role-gate"] = nil
 	c := newTestClient(t, f)
 
-	if _, err := c.ListPeople("domestique-users"); err != nil {
+	if _, err := c.ListPeople(t.Context(), "domestique-users"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.ListPeople("domestique-users"); err != nil {
+	if _, err := c.ListPeople(t.Context(), "domestique-users"); err != nil {
 		t.Fatal(err)
 	}
 	if got := f.tokenCalls.Load(); got != 1 {
@@ -354,7 +354,7 @@ func TestFindByEmailReturnsEveryMatchingIdentity(t *testing.T) {
 	f.users["auth0|3"] = struct{ email, name string }{"someone-else@example.com", "Someone Else"}
 	c := newTestClient(t, f)
 
-	people, err := c.FindByEmail("rider@example.com")
+	people, err := c.FindByEmail(t.Context(), "rider@example.com")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -367,7 +367,7 @@ func TestFindByEmailReturnsNoneForAnUnknownAddress(t *testing.T) {
 	f := newFakeTenant(t)
 	c := newTestClient(t, f)
 
-	people, err := c.FindByEmail("nobody@example.com")
+	people, err := c.FindByEmail(t.Context(), "nobody@example.com")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -393,7 +393,7 @@ func TestAPIErrorSurfacesTheMessage(t *testing.T) {
 	})
 
 	c := newTestClient(t, f)
-	_, err := c.Invite("dupe@example.com", "Dupe", nil)
+	_, err := c.Invite(t.Context(), "dupe@example.com", "Dupe", nil)
 	if err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Errorf("err = %v, want it to name Auth0's own message", err)
 	}
