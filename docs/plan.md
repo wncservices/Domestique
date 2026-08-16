@@ -145,7 +145,7 @@ test can establish that a real head unit accepts the file.
 | 3 | Garmin push, course import, de-duplication | ✅ |
 | 4 | Wahoo push | ⬜ stub, **blocked** on API access |
 | 5 | Deploy: Helm chart ✅, ArgoCD ✅, `mode: oidc` (Auth0 + Google) ✅, admin People page ✅, Vault-backed credentials ✅, scheduled reconcile ⬜ | 🟡 |
-| 6 | Metrics (`/api/metrics`, push success/failure per account) ✅, `ServiceMonitor` + alert rules ⬜ | 🟡 |
+| 6 | Metrics (`/api/metrics`, push success/failure per account) ✅, OpenTelemetry tracing (HTTP, DB, every outbound call) ✅, `ServiceMonitor` + alert rules ⬜ | 🟡 |
 
 ### Phase 3 — Garmin
 
@@ -182,9 +182,11 @@ letting their native sync carry it.
 
 ### Phase 5 — deployment
 
-A hand-written Helm chart in the lab repo, following the house pattern: chart
-folder, `helm-generator` ApplicationSet at wave 1, namespace in
-`tooling-projects.yaml`, Vault registration in `applications.tf`.
+A hand-written Helm chart, split into its own repo
+([`Domestique-chart`](https://github.com/wncservices/Domestique-chart), released
+independently) once it outgrew living alongside the app, following the house
+pattern the `lab` homelab repo sets: `helm-generator` ApplicationSet at wave 1,
+namespace in `tooling-projects.yaml`, Vault registration in `applications.tf`.
 
 Specifics this app needs:
 
@@ -203,17 +205,31 @@ Specifics this app needs:
 
 The failure mode that matters is silence: a token expires, pushes stop, and
 nobody notices until a route is missing at the start of a ride. Built:
-`GET /api/metrics` (`internal/api/metrics.go`, `prometheus/client_golang`,
-exempted from auth the same way `/api/health`/`/api/config` already are —
-a scraper has no rider identity to present), a
-`domestique_push_last_success_timestamp_seconds` gauge and a
+`GET /api/metrics` (`internal/api/metrics.go`, exempted from auth the same
+way `/api/health`/`/api/config` already are — a scraper has no rider identity
+to present), a `domestique_push_last_success_timestamp_seconds` gauge and a
 `domestique_push_errors_total` counter, both labeled by account and op
 (create/update/delete), recorded via a callback `internal/sync.Apply` calls
 per changed item — the diff engine itself stays pure and unaware metrics
-exist at all, per its own package doc. Not yet built: the chart's
-`ServiceMonitor` to actually scrape it (gated, `domestique-chart`, follow-up
-PR) and the alert rule that turns staleness into a notification rather than
-a number nobody is looking at.
+exist at all, per its own package doc. Metrics are recorded through the OTel
+metrics API rather than `prometheus/client_golang` directly, but the wire
+format and every metric name are unchanged — a ServiceMonitor still scrapes
+Prometheus text. Not yet built: the chart's `ServiceMonitor` to actually
+scrape it (gated, `Domestique-chart`, follow-up PR) and the alert rule that
+turns staleness into a notification rather than a number nobody is looking
+at.
+
+Distributed tracing landed alongside it: every inbound HTTP request, every
+outbound call to a third party (Auth0's OIDC and Management API endpoints,
+Komoot, Garmin), and every database query now produce a span, exported over
+OTLP to the cluster's OTel Collector when `OTEL_EXPORTER_OTLP_ENDPOINT` is
+set — a genuine no-op otherwise, so a laptop running `just demo` pays nothing
+for it. Getting DB and outbound-call spans to actually nest under the request
+that triggered them (rather than showing up as disconnected roots) needed
+`context.Context` threaded through code that had never carried one before —
+`source.Library`, `state.Store`, `internal/sync`, `internal/targets`, and
+each of the four client packages above. See `AGENTS.md`'s **Observability**
+section for the full shape of it.
 
 ## Appendix: the provider research
 

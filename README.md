@@ -344,7 +344,7 @@ The Helm chart lives in its own repo now — [Domestique-chart](https://github.c
 | 3 | Garmin: sign-in, FIT course upload, push wired to the library, course import + de-duplication | ✅ |
 | 4 | Wahoo push (Cloud API) | ⬜ stub, needs approved API access |
 | 5 | Deploy: Helm chart ✅, `mode: oidc` (Auth0 + Google) ✅, admin People page ✅, scheduled reconcile ⬜, Vault-backed tokens ✅ | 🟡 |
-| 6 | Metrics (`/api/metrics`, push success/failure) ✅, `ServiceMonitor` + alert rules ⬜ | 🟡 |
+| 6 | Metrics (`/api/metrics`, push success/failure) ✅, OpenTelemetry tracing ✅, `ServiceMonitor` + alert rules ⬜ | 🟡 |
 
 Phase 4 is what is left to succeed or fail on. Wahoo's API is approval-gated and wants FIT rather
 than GPX — Garmin, once the harder of the two, is done. `docs/plan.md` has the detail, including
@@ -353,5 +353,6 @@ what to do if Wahoo says no.
 ## Contributing
 
 `just check` runs the typecheck, vet and tests. Keep the Go side close to the standard library —
-the dependencies today are a YAML parser, a pure-Go SQLite driver, a FIT SDK and an OIDC client
-(discovery, JWKS, ID-token verification), and that is the budget.
+the dependencies today are a YAML parser, a pure-Go SQLite driver, a FIT SDK, an OIDC client
+(discovery, JWKS, ID-token verification), and the OpenTelemetry family (tracing, metrics), and
+that is the budget.
