@@ -1,7 +1,8 @@
 <!-- The header mark, as a tab icon: the same lucide `bike` glyph in the same
-     primary teal (--color-primary-500). Solid fill rather than the header's
-     10% tint, because a favicon is 16px on somebody else's background and a
-     tinted one disappears against a dark tab strip.
+     primary teal (the color_primary_500 custom property in styles.css).
+     Solid fill rather than the header's 10% tint, because a favicon is 16px
+     on somebody else's background and a tinted one disappears against a
+     dark tab strip.
 
      Inline rather than a build-time export so the two cannot drift: if the
      brand colour changes in styles.css, this is the one other place to
