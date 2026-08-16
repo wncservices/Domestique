@@ -125,11 +125,11 @@ heuristic knows nothing about roads: it calls a hairpin on an open road and
 stays quiet through a junction taken as a gentle curve. A planner that knows the
 road network does better, and its cues should win when a route comes from one.
 
-Garmin push is wired and live — a route with no `targets` of its own goes out
-to every linked Garmin Connect account automatically. `domestique fit <slug>`
-and `GET /api/fit/<slug>` still write a course out to copy onto a device over
-USB, for Wahoo (still a stub) or a device nobody wants an account linked on.
-That manual path is also the only way to prove the conversion end to end: no
+Garmin and Wahoo push are both wired and live — a route with no `targets` of
+its own goes out to every linked account automatically. `domestique fit
+<slug>` and `GET /api/fit/<slug>` still write a course out to copy onto a
+device over USB, for one nobody wants an account linked on at all. That
+manual path is also the only way to prove the conversion end to end: no
 test can establish that a real head unit accepts the file.
 
 ## What is left
@@ -143,7 +143,7 @@ test can establish that a real head unit accepts the file.
 | 1e | One storage model: the filesystem library removed | ✅ |
 | 2 | GPX → FIT course conversion, with inferred turn cues | ✅ |
 | 3 | Garmin push, course import, de-duplication | ✅ |
-| 4 | Wahoo push | 🟡 API access granted, OAuth2 connect/callback ✅, route push ⬜ |
+| 4 | Wahoo push | ✅ |
 | 5 | Deploy: Helm chart ✅, ArgoCD ✅, `mode: oidc` (Auth0 + Google) ✅, admin People page ✅, Vault-backed credentials ✅, scheduled reconcile ⬜ | 🟡 |
 | 6 | Metrics (`/api/metrics`, push success/failure per account) ✅, OpenTelemetry tracing (HTTP, DB, every outbound call) ✅, `ServiceMonitor` + alert rules ⬜ | 🟡 |
 

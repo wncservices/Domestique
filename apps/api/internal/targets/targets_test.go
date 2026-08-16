@@ -60,8 +60,8 @@ func TestImplementedMatchesReality(t *testing.T) {
 	if !Implemented(model.ProviderGarmin) {
 		t.Error("garmin has a working adapter but reports unimplemented")
 	}
-	if Implemented(model.ProviderWahoo) {
-		t.Error("wahoo still returns errors from every method — see wahoo.go")
+	if !Implemented(model.ProviderWahoo) {
+		t.Error("wahoo has a working adapter but reports unimplemented")
 	}
 	if Implemented("strava") {
 		t.Error("unknown provider reports implemented")

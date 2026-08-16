@@ -177,11 +177,11 @@ rider cannot tell which copy their device follows.
 
 ## Provider sign-ins
 
-Komoot and Garmin are both signed in to from the UI, and both go through
-`internal/providerlink`: one table, `provider_links`, keyed on
+Komoot, Garmin and Wahoo are all connected from the UI, and all three go
+through `internal/providerlink`: one table, `provider_links`, keyed on
 `(provider, rider)`. One package rather than one per provider because the
 rules below have to hold for all of them, and three copies is three places to
-get them wrong. Wahoo joins it when its adapter lands.
+get them wrong.
 
 **The password is never stored.** Signing in returns something reusable — a
 Komoot session token, a Garmin OAuth1 token pair — so the password is used for
@@ -611,11 +611,18 @@ adapter genuinely works.
     unpushed and gets offered right back to the same account it came from.
     `handleGarminCourseImport` calls `s.Store.Record` right after `s.Source.Create` for exactly
     this reason — removing that call reintroduces a real bug that shipped once already.
-- **Wahoo (Phase 4)** — the Cloud API is documented and clean, but access is approval-gated and
-  `POST /v1/routes` takes a **base64 FIT file, not GPX**. Requesting API access is the long pole.
+- **Wahoo (Phase 4, shipped)** — `POST/PUT /v1/routes` is form-encoded (`route[field]`, not JSON),
+  and `route[file]` is a **full `data:application/vnd.fit;base64,...` URI, not bare base64** —
+  getting this wrong is a silent 422 with no field-level detail worth trusting. Every route pushes
+  as `route[workout_type_family_id]=0` (BIKING), a fixed constant in `internal/wahoo` — this is a
+  cycling library and has never produced any other kind of route. Unlike Garmin's expire-and-
+  reconnect story, an expired access token is refreshed transparently in `wahooRoutes`
+  (`internal/api/wahootarget.go`) using the stored refresh token — reconnecting is reserved for
+  when the refresh token itself stops working.
 
-**GPX → FIT (Phase 2) blocks Wahoo entirely** and decides navigation quality on both: a naive
-conversion navigates as a breadcrumb line with no turn cues. See `docs/plan.md`.
+**GPX → FIT (Phase 2)** decides navigation quality on both providers and was Wahoo's hard
+prerequisite: a naive conversion navigates as a breadcrumb line with no turn cues, and Wahoo's API
+will not accept GPX at all. See `docs/plan.md`.
 
 ## Conventions
 

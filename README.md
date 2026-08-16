@@ -17,10 +17,10 @@ Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Status
 
-The library, diff engine, CLI, HTTP API and web UI work end to end, routes convert to Garmin FIT
-courses, and **Garmin push is live** — a route added once pushes to every linked Garmin Connect
-account, and courses already on Garmin can be listed, imported back, and de-duplicated from the
-UI. **Wahoo is still a stub** — see [Roadmap](#roadmap). `mode: oidc` (Auth0, including Google as
+The library, diff engine, CLI, HTTP API and web UI work end to end, routes convert to FIT courses,
+and **both Garmin and Wahoo push are live** — a route added once pushes to every linked account,
+and courses already on Garmin can be listed, imported back, and de-duplicated from the UI.
+`mode: oidc` (Auth0, including Google as
 a social sign-in) and an admin People page for inviting riders and managing access are live
 alongside the original `mode: proxy` — see [Logging in](#logging-in).
 
@@ -209,7 +209,15 @@ Two limits worth knowing before you try:
 - **The sign-in lasts about a year**, then it stops working and Settings shows
   when that will be. Signing in again replaces it.
 
-Wahoo is still a stub — see [Roadmap](#roadmap).
+**Wahoo is linked by authorizing**, not a password form: a rider clicks
+"Connect Wahoo" on Settings, signs in and consents on Wahoo's own site, and is
+redirected back — standard OAuth2, nothing Wahoo-specific to type. Before
+anyone can do that, the deployment needs its own Wahoo app registration
+(`WAHOO_CLIENT_ID`/`WAHOO_CLIENT_SECRET` in the environment, requested at
+[developers.wahooligan.com/cloud](https://developers.wahooligan.com/cloud))
+and `wahoo.redirect_url` in `domestique.yaml`, set to exactly what is
+registered with Wahoo. Same encryption key as Garmin/Komoot — a session is
+stored encrypted or not stored.
 
 ## Importing from Komoot
 
@@ -240,15 +248,13 @@ Komoot has **no public API**. This uses the same undocumented endpoints their
 apps do, so it will break from time to time — treat it as a convenience, not a
 dependency. Already-imported tours are skipped, so running it twice is safe.
 
-## Getting a route onto a device today
+## Getting a route onto a device
 
-**Garmin pushes automatically** once a rider links their account (see [Linking
-a head unit](#linking-a-head-unit) above) — a route with no `targets` of its
-own goes out to every linked Garmin Connect account on the next push. Wahoo is
-still a stub, but the FIT conversion it will eventually use already works.
-Write a route out as a Garmin FIT course and copy it over USB — the fallback
-for Wahoo today, and useful for a device you would rather not link an account
-on at all:
+**Both providers push automatically** once a rider links their account (see
+[Linking a head unit](#linking-a-head-unit) above) — a route with no
+`targets` of its own goes out to every linked account on the next push.
+For a device you would rather not link an account on at all, write a route
+out as a FIT course and copy it over USB instead:
 
 ```bash
 just fit kemmelberg-loop
@@ -342,7 +348,7 @@ The Helm chart lives in its own repo now — [Domestique-chart](https://github.c
 | 1 | Library, diff engine, CLI, API, web UI | ✅ |
 | 2 | GPX → FIT course conversion, with inferred turn cues | ✅ |
 | 3 | Garmin: sign-in, FIT course upload, push wired to the library, course import + de-duplication | ✅ |
-| 4 | Wahoo push (Cloud API) | 🟡 OAuth2 connect/callback ✅, route push ⬜ |
+| 4 | Wahoo push (Cloud API) | ✅ |
 | 5 | Deploy: Helm chart ✅, `mode: oidc` (Auth0 + Google) ✅, admin People page ✅, scheduled reconcile ⬜, Vault-backed tokens ✅ | 🟡 |
 | 6 | Metrics (`/api/metrics`, push success/failure) ✅, OpenTelemetry tracing ✅, `ServiceMonitor` + alert rules ⬜ | 🟡 |
 
