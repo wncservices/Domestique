@@ -344,7 +344,7 @@ The Helm chart lives in its own repo now — [domestique-chart](https://github.c
 | 3 | Garmin: sign-in, FIT course upload, push wired to the library, course import + de-duplication | ✅ |
 | 4 | Wahoo push (Cloud API) | ⬜ stub, needs approved API access |
 | 5 | Deploy: Helm chart ✅, `mode: oidc` (Auth0 + Google) ✅, admin People page ✅, scheduled reconcile ⬜, Vault-backed tokens ✅ | 🟡 |
-| 6 | Metrics + staleness alerting | ⬜ |
+| 6 | Metrics (`/api/metrics`, push success/failure) ✅, `ServiceMonitor` + alert rules ⬜ | 🟡 |
 
 Phase 4 is what is left to succeed or fail on. Wahoo's API is approval-gated and wants FIT rather
 than GPX — Garmin, once the harder of the two, is done. `docs/plan.md` has the detail, including

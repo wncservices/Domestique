@@ -119,6 +119,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /api/config", s.handleConfig)
+	mux.Handle("GET /api/metrics", metricsHandler())
 	mux.HandleFunc("GET /api/me", s.handleMe)
 	mux.HandleFunc("GET /api/accounts", s.handleAccounts)
 	mux.HandleFunc("POST /api/accounts", s.handleLinkAccount)
@@ -177,7 +178,7 @@ func (s *Server) Handler() http.Handler {
 	if s.WebFS != nil {
 		mux.Handle("/", s.spaHandler())
 	}
-	return logRequests(s.logger(), s.authenticate(mux))
+	return instrument(logRequests(s.logger(), s.authenticate(mux)))
 }
 
 // authenticate resolves the identity once per request and puts it on the
@@ -206,7 +207,7 @@ func (s *Server) Handler() http.Handler {
 // explanation, just an empty error state.
 func (s *Server) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/health" || r.URL.Path == "/api/config" {
+		if r.URL.Path == "/api/health" || r.URL.Path == "/api/config" || r.URL.Path == "/api/metrics" {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -759,7 +760,7 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 	plan = plan.Select(selected)
 
 	changes := plan.Changes()
-	failures := syncer.Apply(plan, s.Store, byAccount)
+	failures := syncer.Apply(plan, s.Store, byAccount, s.recordPushResult)
 
 	messages := make([]string, 0, len(failures))
 	for _, f := range failures {
