@@ -77,6 +77,13 @@ const (
 	// it, because this one can grant another identity admin access to
 	// everything else, which a bad deployment-wide config value cannot.
 	PermManagePeople Permission = "people:manage"
+	// PermManageCrews is creating a crew, requesting to join one, and — for
+	// a crew's own owner — approving or removing members. Rider-level, not
+	// admin: a crew is a relationship between riders that trusts each other
+	// with routes, not deployment configuration. Ownership (who may decide
+	// a specific crew's membership) is a separate, per-crew check —
+	// Identity.CanEditRoute reused for it, same idiom as accounts.
+	PermManageCrews Permission = "crews:manage"
 )
 
 // minimumRole is the least privileged role that holds each permission.
@@ -88,6 +95,7 @@ var minimumRole = map[Permission]Role{
 	PermKomootSync:     RoleRider,
 	PermGarminSync:     RoleRider,
 	PermManageAccounts: RoleRider,
+	PermManageCrews:    RoleRider,
 	PermEditAny:        RoleAdmin,
 	PermManageSettings: RoleAdmin,
 	PermManagePeople:   RoleAdmin,
@@ -109,7 +117,8 @@ func (r Role) Permissions() []Permission {
 	var out []Permission
 	for _, p := range []Permission{
 		PermReadRoutes, PermUploadRoute, PermEditOwn, PermEditAny, PermPush,
-		PermKomootSync, PermGarminSync, PermManageAccounts, PermManageSettings, PermManagePeople,
+		PermKomootSync, PermGarminSync, PermManageAccounts, PermManageCrews,
+		PermManageSettings, PermManagePeople,
 	} {
 		if r.Can(p) {
 			out = append(out, p)
@@ -119,8 +128,9 @@ func (r Role) Permissions() []Permission {
 }
 
 // CanEditRoute reports whether this identity may change or delete something
-// owned by `owner` — a route, or a linked account.
-// Riders may touch what they uploaded; admins may touch anything.
+// owned by `owner` — a route, a linked account, or a crew.
+// Riders may touch what they uploaded (or created, or linked); admins may
+// touch anything.
 //
 // An unowned route (uploaded before ownership was recorded, or imported by the
 // CLI) is editable by any rider — refusing would strand it with nobody able to
