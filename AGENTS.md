@@ -18,7 +18,7 @@ route data**:
 | `examples/routes/` | One sample route so the demo has something to show. Not a library |
 | `docs/` | Design notes, including the research behind the provider choices |
 
-The Helm chart is **not here** — see [`wncservices/domestique-chart`](https://github.com/wncservices/domestique-chart).
+The Helm chart is **not here** — see [`wncservices/Domestique-chart`](https://github.com/wncservices/Domestique-chart).
 
 Go module: `github.com/wncservices/domestique/apps/api`, wired through the root `go.work`.
 npm workspace: `@domestique/web`, wired through the root `package.json`.
@@ -288,7 +288,7 @@ accepts the file** — `domestique fit <slug>` writes one out for exactly that.
 
 ## The Helm chart lives elsewhere
 
-The chart is **not in this repo** — it's [wncservices/domestique-chart](https://github.com/wncservices/domestique-chart),
+The chart is **not in this repo** — it's [wncservices/Domestique-chart](https://github.com/wncservices/Domestique-chart),
 split out so it releases on its own schedule, independent of the application.
 Its own `AGENTS.md` covers chart-specific conventions (bumping `version` to
 trigger a release, its own CI validating rendered config against a

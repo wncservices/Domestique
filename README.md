@@ -263,11 +263,11 @@ junction — a route planner that knows the roads does this better.
 
 ## Deploying it
 
-The Helm chart lives in its own repo — [wncservices/domestique-chart](https://github.com/wncservices/domestique-chart) —
+The Helm chart lives in its own repo — [wncservices/Domestique-chart](https://github.com/wncservices/Domestique-chart) —
 published on every chart change:
 
 ```bash
-helm repo add domestique https://wncservices.github.io/domestique-chart
+helm repo add domestique https://wncservices.github.io/Domestique-chart
 helm repo update
 helm install domestique domestique/domestique \
   --namespace domestique --create-namespace
@@ -281,7 +281,7 @@ pointed at an issuer if you want the app to authenticate people itself — see
 `DOMESTIQUE_SOURCE_DSN` from a Secret rather than writing a password into
 values.
 
-[The chart repo's own README](https://github.com/wncservices/domestique-chart/blob/main/charts/domestique/README.md)
+[The chart repo's own README](https://github.com/wncservices/Domestique-chart/blob/main/charts/domestique/README.md)
 has the detail, and `charts/domestique/ci/full-values.yaml` there is a
 complete worked example.
 
@@ -296,7 +296,7 @@ app change, and an app change usually needs no chart edit.
 | Container image, dev | every merge to `main` | `:dev`, `:sha-<short>` |
 | Container image, release | tag `v<x.y.z>` | `:x.y.z`, `:x.y`, `:x`, `:latest` |
 | Binaries | tag `v<x.y.z>` | a GitHub Release with tarballs |
-| Helm chart | any change to the chart in [domestique-chart](https://github.com/wncservices/domestique-chart) | a GitHub Release there + the Helm repo at `wncservices.github.io/domestique-chart` |
+| Helm chart | any change to the chart in [Domestique-chart](https://github.com/wncservices/Domestique-chart) | a GitHub Release there + the Helm repo at `wncservices.github.io/Domestique-chart` |
 
 Each image is pushed to **two registries from one build**, under the same tags:
 
@@ -333,7 +333,7 @@ none. Naming targets is what keeps one rider's private routes off the other's de
 | `examples/routes/` | A sample .gpx, so the demo has something to import |
 | `docs/plan.md` | Why the providers work the way they do — read before touching an adapter |
 
-The Helm chart lives in its own repo now — [domestique-chart](https://github.com/wncservices/domestique-chart) — not under this one.
+The Helm chart lives in its own repo now — [Domestique-chart](https://github.com/wncservices/Domestique-chart) — not under this one.
 
 ## Roadmap
 
