@@ -11,6 +11,7 @@ import type {
   KomootImportResult,
   KomootConnection,
   KomootTour,
+  WahooConnection,
   LinkAccountRequest,
   Me,
   InvitePersonRequest,
@@ -117,6 +118,12 @@ export const api = {
     request<{ status: string }>(`/api/garmin/courses/${encodeURIComponent(id)}`, {
       method: 'DELETE',
     }),
+
+  // No wahooConnect: connecting is a redirect to /wahoo/connect (a real
+  // navigation, not a fetch — see WahooConnect.vue), not a form submission.
+  wahooConnection: () => request<WahooConnection>('/api/wahoo/connection'),
+  wahooDisconnect: () =>
+    request<WahooConnection>('/api/wahoo/connection', { method: 'DELETE' }),
 
   garminConsumer: () => request<GarminConsumer>('/api/garmin/consumer'),
   setGarminConsumer: (key: string, secret: string) =>

@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { api } from '@/api/client'
-import type { GarminConnection, KomootConnection } from '@/api/types'
+import type { GarminConnection, KomootConnection, WahooConnection } from '@/api/types'
 import { useLibrary } from '@/composables/useLibrary'
 import AccountsPanel from '@/components/AccountsPanel.vue'
 import GarminSetup from '@/components/GarminSetup.vue'
 import KomootConnect from '@/components/KomootConnect.vue'
+import WahooConnect from '@/components/WahooConnect.vue'
 
 const { accounts, me, config, canManageAccounts, canImportKomoot, komootEnabled, refresh } =
   useLibrary()
@@ -17,6 +18,9 @@ const connectionError = ref('')
 
 const garmin = ref<GarminConnection>({ connected: false, canConnect: false })
 const garminError = ref('')
+
+const wahoo = ref<WahooConnection>({ connected: false, canConnect: false })
+const wahooError = ref('')
 
 async function loadConnection() {
   if (!komootEnabled.value || !canImportKomoot.value) return
@@ -36,6 +40,22 @@ async function loadGarmin() {
   }
 }
 
+async function loadWahoo() {
+  if (!canManageAccounts.value) return
+  try {
+    wahoo.value = await api.wahooConnection()
+  } catch (err) {
+    wahooError.value = err instanceof Error ? err.message : String(err)
+  }
+}
+
+// Connecting or disconnecting Wahoo links or unlinks the head unit, same as
+// Garmin — the accounts list is stale the moment either changes.
+async function wahooChanged(next: WahooConnection) {
+  wahoo.value = next
+  await refresh()
+}
+
 // Signing in to Garmin links the head unit, so the accounts list is stale the
 // moment either of those changes.
 async function garminChanged(next: GarminConnection) {
@@ -49,7 +69,7 @@ onMounted(async () => {
   // races the shell's first fetch — without this the card renders and then
   // reports "no encryption key" because it never got to ask.
   await refresh()
-  await Promise.all([loadConnection(), loadGarmin()])
+  await Promise.all([loadConnection(), loadGarmin(), loadWahoo()])
 })
 </script>
 
@@ -71,6 +91,27 @@ onMounted(async () => {
       icon="i-lucide-triangle-alert"
       :description="garminError"
     />
+
+    <UCard v-if="canManageAccounts" variant="outline">
+      <template #header>
+        <h2 class="flex items-center gap-2 font-medium text-highlighted">
+          <UIcon name="i-lucide-watch" />
+          Wahoo
+        </h2>
+        <p class="text-sm text-muted">Connect your own Wahoo account to push routes to it.</p>
+      </template>
+
+      <UAlert
+        v-if="wahooError"
+        color="error"
+        variant="subtle"
+        icon="i-lucide-triangle-alert"
+        :description="wahooError"
+        class="mb-4"
+      />
+
+      <WahooConnect :connection="wahoo" @changed="wahooChanged" />
+    </UCard>
 
     <UCard v-if="canImportKomoot && komootEnabled" variant="outline">
       <template #header>
