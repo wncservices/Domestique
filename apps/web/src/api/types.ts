@@ -139,8 +139,10 @@ export interface InvitePersonRequest {
 }
 
 export interface AppConfig {
-  /** Human-readable description of the route source. */
-  source: string
+  /** Human-readable description of the route source — database host and
+   *  port included, so the server only sends this to an admin. Absent for
+   *  everyone else, the same way GarminConnection's consumer field is. */
+  source?: string
   /**
    * Komoot import: "disabled" when nobody asked for it, "unconfigured" when
    * it is on but the credentials are missing, "ready" when it can be used.

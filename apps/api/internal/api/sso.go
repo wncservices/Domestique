@@ -227,7 +227,17 @@ func (s *Server) handleSSOLogout(w http.ResponseWriter, r *http.Request) {
 		HttpOnly: true, Secure: requestIsHTTPS(r), SameSite: http.SameSiteLaxMode,
 	})
 
-	redirectTo := s.OIDC.EndSessionURL(requestOrigin(r)+"/", "")
+	// Land back on the public front door, not wherever the logout request
+	// happened to be made from — that is the app host (app.domestique.dev),
+	// which a now-anonymous visitor cannot do anything on anyway (see
+	// spaHandler's own anonymous-oidc redirect). Falls back to the request's
+	// own origin only when no separate landing host is configured, the same
+	// "everyone gets the app" case spaHandler's redirect skips too.
+	postLogout := requestOrigin(r) + "/"
+	if s.LandingHost != "" {
+		postLogout = "https://" + s.LandingHost + "/"
+	}
+	redirectTo := s.OIDC.EndSessionURL(postLogout, "")
 	writeJSON(w, http.StatusOK, map[string]string{"redirectTo": redirectTo})
 }
 

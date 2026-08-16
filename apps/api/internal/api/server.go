@@ -211,23 +211,29 @@ func (s *Server) Handler() http.Handler {
 // that never happens in practice.
 //
 // /api/config stays open for the same reason and was missed the first time:
-// handleConfig carries no require() of its own — Source and whether Komoot
-// is enabled were never meant to be secret — but the blanket Authorize
-// check here gated it anyway. Under mode: proxy this was invisible for the
-// same reason /api/me was: an anonymous request never arrived. Under
-// mode: oidc it broke the anonymous bootstrap outright: useLibrary's
-// initial Promise.all included config() alongside me(), so one 401 failed
-// the whole batch and me stayed unset — no "Sign in" button, no visible
-// explanation, just an empty error state.
+// handleConfig carries no require() of its own — Komoot and most of Source
+// were never meant to be secret — but the blanket Authorize check here
+// gated it anyway. Under mode: proxy this was invisible for the same reason
+// /api/me was: an anonymous request never arrived. Under mode: oidc it
+// broke the anonymous bootstrap outright: useLibrary's initial Promise.all
+// included config() alongside me(), so one 401 failed the whole batch and
+// me stayed unset — no "Sign in" button, no visible explanation, just an
+// empty error state.
+//
+// Identified like every other route, just never Authorize-blocked — unlike
+// health/metrics below, handleConfig still needs to know who is asking:
+// Source names the database host, internal cluster topology an admin can
+// see and nobody else needs to.
 func (s *Server) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/health" || r.URL.Path == "/api/config" || r.URL.Path == "/api/metrics" {
+		if r.URL.Path == "/api/health" || r.URL.Path == "/api/metrics" {
 			next.ServeHTTP(w, r)
 			return
 		}
 
 		id := s.authenticator().Identify(r)
-		if err := s.authenticator().Authorize(id); err != nil && r.URL.Path != "/api/me" {
+		if err := s.authenticator().Authorize(id); err != nil &&
+			r.URL.Path != "/api/me" && r.URL.Path != "/api/config" {
 			// Only gate the API. The SPA itself must still load, or the
 			// browser gets a JSON blob instead of a page explaining itself.
 			if strings.HasPrefix(r.URL.Path, "/api/") {
@@ -280,7 +286,12 @@ func roleLabel(r auth.Role) string {
 // ---------- payloads ----------
 
 type configDTO struct {
-	Source string `json:"source"`
+	// Source names the database and, for PostgreSQL, its host and port — not
+	// a secret (the DSN's password is never in here, see dbx.Redact), but
+	// still internal cluster topology nobody but an admin needs to see.
+	// Empty, not just hidden client-side: the same reasoning the Garmin
+	// consumer's own DTO already follows.
+	Source string `json:"source,omitempty"`
 	// Komoot is one of "disabled", "unconfigured" or "ready".
 	Komoot string `json:"komoot"`
 }
@@ -358,11 +369,12 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, configDTO{
-		Source: s.Source.Describe(),
-		Komoot: s.komootState(),
-	})
+func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
+	dto := configDTO{Komoot: s.komootState()}
+	if auth.FromContext(r.Context()).Role.Can(auth.PermManageSettings) {
+		dto.Source = s.Source.Describe()
+	}
+	writeJSON(w, http.StatusOK, dto)
 }
 
 // komootState separates "nobody asked for Komoot" from "somebody asked and it

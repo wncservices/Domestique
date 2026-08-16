@@ -110,7 +110,10 @@ onMounted(async () => {
       <GarminSetup :consumer="garmin.consumer" @changed="loadGarmin" />
     </UCard>
 
-    <UCard variant="outline">
+    <!-- Deployment plumbing, and only an admin gets it: the API omits
+         Source entirely for everyone else (it names the database host and
+         port), the same pattern the Garmin setup card above follows. -->
+    <UCard v-if="config?.source" variant="outline">
       <template #header>
         <h2 class="flex items-center gap-2 font-medium text-highlighted">
           <UIcon name="i-lucide-info" />
@@ -127,7 +130,7 @@ onMounted(async () => {
         </div>
         <div>
           <dt class="text-dimmed">Library</dt>
-          <dd class="font-mono text-xs break-all text-highlighted">{{ config?.source }}</dd>
+          <dd class="font-mono text-xs break-all text-highlighted">{{ config.source }}</dd>
         </div>
       </dl>
     </UCard>
