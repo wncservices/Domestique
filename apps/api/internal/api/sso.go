@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -285,15 +286,45 @@ func (s *Server) identityFromToken(idToken *oidc.IDToken) (auth.Identity, error)
 
 	// Absent groups claim is not an error — every issuer that sends none
 	// (Google, or Auth0 before its groups Action exists) falls through to
-	// default_role, which is what that setting is for.
+	// default_role, which is what that setting is for. But when it stays
+	// silent, a deployment with required_group set (auth.RequiredGroup)
+	// locks everyone out with nothing but "not a member of X" — the token
+	// itself, the one place that would explain why, is gone by the time
+	// Authorize runs a request later, since only the resolved Identity
+	// survives into the session. So this is the one place to log it: a
+	// line naming the configured claim key and every top-level claim key
+	// the token actually carried, specific enough on its own to settle
+	// whether the fix is "assign the role in the IdP" or "the
+	// groups_claim config doesn't match what the IdP actually sends."
+	// Warn, not Debug — main.go's handler is built at LevelInfo with no
+	// way to turn Debug on short of a redeploy, and a login that resolves
+	// no groups is exactly the kind of anomaly Warn exists for elsewhere
+	// in this file (the nonce-mismatch case just above logs the same way).
 	groupsClaim := s.authenticator().OIDC().GroupsClaim
+	groups := stringSliceClaim(claims, groupsClaim)
+	if len(groups) == 0 {
+		s.logger().Warn("oidc token resolved no groups",
+			"user", user, "configured_claim", groupsClaim, "token_claim_keys", claimKeys(claims))
+	}
 	return auth.Identity{
 		User:   user,
 		Name:   strings.TrimSpace(stringClaim(claims, "name")),
 		Email:  strings.TrimSpace(stringClaim(claims, "email")),
-		Groups: stringSliceClaim(claims, groupsClaim),
+		Groups: groups,
 		Sub:    strings.TrimSpace(idToken.Subject),
 	}, nil
+}
+
+// claimKeys lists a token's top-level claim names, sorted — never values,
+// so this is safe to log unconditionally: some claims (email, sub) are
+// identifying, but their names never are.
+func claimKeys(claims map[string]any) []string {
+	keys := make([]string, 0, len(claims))
+	for k := range claims {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func stringClaim(claims map[string]any, key string) string {
