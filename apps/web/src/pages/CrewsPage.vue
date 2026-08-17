@@ -1,12 +1,37 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useToast } from '@nuxt/ui/composables'
 import { api } from '@/api/client'
 import type { Crew } from '@/api/types'
 import { useLibrary } from '@/composables/useLibrary'
 
-const { crews, me, loading, error, refresh } = useLibrary()
+const { crews, accounts, routes, me, loading, error, refresh } = useLibrary()
 const toast = useToast()
+
+// Every rider identifier the app already knows about, from data already
+// fetched for this page — a linked account's owner, a route's owner, or a
+// crew's owner. Not a full directory (a rider who has never uploaded,
+// linked, or created anything won't appear), just enough to make adding
+// someone who already has is a pick instead of a guess at exact spelling.
+const knownRiders = computed(() => {
+  const set = new Set<string>()
+  for (const a of accounts.value) if (a.rider) set.add(a.rider)
+  for (const r of routes.value) if (r.owner) set.add(r.owner)
+  for (const c of crews.value) if (c.owner) set.add(c.owner)
+  return [...set].sort((a, b) => a.localeCompare(b))
+})
+
+// Riders worth suggesting for this particular crew: already-approved
+// members are pointless to re-suggest (adding one is a 409), but a rider
+// with a pending request stays in the list on purpose — picking them there
+// approves the request in the same step, cheaper than approve-from-the-
+// pending-row-below for a rider you already meant to add.
+function suggestedRiders(crew: Crew): string[] {
+  const approved = new Set(
+    (crew.members ?? []).filter((m) => m.status === 'approved').map((m) => m.rider),
+  )
+  return knownRiders.value.filter((rider) => !approved.has(rider))
+}
 
 onMounted(refresh)
 
@@ -246,11 +271,15 @@ const approvedFor = (crew: Crew) => crew.members?.filter((m) => m.status === 'ap
               class="flex items-center gap-2"
               @submit.prevent="addMember(crew)"
             >
-              <UInput
+              <USelectMenu
                 v-model="addMemberInput[crew.id]"
-                placeholder="Add a rider by their username"
+                :items="suggestedRiders(crew)"
+                create-item="always"
+                placeholder="Search or add a rider by username"
+                icon="i-lucide-search"
                 size="sm"
                 class="max-w-xs"
+                @create="(rider: string) => (addMemberInput[crew.id] = rider)"
               />
               <UButton
                 type="submit"
