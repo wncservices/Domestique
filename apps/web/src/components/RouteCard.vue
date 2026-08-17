@@ -165,9 +165,14 @@ async function remove() {
         :status="status"
         :account="accountFor(status.accountId)"
       />
-      <UBadge v-if="!route.syncState.length" color="neutral" variant="outline" size="sm">
-        no targets
-      </UBadge>
+      <UTooltip
+        v-if="!route.syncState.length"
+        text="This route doesn't reach any device right now — it hasn't been shared to a crew, or the crew it's shared to has no members with a linked account yet."
+      >
+        <UBadge color="neutral" variant="outline" size="sm" class="cursor-help">
+          no targets
+        </UBadge>
+      </UTooltip>
 
       <span class="flex-1" />
 
