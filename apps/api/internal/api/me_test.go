@@ -6,8 +6,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/wncservices/domestique/apps/api/internal/accounts"
 	"github.com/wncservices/domestique/apps/api/internal/api"
 	"github.com/wncservices/domestique/apps/api/internal/auth0mgmt"
+	"github.com/wncservices/domestique/apps/api/internal/model"
+	"github.com/wncservices/domestique/apps/api/internal/source"
 )
 
 // patch is ssoHarness's own client/base/cookies, plus a body — the sso
@@ -136,6 +139,59 @@ func TestUpdateMeRejectsAnEmptyName(t *testing.T) {
 	}
 	if len(fake.updatedName) != 0 {
 		t.Errorf("UpdateName should not have been called: %v", fake.updatedName)
+	}
+}
+
+// The security-critical case: identityFromToken falls back to name (then
+// nickname, then sub) as the rider string whenever an issuer sends no
+// preferred_username — true of this deployment's Auth0 database connection.
+// Without this check, a rider could PATCH their own name to "someone-else"
+// and, on their next login, become that rider outright — inheriting their
+// routes, their linked accounts, and anything stored against that identity.
+func TestUpdateMeRejectsANameThatCollidesWithAnotherRider(t *testing.T) {
+	db, err := source.OpenDB(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	accountStore, err := accounts.UseDB(db.Conn(), db.DSN())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := accountStore.Link(model.ProviderGarmin, "someone-else", "their head unit"); err != nil {
+		t.Fatal(err)
+	}
+
+	fake := &fakePeople{}
+	h := newSSOHarness(t, func(s *api.Server) { s.People = fake; s.Accounts = accountStore })
+	h.loginWithUser([]string{"cyclists"}, map[string]any{
+		"preferred_username": "wilant", "email": "wilant@example.com",
+	})
+
+	// Case-insensitive on purpose — every rider comparison in this codebase
+	// normalizes the same way, and a collision hiding behind different
+	// casing would be exactly as exploitable as an exact match.
+	resp := h.patch("/api/me", `{"name":"Someone-Else"}`)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", resp.StatusCode)
+	}
+	if len(fake.updatedName) != 0 {
+		t.Errorf("UpdateName should not have been called: %v", fake.updatedName)
+	}
+}
+
+// Renaming to a case-variant of one's own current identity is not a
+// collision — self is always excluded from the check.
+func TestUpdateMeAllowsRenamingToACaseVariantOfOwnIdentity(t *testing.T) {
+	fake := &fakePeople{}
+	h := newSSOHarness(t, func(s *api.Server) { s.People = fake })
+	h.loginWithUser([]string{"cyclists"}, map[string]any{
+		"preferred_username": "wilant", "email": "wilant@example.com",
+	})
+
+	resp := h.patch("/api/me", `{"name":"Wilant"}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %v", resp.StatusCode, jsonBody(t, resp))
 	}
 }
 

@@ -169,7 +169,7 @@ onMounted(refresh)
           </div>
         </div>
 
-        <nav class="flex gap-1 pb-1" aria-label="Sections">
+        <nav class="flex gap-1 overflow-x-auto pb-1" aria-label="Sections">
           <UButton
             v-for="link in links"
             :key="link.to"
@@ -178,9 +178,10 @@ onMounted(refresh)
             :color="$route.path === link.to ? 'primary' : 'neutral'"
             :variant="$route.path === link.to ? 'subtle' : 'ghost'"
             size="sm"
-            :class="link.to === '/settings' ? 'ml-auto' : ''"
+            :aria-label="link.label"
+            :class="['shrink-0', link.to === '/settings' ? 'sm:ml-auto' : '']"
           >
-            {{ link.label }}
+            <span class="hidden sm:inline">{{ link.label }}</span>
           </UButton>
         </nav>
       </UContainer>

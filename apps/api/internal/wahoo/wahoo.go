@@ -34,6 +34,13 @@ import (
 const (
 	apiBase = "https://api.wahooligan.com"
 
+	// wahooCDNHost is where GET /v1/routes' file.url actually points —
+	// confirmed against the Cloud API docs' own example
+	// (https://cdn.wahooligan.com/wahoo-cloud/.../testfile.fit). See
+	// allowedFileHost for why this is a fixed allowlist entry rather than
+	// "whatever host the response happens to name."
+	wahooCDNHost = "cdn.wahooligan.com"
+
 	// scopes is fixed, not operator-configurable: exactly what this app
 	// functionally needs and what was registered with Wahoo. user_read is
 	// mandatory regardless — Wahoo 403s any token that lacks it.
@@ -419,11 +426,16 @@ func (c *Client) ListRoutes(ctx context.Context, accessToken string) ([]Route, e
 // GET is what a CDN link is for; if the file host ever does need auth, that
 // will surface as a clear 401/403 rather than a silent credential leak.
 func (c *Client) DownloadRoute(ctx context.Context, accessToken, fileURL string) ([]byte, error) {
+	onAPIHost, err := c.allowedFileHost(fileURL)
+	if err != nil {
+		return nil, err
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fileURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("wahoo: building route download request: %w", err)
 	}
-	if sameHost(c.APIBase, fileURL) {
+	if onAPIHost {
 		req.Header.Set("Authorization", "Bearer "+accessToken)
 	}
 
@@ -443,13 +455,37 @@ func (c *Client) DownloadRoute(ctx context.Context, accessToken, fileURL string)
 	return body, nil
 }
 
-func sameHost(base, target string) bool {
-	b, err1 := url.Parse(base)
-	t, err2 := url.Parse(target)
-	if err1 != nil || err2 != nil {
-		return false
+// allowedFileHost reports whether fileURL may be requested at all, and
+// whether it lands on this client's own API host (as opposed to the CDN).
+//
+// This matters more than DownloadRoute's own doc comment first suggested:
+// deciding whether to attach the bearer token is not the only thing at
+// stake here. GET /v1/routes hands back file.url straight from Wahoo's
+// response body (wahoo.go's routeListItem), and a rider imports by picking
+// ids from that list (wahooroutes.go's handleWahooRouteImport) — a
+// compromised or malicious upstream response could point fileURL at an
+// internal address (a cloud metadata endpoint, an in-cluster service) and
+// have this pod fetch it, credentials or not. Refusing anything outside a
+// small allowlist closes that off entirely, the same as
+// komoot.allowedHost and garmin.allowedHost already do for their own
+// clients — this one just has two hosts to allow instead of one, since the
+// file genuinely lives on a different host than the API (cdn.wahooligan.com
+// in the Cloud API docs' own example, not api.wahooligan.com).
+func (c *Client) allowedFileHost(fileURL string) (onAPIHost bool, err error) {
+	target, err := url.Parse(fileURL)
+	if err != nil {
+		return false, fmt.Errorf("wahoo: unusable route file URL %q: %w", fileURL, err)
 	}
-	return strings.EqualFold(b.Host, t.Host)
+
+	if api, err := url.Parse(c.APIBase); err == nil &&
+		target.Scheme == api.Scheme && strings.EqualFold(target.Host, api.Host) {
+		return true, nil
+	}
+	if target.Scheme == "https" && strings.EqualFold(target.Host, wahooCDNHost) {
+		return false, nil
+	}
+
+	return false, fmt.Errorf("wahoo: refusing to fetch a route file from %q, which is not a configured host", target.Host)
 }
 
 // routeRequest is Create and Update's shared shape: same form-encoded body,
