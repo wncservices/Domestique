@@ -166,6 +166,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/komoot/connection", s.handleKomootConnect)
 	mux.HandleFunc("DELETE /api/komoot/connection", s.handleKomootDisconnect)
 	mux.HandleFunc("GET /api/komoot/tours", s.handleKomootTours)
+	mux.HandleFunc("GET /api/komoot/tours/duplicates", s.handleKomootDuplicates)
+	mux.HandleFunc("DELETE /api/komoot/tours/{id}", s.handleKomootTourDelete)
 	mux.HandleFunc("POST /api/komoot/import", s.handleKomootImport)
 
 	mux.HandleFunc("GET /api/garmin/connection", s.handleGarminConnection)

@@ -12,6 +12,7 @@ import type {
   GarminDevice,
   KomootImportResult,
   KomootConnection,
+  KomootDuplicateGroup,
   KomootTour,
   WahooConnection,
   LinkAccountRequest,
@@ -159,6 +160,12 @@ export const api = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ tourIds }),
+    }),
+  komootTourDuplicates: () =>
+    request<KomootDuplicateGroup[]>('/api/komoot/tours/duplicates'),
+  komootTourDelete: (id: string) =>
+    request<{ status: string }>(`/api/komoot/tours/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
     }),
 
   accounts: () => request<Account[]>('/api/accounts'),

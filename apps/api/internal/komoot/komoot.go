@@ -82,11 +82,11 @@ func (c *Client) allowedHost(raw string) error {
 // this client was configured with. Validation happens here, before the URL is
 // used to construct anything, so there is no path that reaches the network
 // without passing it.
-func (c *Client) newRequest(ctx context.Context, rawURL string) (*http.Request, error) {
+func (c *Client) newRequest(ctx context.Context, method, rawURL string) (*http.Request, error) {
 	if err := c.allowedHost(rawURL); err != nil {
 		return nil, err
 	}
-	return http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	return http.NewRequestWithContext(ctx, method, rawURL, nil)
 }
 
 // Client talks to Komoot as one account.
@@ -137,7 +137,7 @@ func (c *Client) Login(ctx context.Context, email, password string) error {
 		return fmt.Errorf("komoot: email and password are both required")
 	}
 
-	req, err := c.newRequest(ctx, fmt.Sprintf("%s/account/email/%s/", c.BaseV6, url.PathEscape(email)))
+	req, err := c.newRequest(ctx, http.MethodGet, fmt.Sprintf("%s/account/email/%s/", c.BaseV6, url.PathEscape(email)))
 	if err != nil {
 		return err
 	}
@@ -186,7 +186,7 @@ func (c *Client) Tours(ctx context.Context, includeRecorded bool) ([]Tour, error
 	var tours []Tour
 
 	for page := 0; next != "" && page < maxPages; page++ {
-		req, err := c.newRequest(ctx, next)
+		req, err := c.newRequest(ctx, http.MethodGet, next)
 		if err != nil {
 			return nil, err
 		}
@@ -245,7 +245,7 @@ func (c *Client) GPX(ctx context.Context, tourID string) ([]byte, error) {
 		return nil, fmt.Errorf("komoot: not logged in")
 	}
 
-	req, err := c.newRequest(ctx, fmt.Sprintf(
+	req, err := c.newRequest(ctx, http.MethodGet, fmt.Sprintf(
 		"%s/tours/%s?_embedded=coordinates&format=coordinate_array",
 		c.BaseV7, url.PathEscape(tourID)))
 	if err != nil {
@@ -272,6 +272,36 @@ func (c *Client) GPX(ctx context.Context, tourID string) ([]byte, error) {
 	}
 
 	return renderGPX(body.Name, points)
+}
+
+// DeleteTour removes a tour from the account. Callers are expected to only
+// ever pass the id of a planned tour they themselves selected for deletion —
+// this client has no opinion about what a tour is for beyond calling the
+// endpoint Komoot gave it an id for.
+//
+// There is no public documentation for this. It is reverse engineered from
+// community tooling (github.com/pnposch/komoot-cleaner, which deletes
+// recorded tours the same way) against the same v007 host and the same
+// userID:token basic-auth session Tours and GPX already use — not a fresh
+// guess, but still unverified by Komoot itself, on an API the package doc
+// already warns can break without notice.
+func (c *Client) DeleteTour(ctx context.Context, tourID string) error {
+	if c.userID == "" || c.token == "" {
+		return fmt.Errorf("komoot: not logged in")
+	}
+
+	req, err := c.newRequest(ctx, http.MethodDelete, fmt.Sprintf("%s/tours/%s", c.BaseV7, url.PathEscape(tourID)))
+	if err != nil {
+		return err
+	}
+	req.SetBasicAuth(c.userID, c.token)
+
+	// into is nil: a successful delete answers 200 or 204 with no JSON body
+	// worth decoding, unlike every other call this client makes.
+	if err := c.do(req, nil); err != nil {
+		return fmt.Errorf("komoot delete tour %s: %w", tourID, err)
+	}
+	return nil
 }
 
 func (c *Client) do(req *http.Request, into any) error {
@@ -311,6 +341,9 @@ func (c *Client) do(req *http.Request, into any) error {
 		return fmt.Errorf("unexpected status %s: %s", resp.Status, snippet(raw))
 	}
 
+	if into == nil {
+		return nil
+	}
 	if err := json.Unmarshal(raw, into); err != nil {
 		// An HTML body here usually means the undocumented API moved.
 		return fmt.Errorf("could not decode response (%w): %s", err, snippet(raw))

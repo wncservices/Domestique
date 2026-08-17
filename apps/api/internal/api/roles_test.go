@@ -350,8 +350,24 @@ type fakeKomoot struct {
 	err   error
 }
 
-func (f fakeKomoot) Tours(context.Context, bool) ([]komoot.Tour, error) {
-	return f.tours, f.err
+// Tours mirrors the real client's own filtering (see komoot.go's Tours) so
+// tests can rely on the same guarantee production code does: passing
+// includeRecorded=false — what handleKomootDuplicates and
+// handleKomootTourDelete always do — never hands back a recorded ride.
+func (f fakeKomoot) Tours(_ context.Context, includeRecorded bool) ([]komoot.Tour, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	if includeRecorded {
+		return f.tours, nil
+	}
+	planned := make([]komoot.Tour, 0, len(f.tours))
+	for _, t := range f.tours {
+		if t.Planned() {
+			planned = append(planned, t)
+		}
+	}
+	return planned, nil
 }
 
 func (f fakeKomoot) GPX(_ context.Context, id string) ([]byte, error) {
@@ -359,6 +375,10 @@ func (f fakeKomoot) GPX(_ context.Context, id string) ([]byte, error) {
 		return nil, f.err
 	}
 	return []byte(seedGPX), nil
+}
+
+func (f fakeKomoot) DeleteTour(context.Context, string) error {
+	return f.err
 }
 
 func TestKomootRequiresRider(t *testing.T) {
@@ -421,6 +441,106 @@ func TestKomootDisabledWhenNotConfigured(t *testing.T) {
 	resp := h.as("wilant", "cyclists", http.MethodGet, "/api/komoot/tours", "")
 	if resp.StatusCode != http.StatusNotImplemented {
 		t.Errorf("status = %d, want 501 when Komoot is not configured", resp.StatusCode)
+	}
+}
+
+// komootDuplicateGroupJSON mirrors api.komootDuplicateGroupDTO's wire shape —
+// duplicated here rather than exported, since this is package api_test and
+// only the fields these tests actually assert on are needed.
+type komootDuplicateGroupJSON struct {
+	Name  string `json:"name"`
+	Tours []struct {
+		ID string `json:"id"`
+	} `json:"tours"`
+}
+
+func TestKomootDuplicatesRequiresRider(t *testing.T) {
+	h := newAuthHarness(t, fakeKomoot{tours: []komoot.Tour{
+		{ID: "1", Name: "Kemmelberg Loop", DistanceM: 55000, Type: komoot.TypePlanned},
+		{ID: "2", Name: "Kemmelberg Loop", DistanceM: 55050, Type: komoot.TypePlanned},
+	}})
+
+	if resp := h.as("guest", "guests", http.MethodGet, "/api/komoot/tours/duplicates", ""); resp.StatusCode != http.StatusForbidden {
+		t.Errorf("viewer listed komoot duplicates: %d", resp.StatusCode)
+	}
+
+	resp := h.as("wilant", "cyclists", http.MethodGet, "/api/komoot/tours/duplicates", "")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("rider cannot list komoot duplicates: %d", resp.StatusCode)
+	}
+	var groups []komootDuplicateGroupJSON
+	if err := json.NewDecoder(resp.Body).Decode(&groups); err != nil {
+		t.Fatal(err)
+	}
+	if len(groups) != 1 || len(groups[0].Tours) != 2 {
+		t.Fatalf("groups = %+v, want one group of two repeated tours", groups)
+	}
+}
+
+// A recorded ride must never turn up as a "duplicate" to clean up — deleting
+// one is a real ride gone, not a redundant plotted route.
+func TestKomootDuplicatesExcludesRecordedRides(t *testing.T) {
+	h := newAuthHarness(t, fakeKomoot{tours: []komoot.Tour{
+		{ID: "1", Name: "Tuesday ride", DistanceM: 31000, Type: komoot.TypeRecorded},
+		{ID: "2", Name: "Tuesday ride", DistanceM: 31010, Type: komoot.TypeRecorded},
+	}})
+
+	resp := h.as("wilant", "cyclists", http.MethodGet, "/api/komoot/tours/duplicates", "")
+	var groups []komootDuplicateGroupJSON
+	if err := json.NewDecoder(resp.Body).Decode(&groups); err != nil {
+		t.Fatal(err)
+	}
+	if len(groups) != 0 {
+		t.Fatalf("recorded rides grouped as duplicates: %+v", groups)
+	}
+}
+
+func TestKomootTourDeleteRequiresRider(t *testing.T) {
+	h := newAuthHarness(t, fakeKomoot{tours: []komoot.Tour{
+		{ID: "1", Name: "Loop", Type: komoot.TypePlanned},
+	}})
+
+	if resp := h.as("guest", "guests", http.MethodDelete, "/api/komoot/tours/1", ""); resp.StatusCode != http.StatusForbidden {
+		t.Errorf("viewer deleted a komoot tour: %d", resp.StatusCode)
+	}
+}
+
+func TestKomootTourDeleteSucceedsForATourOnTheAccount(t *testing.T) {
+	h := newAuthHarness(t, fakeKomoot{tours: []komoot.Tour{
+		{ID: "1", Name: "Loop", Type: komoot.TypePlanned},
+	}})
+
+	resp := h.as("wilant", "cyclists", http.MethodDelete, "/api/komoot/tours/1", "")
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200 deleting a tour actually on the account", resp.StatusCode)
+	}
+}
+
+// The id in the URL is never trusted on its own — it must still be on the
+// account's own (planned-only) tour list, the same "re-list, don't trust the
+// client" rule handleKomootImport already follows.
+func TestKomootTourDeleteRefusesAnIDNotOnTheAccount(t *testing.T) {
+	h := newAuthHarness(t, fakeKomoot{tours: []komoot.Tour{
+		{ID: "1", Name: "Loop", Type: komoot.TypePlanned},
+	}})
+
+	resp := h.as("wilant", "cyclists", http.MethodDelete, "/api/komoot/tours/not-mine", "")
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404 for an id not on this Komoot account", resp.StatusCode)
+	}
+}
+
+// The same guarantee TestKomootDuplicatesExcludesRecordedRides checks for
+// listing: a recorded ride's id can never pass the delete handler's own
+// re-check either, because that check also lists with includeRecorded=false.
+func TestKomootTourDeleteRefusesARecordedRide(t *testing.T) {
+	h := newAuthHarness(t, fakeKomoot{tours: []komoot.Tour{
+		{ID: "1", Name: "Tuesday ride", Type: komoot.TypeRecorded},
+	}})
+
+	resp := h.as("wilant", "cyclists", http.MethodDelete, "/api/komoot/tours/1", "")
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404 — a recorded ride must never be deletable here", resp.StatusCode)
 	}
 }
 

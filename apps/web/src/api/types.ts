@@ -135,6 +135,14 @@ export interface KomootTour {
   imported: boolean
 }
 
+/** Komoot tours that look like repeated copies of each other — same name,
+ *  similar distance — found by comparing the account's own tour list against
+ *  itself. Recorded rides never appear here, only planned tours. */
+export interface KomootDuplicateGroup {
+  name: string
+  tours: KomootTour[]
+}
+
 export interface KomootImportResult {
   imported: string[]
   skipped: Record<string, string>

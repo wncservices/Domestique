@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/wncservices/domestique/apps/api/internal/auth"
@@ -18,6 +19,7 @@ import (
 type KomootImporter interface {
 	Tours(ctx context.Context, includeRecorded bool) ([]komoot.Tour, error)
 	GPX(ctx context.Context, tourID string) ([]byte, error)
+	DeleteTour(ctx context.Context, tourID string) error
 }
 
 type komootTourDTO struct {
@@ -70,6 +72,144 @@ func (s *Server) handleKomootTours(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+type komootDuplicateGroupDTO struct {
+	Name  string          `json:"name"`
+	Tours []komootTourDTO `json:"tours"`
+}
+
+// handleKomootDuplicates groups the caller's own planned Komoot tours that
+// look like repeated copies of each other — the shape a rider hits after
+// planning the same route twice on Komoot itself, before either copy ever
+// reaches this app. Distinct from any check against the library: this
+// compares Komoot's own tour list against itself, the same relationship
+// garmincourses.go's handleGarminCourseDuplicates has to handleGarminCourseList.
+//
+// Recorded rides are never considered: Tours(ctx, false) already filters
+// them out, so groupDuplicateTours never sees one, and
+// handleKomootTourDelete re-checks that same filtered list before deleting
+// anything — a recorded ride can never be offered or removed here.
+func (s *Server) handleKomootDuplicates(w http.ResponseWriter, r *http.Request) {
+	if !s.require(w, r, auth.PermKomootSync) {
+		return
+	}
+	client := s.komootFor(r)
+	if client == nil {
+		s.komootDisabled(w)
+		return
+	}
+
+	tours, err := client.Tours(r.Context(), false)
+	if err != nil {
+		s.logger().Warn("komoot tour listing failed", "err", err)
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, groupDuplicateTours(tours))
+}
+
+// groupDuplicateTours groups tours sharing a name (case-insensitive,
+// trimmed) and a distance within tolerance of each other
+// (distanceWithinTolerance, shared with routeduplicates.go's and
+// garmincourses.go's identical problem), returning only groups with more
+// than one member — same shape and same reasoning as garmincourses.go's
+// groupDuplicateCourses.
+func groupDuplicateTours(tours []komoot.Tour) []komootDuplicateGroupDTO {
+	type group struct {
+		name    string
+		anchor  float64
+		members []komoot.Tour
+	}
+
+	var groups []*group
+	for _, t := range tours {
+		name := strings.ToLower(strings.TrimSpace(t.Name))
+		var target *group
+		for _, g := range groups {
+			if g.name == name && distanceWithinTolerance(g.anchor, t.DistanceM) {
+				target = g
+				break
+			}
+		}
+		if target == nil {
+			target = &group{name: name, anchor: t.DistanceM}
+			groups = append(groups, target)
+		}
+		target.members = append(target.members, t)
+	}
+
+	out := make([]komootDuplicateGroupDTO, 0)
+	for _, g := range groups {
+		if len(g.members) < 2 {
+			continue
+		}
+		dto := komootDuplicateGroupDTO{Name: g.members[0].Name}
+		for _, t := range g.members {
+			dto.Tours = append(dto.Tours, komootTourDTO{
+				ID: t.ID, Name: t.Name, Sport: t.Sport,
+				DistanceM: t.DistanceM, AscentM: t.AscentM,
+				ChangedAt: formatTime(t.ChangedAt),
+			})
+		}
+		out = append(out, dto)
+	}
+	return out
+}
+
+// handleKomootTourDelete removes one tour from the caller's own Komoot
+// account — the other half of duplicate cleanup: handleKomootDuplicates
+// finds the groups, this removes whichever copies were picked to go.
+//
+// Re-lists the account's planned tours first and refuses an id that is not
+// on that list, rather than trusting the URL — the same "re-fetch, don't
+// trust the client" rule handleKomootImport already follows, and the thing
+// that keeps a recorded ride's id from ever reaching DeleteTour: Tours(ctx,
+// false) never returns one, so it can never pass this check.
+func (s *Server) handleKomootTourDelete(w http.ResponseWriter, r *http.Request) {
+	if !s.require(w, r, auth.PermKomootSync) {
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no tour id"})
+		return
+	}
+
+	client := s.komootFor(r)
+	if client == nil {
+		s.komootDisabled(w)
+		return
+	}
+
+	tours, err := client.Tours(r.Context(), false)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	found := false
+	for _, t := range tours {
+		if t.ID == id {
+			found = true
+			break
+		}
+	}
+	if !found {
+		writeJSON(w, http.StatusNotFound, map[string]string{
+			"error": "not a planned tour on this Komoot account",
+		})
+		return
+	}
+
+	if err := client.DeleteTour(r.Context(), id); err != nil {
+		s.logger().Warn("komoot tour delete failed", "tour", id, "err", err)
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+
+	s.logger().Info("komoot tour deleted", "user", auth.FromContext(r.Context()).User, "tour", id)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 // handleKomootImport pulls selected tours into the library.

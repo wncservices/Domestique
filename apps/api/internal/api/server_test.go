@@ -24,6 +24,7 @@ type stubKomoot struct{}
 
 func (stubKomoot) Tours(context.Context, bool) ([]komoot.Tour, error) { return nil, nil }
 func (stubKomoot) GPX(context.Context, string) ([]byte, error)        { return nil, nil }
+func (stubKomoot) DeleteTour(context.Context, string) error           { return nil }
 
 func testServer(t *testing.T, src *source.DB) http.Handler {
 	t.Helper()

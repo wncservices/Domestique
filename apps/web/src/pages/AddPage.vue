@@ -2,6 +2,7 @@
 import { useLibrary } from '@/composables/useLibrary'
 import GarminCoursesPanel from '@/components/GarminCoursesPanel.vue'
 import GarminDuplicatesPanel from '@/components/GarminDuplicatesPanel.vue'
+import KomootDuplicatesPanel from '@/components/KomootDuplicatesPanel.vue'
 import KomootPanel from '@/components/KomootPanel.vue'
 import UploadPanel from '@/components/UploadPanel.vue'
 
@@ -27,6 +28,7 @@ const { accounts, config, canUpload, canImportKomoot, canSyncGarmin, komootEnabl
       :state="config.komoot === 'disabled' ? 'unconfigured' : config.komoot"
       @imported="refresh"
     />
+    <KomootDuplicatesPanel v-if="canImportKomoot && komootEnabled" />
 
     <GarminCoursesPanel v-if="canSyncGarmin" @imported="refresh" />
     <GarminDuplicatesPanel v-if="canSyncGarmin" />
