@@ -22,6 +22,8 @@ import (
 	"github.com/wncservices/domestique/apps/api/internal/config"
 	"github.com/wncservices/domestique/apps/api/internal/komoot"
 	"github.com/wncservices/domestique/apps/api/internal/model"
+	"github.com/wncservices/domestique/apps/api/internal/providerlink"
+	"github.com/wncservices/domestique/apps/api/internal/secrets"
 	"github.com/wncservices/domestique/apps/api/internal/source"
 	"github.com/wncservices/domestique/apps/api/internal/state"
 	"github.com/wncservices/domestique/apps/api/internal/targets"
@@ -33,6 +35,11 @@ type authHarness struct {
 	client *http.Client
 	base   string
 	src    *source.DB
+	// links lets a test seed a rider's own personal provider connection —
+	// see TestKomootTourDeleteRefusesTheSharedAccount, the reason this
+	// harness needs one at all now that delete no longer falls back to the
+	// shared client the way listing and importing still do.
+	links *providerlink.Store
 }
 
 func newAuthHarness(t *testing.T, komootClient api.KomootImporter) *authHarness {
@@ -45,6 +52,19 @@ func newAuthHarness(t *testing.T, komootClient api.KomootImporter) *authHarness 
 	t.Cleanup(func() { db.Close() })
 
 	store, err := state.Open(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	key, err := secrets.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	box, err := secrets.New(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	links, err := providerlink.UseDB(db.Conn(), db.DSN(), box)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +86,13 @@ func newAuthHarness(t *testing.T, komootClient api.KomootImporter) *authHarness 
 		Store:    store,
 		Auth:     authenticator,
 		Komoot:   komootClient,
-		Accounts: seedRoleAccounts(t, db),
+		Links:    links,
+		// Resume ignores the userID/token it is handed and always returns
+		// the same fake — this harness only ever needed one Komoot client
+		// to test against, whether reached via the shared fallback or (once
+		// a test seeds a links row) a rider's own resolved connection.
+		Connector: &fakeConnector{importer: komootClient},
+		Accounts:  seedRoleAccounts(t, db),
 		Config: &config.Config{
 			Komoot: config.KomootConfig{Enabled: komootClient != nil},
 		},
@@ -78,7 +104,7 @@ func newAuthHarness(t *testing.T, komootClient api.KomootImporter) *authHarness 
 	server := httptest.NewServer(srv.Handler())
 	t.Cleanup(server.Close)
 
-	return &authHarness{t: t, client: server.Client(), base: server.URL, src: db}
+	return &authHarness{t: t, client: server.Client(), base: server.URL, src: db, links: links}
 }
 
 // seedRoleAccounts links one head unit, owned by "wilant".
@@ -495,6 +521,20 @@ func TestKomootDuplicatesExcludesRecordedRides(t *testing.T) {
 	}
 }
 
+// seedKomootLink gives rider a personal Komoot connection — delete
+// (unlike listing and importing) needs one, see komootOwnConnectionFor.
+// What's actually stored does not matter: this harness's fakeConnector
+// ignores the userID/token it is handed and always resolves to the same
+// fake client either way.
+func (h *authHarness) seedKomootLink(t *testing.T, rider string) {
+	t.Helper()
+	if _, err := h.links.Save("komoot", rider, providerlink.Connection{
+		Email: rider + "@example.test", Secret: "token",
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestKomootTourDeleteRequiresRider(t *testing.T) {
 	h := newAuthHarness(t, fakeKomoot{tours: []komoot.Tour{
 		{ID: "1", Name: "Loop", Type: komoot.TypePlanned},
@@ -505,10 +545,26 @@ func TestKomootTourDeleteRequiresRider(t *testing.T) {
 	}
 }
 
+// The security-critical case: a rider with no personal Komoot connection of
+// their own must not be able to delete from the deployment-wide shared
+// account, even though listing and importing both fall back to it freely —
+// see komootOwnConnectionFor's own doc comment for why delete is different.
+func TestKomootTourDeleteRefusesWithNoPersonalConnection(t *testing.T) {
+	h := newAuthHarness(t, fakeKomoot{tours: []komoot.Tour{
+		{ID: "1", Name: "Loop", Type: komoot.TypePlanned},
+	}})
+
+	resp := h.as("wilant", "cyclists", http.MethodDelete, "/api/komoot/tours/1", "")
+	if resp.StatusCode != http.StatusPreconditionFailed {
+		t.Errorf("status = %d, want 412 — wilant never connected Komoot personally", resp.StatusCode)
+	}
+}
+
 func TestKomootTourDeleteSucceedsForATourOnTheAccount(t *testing.T) {
 	h := newAuthHarness(t, fakeKomoot{tours: []komoot.Tour{
 		{ID: "1", Name: "Loop", Type: komoot.TypePlanned},
 	}})
+	h.seedKomootLink(t, "wilant")
 
 	resp := h.as("wilant", "cyclists", http.MethodDelete, "/api/komoot/tours/1", "")
 	if resp.StatusCode != http.StatusOK {
@@ -523,6 +579,7 @@ func TestKomootTourDeleteRefusesAnIDNotOnTheAccount(t *testing.T) {
 	h := newAuthHarness(t, fakeKomoot{tours: []komoot.Tour{
 		{ID: "1", Name: "Loop", Type: komoot.TypePlanned},
 	}})
+	h.seedKomootLink(t, "wilant")
 
 	resp := h.as("wilant", "cyclists", http.MethodDelete, "/api/komoot/tours/not-mine", "")
 	if resp.StatusCode != http.StatusNotFound {
@@ -537,6 +594,7 @@ func TestKomootTourDeleteRefusesARecordedRide(t *testing.T) {
 	h := newAuthHarness(t, fakeKomoot{tours: []komoot.Tour{
 		{ID: "1", Name: "Tuesday ride", Type: komoot.TypeRecorded},
 	}})
+	h.seedKomootLink(t, "wilant")
 
 	resp := h.as("wilant", "cyclists", http.MethodDelete, "/api/komoot/tours/1", "")
 	if resp.StatusCode != http.StatusNotFound {
