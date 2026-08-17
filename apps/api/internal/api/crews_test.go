@@ -182,6 +182,84 @@ func TestJoinApproveRemoveFlow(t *testing.T) {
 
 // A rider removing someone else's membership needs to be the crew's owner
 // or an admin — the same ownership rule accounts and routes already keep.
+// The owner's other route into a crew: adding someone directly, without
+// that rider ever having requested to join.
+func TestOwnerCanAddMemberDirectly(t *testing.T) {
+	h := newCrewHarness(t)
+	created := decodeCrew(t, h.as("wilant", "cyclists", http.MethodPost, "/api/crews", `{"name":"Family"}`))
+
+	resp := h.as("wilant", "cyclists", http.MethodPost, "/api/crews/"+created.ID+"/members", `{"rider":"other"}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("add status = %d, want 200", resp.StatusCode)
+	}
+	added := decodeCrew(t, resp)
+	if added.MemberCount != 2 {
+		t.Errorf("memberCount = %d, want 2", added.MemberCount)
+	}
+
+	// The added rider sees themselves as approved immediately — no join,
+	// no wait.
+	list := h.as("other", "cyclists", http.MethodGet, "/api/crews", "")
+	var out []crewDTOOut
+	if err := json.NewDecoder(list.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if out[0].MembershipStatus != "approved" {
+		t.Errorf("membershipStatus = %q, want approved", out[0].MembershipStatus)
+	}
+}
+
+func TestOnlyOwnerOrAdminCanAddMember(t *testing.T) {
+	h := newCrewHarness(t)
+	created := decodeCrew(t, h.as("wilant", "cyclists", http.MethodPost, "/api/crews", `{"name":"Family"}`))
+
+	resp := h.as("someone-else", "cyclists", http.MethodPost, "/api/crews/"+created.ID+"/members", `{"rider":"other"}`)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("non-owner add status = %d, want 403", resp.StatusCode)
+	}
+
+	adminResp := h.as("boss", "admins", http.MethodPost, "/api/crews/"+created.ID+"/members", `{"rider":"other"}`)
+	if adminResp.StatusCode != http.StatusOK {
+		t.Fatalf("admin add status = %d, want 200", adminResp.StatusCode)
+	}
+}
+
+func TestAddingAnAlreadyApprovedMemberIsAConflict(t *testing.T) {
+	h := newCrewHarness(t)
+	created := decodeCrew(t, h.as("wilant", "cyclists", http.MethodPost, "/api/crews", `{"name":"Family"}`))
+	h.as("wilant", "cyclists", http.MethodPost, "/api/crews/"+created.ID+"/members", `{"rider":"other"}`)
+
+	resp := h.as("wilant", "cyclists", http.MethodPost, "/api/crews/"+created.ID+"/members", `{"rider":"other"}`)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", resp.StatusCode)
+	}
+}
+
+// Adding a rider who already has a pending request approves it in one
+// step, instead of forcing the owner to deny and re-add.
+func TestAddingAPendingRiderApprovesThem(t *testing.T) {
+	h := newCrewHarness(t)
+	created := decodeCrew(t, h.as("wilant", "cyclists", http.MethodPost, "/api/crews", `{"name":"Family"}`))
+	h.as("other", "cyclists", http.MethodPost, "/api/crews/"+created.ID+"/join", "")
+
+	resp := h.as("wilant", "cyclists", http.MethodPost, "/api/crews/"+created.ID+"/members", `{"rider":"other"}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("add status = %d, want 200", resp.StatusCode)
+	}
+	added := decodeCrew(t, resp)
+	if added.MemberCount != 2 {
+		t.Errorf("memberCount = %d, want 2", added.MemberCount)
+	}
+}
+
+func TestAddMemberToNonexistentCrewIs404(t *testing.T) {
+	h := newCrewHarness(t)
+	resp := h.as("wilant", "cyclists", http.MethodPost, "/api/crews/crew:does-not-exist/members", `{"rider":"other"}`)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
 func TestNonOwnerCannotRemoveSomeoneElse(t *testing.T) {
 	h := newCrewHarness(t)
 	created := decodeCrew(t, h.as("wilant", "cyclists", http.MethodPost, "/api/crews", `{"name":"Family"}`))
@@ -236,6 +314,7 @@ func TestCrewEndpointsNeedRiderPermission(t *testing.T) {
 		{http.MethodGet, "/api/crews", ""},
 		{http.MethodPost, "/api/crews/" + created.ID + "/join", ""},
 		{http.MethodDelete, "/api/crews/" + created.ID, ""},
+		{http.MethodPost, "/api/crews/" + created.ID + "/members", `{"rider":"other"}`},
 		{http.MethodPut, "/api/crews/" + created.ID + "/members/wilant", ""},
 	} {
 		resp := h.as("guest", "guests", tc.method, tc.path, tc.body)

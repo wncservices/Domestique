@@ -6,7 +6,8 @@
 // stops a rider from naming another rider's account directly — there is no
 // consent or relationship check anywhere on that path. A crew is that
 // relationship: a rider creates one and becomes its owner, other riders
-// request to join, and only the owner approves or denies. A route may then
+// request to join and only the owner approves or denies, or the owner adds
+// someone directly without waiting on a request. A route may then
 // be shared to a crew the route's owner belongs to, which resolves — at
 // push time, not at share time — to every currently approved member's
 // accounts. Membership is deliberately not baked into a route when it is
@@ -327,6 +328,50 @@ func (s *Store) RequestJoin(ctx context.Context, crewID, rider string) (Member, 
 	}
 
 	return Member{CrewID: crewID, Rider: rider, Status: StatusPending, RequestedAt: now}, nil
+}
+
+// AddMember directly enrolls a rider as an approved member — the owner
+// vouching for someone is exactly as sufficient as a request-then-approve
+// round trip, in one step. This is the only way a crew gains a member
+// without that member ever having requested to join first: RequestJoin
+// still requires the joining rider's own session, but AddMember lets the
+// owner start from their end instead of waiting on the other rider to find
+// the crew and ask. A rider who already has a pending request is approved
+// rather than erroring — that is what the two-step path already reduces
+// to, so there is no reason to make the owner deny-then-add instead.
+func (s *Store) AddMember(ctx context.Context, crewID, rider, addedBy string) (Member, error) {
+	rider = strings.TrimSpace(rider)
+	if rider == "" {
+		return Member{}, errors.New("crew: no rider — who is being added?")
+	}
+	if _, err := s.Get(ctx, crewID); err != nil {
+		return Member{}, err
+	}
+
+	var status string
+	err := s.db.QueryRowContext(ctx, s.dialect.Rebind(`
+        SELECT status FROM crew_members WHERE crew_id = ? AND rider = ?`),
+		crewID, rider).Scan(&status)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		now := time.Now().UTC().Format(time.RFC3339)
+		if _, err := s.db.ExecContext(ctx, s.dialect.Rebind(`
+            INSERT INTO crew_members (crew_id, rider, status, requested_at, decided_by, decided_at)
+            VALUES (?, ?, ?, ?, ?, ?)`),
+			crewID, rider, string(StatusApproved), now, addedBy, now); err != nil {
+			return Member{}, fmt.Errorf("add crew member: %w", err)
+		}
+		return Member{CrewID: crewID, Rider: rider, Status: StatusApproved, RequestedAt: now, DecidedBy: addedBy, DecidedAt: now}, nil
+	case err != nil:
+		return Member{}, err
+	case status == string(StatusApproved):
+		return Member{}, ErrAlreadyMember
+	default:
+		if err := s.Approve(ctx, crewID, rider, addedBy); err != nil {
+			return Member{}, err
+		}
+		return Member{CrewID: crewID, Rider: rider, Status: StatusApproved, DecidedBy: addedBy}, nil
+	}
 }
 
 // Approve grants a pending request, recording who decided it and when.

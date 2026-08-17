@@ -221,6 +221,59 @@ func (s *Server) handleJoinCrew(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.crewDTOFor(auth.FromContext(r.Context()), c, members))
 }
 
+// handleAddCrewMember lets the crew's owner (or an admin) enroll a rider
+// directly, without that rider ever requesting to join first — the
+// owner-initiated counterpart to handleJoinCrew.
+func (s *Server) handleAddCrewMember(w http.ResponseWriter, r *http.Request) {
+	if !s.require(w, r, auth.PermManageCrews) {
+		return
+	}
+	if !s.crewAvailable(w) {
+		return
+	}
+
+	id := r.PathValue("id")
+	c, err := s.Crew.Get(r.Context(), id)
+	if err != nil {
+		s.failCrewLookup(w, err)
+		return
+	}
+	identity := auth.FromContext(r.Context())
+	if !identity.CanEditRoute(c.Owner) {
+		s.forbidCrew(w, r)
+		return
+	}
+
+	var body struct {
+		Rider string `json:"rider"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<10)).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+
+	if _, err := s.Crew.AddMember(r.Context(), id, body.Rider, identity.User); err != nil {
+		switch {
+		case errors.Is(err, crew.ErrNotFound):
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such crew"})
+		case errors.Is(err, crew.ErrAlreadyMember):
+			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		default:
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		}
+		return
+	}
+
+	members, err := s.Crew.Members(r.Context(), id)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+
+	s.logger().Info("crew member added", "crew", id, "rider", body.Rider, "by", identity.User)
+	writeJSON(w, http.StatusOK, s.crewDTOFor(identity, c, members))
+}
+
 // handleApproveCrewMember grants a pending request. Owner or admin only.
 func (s *Server) handleApproveCrewMember(w http.ResponseWriter, r *http.Request) {
 	if !s.require(w, r, auth.PermManageCrews) {

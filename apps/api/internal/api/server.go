@@ -186,6 +186,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/crews", s.handleListCrews)
 	mux.HandleFunc("DELETE /api/crews/{id}", s.handleDeleteCrew)
 	mux.HandleFunc("POST /api/crews/{id}/join", s.handleJoinCrew)
+	mux.HandleFunc("POST /api/crews/{id}/members", s.handleAddCrewMember)
 	mux.HandleFunc("PUT /api/crews/{id}/members/{rider}", s.handleApproveCrewMember)
 	mux.HandleFunc("DELETE /api/crews/{id}/members/{rider}", s.handleRemoveCrewMember)
 

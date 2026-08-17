@@ -212,6 +212,14 @@ export const api = {
     request<{ status: string }>(`/api/crews/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   joinCrew: (id: string) =>
     request<Crew>(`/api/crews/${encodeURIComponent(id)}/join`, { method: 'POST' }),
+  /** The owner's other way in: enrolls a rider directly, without them ever
+   *  requesting to join first. */
+  addCrewMember: (crewId: string, rider: string) =>
+    request<Crew>(`/api/crews/${encodeURIComponent(crewId)}/members`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rider }),
+    }),
   approveCrewMember: (crewId: string, rider: string) =>
     request<Crew>(
       `/api/crews/${encodeURIComponent(crewId)}/members/${encodeURIComponent(rider)}`,

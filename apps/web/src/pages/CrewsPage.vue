@@ -86,6 +86,32 @@ async function removeMember(crew: Crew, rider: string) {
   }
 }
 
+// --- add member directly (the owner's other way in, no request needed) ---
+
+const addMemberInput = ref<Record<string, string>>({})
+const addingMember = ref('')
+
+async function addMember(crew: Crew) {
+  const rider = (addMemberInput.value[crew.id] ?? '').trim()
+  if (!rider) return
+  addingMember.value = crew.id
+  try {
+    await api.addCrewMember(crew.id, rider)
+    toast.add({ title: `${rider} added to ${crew.name}`, icon: 'i-lucide-user-plus', color: 'success' })
+    addMemberInput.value[crew.id] = ''
+    await refresh()
+  } catch (err) {
+    toast.add({
+      title: `Could not add ${rider}`,
+      description: err instanceof Error ? err.message : String(err),
+      icon: 'i-lucide-triangle-alert',
+      color: 'error',
+    })
+  } finally {
+    addingMember.value = ''
+  }
+}
+
 const approving = ref('')
 
 async function approveMember(crew: Crew, rider: string) {
@@ -214,8 +240,29 @@ const approvedFor = (crew: Crew) => crew.members?.filter((m) => m.status === 'ap
             </UButton>
           </div>
 
-          <!-- Owner's own view: who's waiting, who's in. -->
+          <!-- Owner's own view: add someone directly, see who's waiting, who's in. -->
           <div v-if="crew.mine" class="ml-1 flex flex-col gap-2 border-l-2 border-default pl-4">
+            <form
+              class="flex items-center gap-2"
+              @submit.prevent="addMember(crew)"
+            >
+              <UInput
+                v-model="addMemberInput[crew.id]"
+                placeholder="Add a rider by their username"
+                size="sm"
+                class="max-w-xs"
+              />
+              <UButton
+                type="submit"
+                size="xs"
+                icon="i-lucide-user-plus"
+                :loading="addingMember === crew.id"
+                :disabled="!addMemberInput[crew.id]?.trim()"
+              >
+                Add
+              </UButton>
+            </form>
+
             <div
               v-for="member in pendingFor(crew)"
               :key="`pending-${member.rider}`"

@@ -216,6 +216,67 @@ func TestCrewEachEngine(t *testing.T) {
 				}
 			})
 
+			t.Run("add member enrolls a rider as approved with no request first", func(t *testing.T) {
+				store := open(t)
+				ctx := t.Context()
+
+				c, err := store.Create(ctx, "Family", "wilant")
+				if err != nil {
+					t.Fatalf("create: %v", err)
+				}
+				if _, err := store.AddMember(ctx, c.ID, "rider", "wilant"); err != nil {
+					t.Fatalf("add member: %v", err)
+				}
+
+				snap, err := store.Snapshot(ctx)
+				if err != nil {
+					t.Fatalf("snapshot: %v", err)
+				}
+				if !snap.ApprovedRiders.Has(c.ID, "rider") {
+					t.Fatalf("added member missing from snapshot: %v", snap.ApprovedRiders)
+				}
+			})
+
+			t.Run("add member approves an existing pending request rather than erroring", func(t *testing.T) {
+				store := open(t)
+				ctx := t.Context()
+
+				c, err := store.Create(ctx, "Family", "wilant")
+				if err != nil {
+					t.Fatalf("create: %v", err)
+				}
+				if _, err := store.RequestJoin(ctx, c.ID, "rider"); err != nil {
+					t.Fatalf("request join: %v", err)
+				}
+				if _, err := store.AddMember(ctx, c.ID, "rider", "wilant"); err != nil {
+					t.Fatalf("add member: %v", err)
+				}
+
+				snap, err := store.Snapshot(ctx)
+				if err != nil {
+					t.Fatalf("snapshot: %v", err)
+				}
+				if !snap.ApprovedRiders.Has(c.ID, "rider") {
+					t.Fatalf("pending request was not approved by add member: %v", snap.ApprovedRiders)
+				}
+			})
+
+			t.Run("add member is an error for a rider already approved", func(t *testing.T) {
+				store := open(t)
+				ctx := t.Context()
+
+				c, err := store.Create(ctx, "Family", "wilant")
+				if err != nil {
+					t.Fatalf("create: %v", err)
+				}
+				if _, err := store.AddMember(ctx, c.ID, "rider", "wilant"); err != nil {
+					t.Fatalf("first add: %v", err)
+				}
+				if _, err := store.AddMember(ctx, c.ID, "rider", "wilant"); !errors.Is(err, ErrAlreadyMember) {
+					t.Fatalf("second add: err = %v, want ErrAlreadyMember", err)
+				}
+			})
+
 			t.Run("approving a rider with no request is not found", func(t *testing.T) {
 				store := open(t)
 				ctx := t.Context()
