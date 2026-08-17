@@ -25,6 +25,7 @@ import (
 	"github.com/wncservices/domestique/apps/api/internal/accounts"
 	"github.com/wncservices/domestique/apps/api/internal/api"
 	"github.com/wncservices/domestique/apps/api/internal/config"
+	"github.com/wncservices/domestique/apps/api/internal/crew"
 	"github.com/wncservices/domestique/apps/api/internal/model"
 	"github.com/wncservices/domestique/apps/api/internal/source"
 	"github.com/wncservices/domestique/apps/api/internal/state"
@@ -102,6 +103,47 @@ func seedAccounts(t *testing.T, db *source.DB) *accounts.Store {
 	return store
 }
 
+// seedCrews sets up the crews these tests share a route through. Every
+// request in this harness resolves to rider "local" (mode: none's
+// LocalIdentity), so "local" is what has to belong to a crew for an
+// uploaded route's targets to validate at write time and resolve to
+// riders "one"/"two"'s linked accounts at plan time — a route can no
+// longer name a raw account id directly.
+//
+//	crew:shared  — one, two — the old "reaches every linked account" default
+//	crew:soloone — one only — narrows a push to garmin:one specifically
+//	crew:solotwo — two only — narrows a push to wahoo:two specifically
+func seedCrews(t *testing.T, db *source.DB) *crew.Store {
+	t.Helper()
+
+	store, err := crew.UseDB(db.Conn(), db.DSN())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name    string
+		members []string
+	}{
+		{"Shared", []string{"one", "two"}},
+		{"SoloOne", []string{"one"}},
+		{"SoloTwo", []string{"two"}},
+	} {
+		created, err := store.Create(context.Background(), c.name, "local")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, rider := range c.members {
+			if _, err := store.RequestJoin(context.Background(), created.ID, rider); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Approve(context.Background(), created.ID, rider, "local"); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	return store
+}
+
 // newHarness starts a server over real HTTP against a fresh database.
 func newHarness(t *testing.T) *harness {
 	t.Helper()
@@ -122,6 +164,7 @@ func newHarness(t *testing.T) *harness {
 		Source:   src,
 		Store:    store,
 		Accounts: seedAccounts(t, src),
+		Crew:     seedCrews(t, src),
 		Config:   &config.Config{},
 		// A minimal SPA, so the fallback behaviour is covered too.
 		WebFS: fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("<html>app</html>")}},
@@ -214,9 +257,16 @@ func syncHarness(t *testing.T) (*harness, routeDTO) {
 	return h, h.uploadExample("Kemmelberg Loop")
 }
 
+// uploadExample shares the route to crew:shared — one, two — so a route
+// with no targets of its own reaches every linked account, the closest
+// equivalent to the old nil-target default now that nil means "the
+// owner's own accounts only" (see config.TargetsFor). Every request in
+// this harness resolves to rider "local", which owns no linked account of
+// its own — without an explicit crew, an uploaded route would reach
+// nobody.
 func (h *harness) uploadExample(name string) routeDTO {
 	h.t.Helper()
-	resp := h.upload(map[string]string{"name": name}, exampleGPX(h.t), "route.gpx")
+	resp := h.upload(map[string]string{"name": name, "targets": "crew:shared"}, exampleGPX(h.t), "route.gpx")
 	h.expectStatus(resp, http.StatusCreated)
 	var route routeDTO
 	h.decode(resp, &route)
@@ -464,11 +514,13 @@ func TestRoutesEndpointReportsStatsAndTargets(t *testing.T) {
 	if route.AscentM == 0 || route.PointCount == 0 || route.ContentHash == "" {
 		t.Errorf("derived fields missing: %+v", route)
 	}
-	if len(route.Targets) != 2 {
-		t.Errorf("targets = %v, want both defaults", route.Targets)
+	// Targets holds the crew named at write time (see uploadExample), not
+	// the accounts it resolves to — that resolved reach is SyncState.
+	if len(route.Targets) != 1 || route.Targets[0] != "crew:shared" {
+		t.Errorf("targets = %v, want [crew:shared]", route.Targets)
 	}
 	if len(route.SyncState) != 2 {
-		t.Fatalf("syncState = %v, want one per target", route.SyncState)
+		t.Fatalf("syncState = %v, want one per resolved account", route.SyncState)
 	}
 	for _, status := range route.SyncState {
 		if status.Status != "pending" {
@@ -696,7 +748,7 @@ func TestUploadLifecycle(t *testing.T) {
 		"name":        "Kemmelberg Loop",
 		"description": "Cobbles and regret",
 		"tags":        "gravel, hills",
-		"targets":     "garmin:one",
+		"targets":     "crew:soloone",
 		"uploadedBy":  "wilant",
 	}, exampleGPX(t), "kemmelberg.gpx")
 	h.expectStatus(resp, http.StatusCreated)
@@ -713,8 +765,11 @@ func TestUploadLifecycle(t *testing.T) {
 	if len(created.Tags) != 2 || created.Tags[0] != "gravel" {
 		t.Errorf("tags = %v, want [gravel hills]", created.Tags)
 	}
-	if len(created.Targets) != 1 || created.Targets[0] != "garmin:one" {
-		t.Errorf("targets = %v, want only garmin:wilant", created.Targets)
+	// Targets holds the crew id named at write time, not the accounts it
+	// resolves to — that resolved reach is what the plan assertion below
+	// checks.
+	if len(created.Targets) != 1 || created.Targets[0] != "crew:soloone" {
+		t.Errorf("targets = %v, want only crew:soloone", created.Targets)
 	}
 	if created.DistanceM == 0 || created.ContentHash == "" {
 		t.Errorf("stats not derived on upload: %+v", created)
@@ -868,7 +923,7 @@ func TestPatchRetargetsRoute(t *testing.T) {
 	route := h.uploadExample("Shared")
 
 	resp := h.do(http.MethodPatch, "/api/routes/"+route.Slug,
-		strings.NewReader(`{"targets":["wahoo:two"]}`), "application/json")
+		strings.NewReader(`{"targets":["crew:solotwo"]}`), "application/json")
 	h.expectStatus(resp, http.StatusOK)
 
 	var plan planDTO
@@ -983,23 +1038,67 @@ func TestPathTraversalIsRefused(t *testing.T) {
 	}
 }
 
-func TestUnknownTargetsAreSurfaced(t *testing.T) {
+// A route can no longer be created naming a target its owner does not
+// belong to — write-time validation rejects it outright now, rather than
+// accepting it and leaving it silently unsynced the way a typo'd raw
+// account id used to.
+func TestUploadRejectsAnUnknownTarget(t *testing.T) {
 	h := newHarness(t)
 
 	resp := h.upload(map[string]string{
 		"name":    "Typo",
-		"targets": "garmin:wilnat", // transposed on purpose
+		"targets": "crew:does-not-exist",
 	}, exampleGPX(t), "typo.gpx")
+	h.expectStatus(resp, http.StatusBadRequest)
+
+	var library libraryDTO
+	h.decode(h.get("/api/routes"), &library)
+	if len(library.Routes) != 0 {
+		t.Errorf("a route with an invalid target was still created: %+v", library.Routes)
+	}
+}
+
+// A crew reference that was valid when a route was shared to it can go
+// stale later — the crew gets deleted — without the route itself ever
+// being touched. UnknownTargets is what tells a rider their route quietly
+// stopped syncing anywhere, rather than leaving it silent — the same
+// contract an unlinked account used to give before crews existed.
+func TestUnknownTargetsSurfaceAfterACrewIsDeleted(t *testing.T) {
+	h := newHarness(t)
+
+	resp := h.upload(map[string]string{
+		"name":    "Once Shared",
+		"targets": "crew:soloone",
+	}, exampleGPX(t), "once-shared.gpx")
 	h.expectStatus(resp, http.StatusCreated)
+
+	var created routeDTO
+	h.decode(resp, &created)
+	if len(created.UnknownTargets) != 0 {
+		t.Fatalf("unknownTargets = %v before the crew was touched, want none", created.UnknownTargets)
+	}
+
+	// The crew's own owner (rider "local" in this harness) deletes it —
+	// nothing about the route changes.
+	h.expectStatus(h.do(http.MethodDelete, "/api/crews/crew:soloone", nil, ""), http.StatusOK)
 
 	var library libraryDTO
 	h.decode(h.get("/api/routes"), &library)
 	if len(library.Routes) != 1 {
 		t.Fatal("route missing")
 	}
-	// Without this the route silently never syncs anywhere.
-	if len(library.Routes[0].UnknownTargets) != 1 {
-		t.Errorf("unknownTargets = %v, want the typo flagged",
+	if len(library.Routes[0].UnknownTargets) != 1 || library.Routes[0].UnknownTargets[0] != "crew:soloone" {
+		t.Errorf("unknownTargets = %v, want [crew:soloone] once its crew is gone",
 			library.Routes[0].UnknownTargets)
+	}
+
+	// And it stops reaching anyone — crew:soloone was the only thing this
+	// route named, and it resolved to nothing but garmin:one.
+	var plan planDTO
+	h.decode(h.get("/api/plan"), &plan)
+	for _, item := range plan.Items {
+		if item.AccountID == "garmin:one" {
+			t.Errorf("still planning for garmin:one after crew:soloone was deleted")
+		}
 	}
 }

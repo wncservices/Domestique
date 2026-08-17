@@ -510,13 +510,19 @@ func TestUnlinkingSomethingMissing(t *testing.T) {
 
 // A route with no targets of its own goes to every linked head unit, so
 // linking one immediately gives the routes somewhere to go.
-func TestLinkingChangesWhatRoutesTarget(t *testing.T) {
+// Linking a new account must not silently expand what an already-existing
+// route reaches — that was the exact gap crews exist to close. A route
+// with no explicit targets reaches only its owner's own accounts,
+// regardless of who else links something afterwards; reaching a stranger's
+// account now requires that stranger to be an approved member of a crew
+// the route was deliberately shared to.
+func TestLinkingANewAccountDoesNotExpandExistingRoutes(t *testing.T) {
 	h := newAuthHarness(t, nil)
-	h.seedRoute(t, "Shared route", "wilant")
+	h.seedRoute(t, "Private route", "wilant")
 
 	before := h.routeTargets(t)
-	if len(before) != 1 {
-		t.Fatalf("targets = %v, want the one account the harness linked", before)
+	if len(before) != 1 || before[0] != "garmin:wilant" {
+		t.Fatalf("targets = %v, want only garmin:wilant", before)
 	}
 
 	if resp := h.as("friend", "cyclists", http.MethodPost, "/api/accounts",
@@ -525,19 +531,23 @@ func TestLinkingChangesWhatRoutesTarget(t *testing.T) {
 	}
 
 	after := h.routeTargets(t)
-	if len(after) != 2 {
-		t.Errorf("targets = %v, want both linked accounts", after)
+	if len(after) != 1 || after[0] != "garmin:wilant" {
+		t.Errorf("targets = %v after a stranger linked an account, want unchanged at [garmin:wilant]", after)
 	}
 }
 
-// routeTargets reads the targets of the first route.
+// routeTargets reads what the first route currently resolves to —
+// SyncState, not Targets: Targets holds the crew ids a route names, not
+// the accounts it actually reaches (see config.TargetsFor).
 func (h *authHarness) routeTargets(t *testing.T) []string {
 	t.Helper()
 
 	resp := h.as("wilant", "cyclists", http.MethodGet, "/api/routes", "")
 	var library struct {
 		Routes []struct {
-			Targets []string `json:"targets"`
+			SyncState []struct {
+				AccountID string `json:"accountId"`
+			} `json:"syncState"`
 		} `json:"routes"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&library); err != nil {
@@ -546,7 +556,11 @@ func (h *authHarness) routeTargets(t *testing.T) []string {
 	if len(library.Routes) == 0 {
 		return nil
 	}
-	return library.Routes[0].Targets
+	out := make([]string, 0, len(library.Routes[0].SyncState))
+	for _, s := range library.Routes[0].SyncState {
+		out = append(out, s.AccountID)
+	}
+	return out
 }
 
 // /api/config's Source names the database host and port — internal cluster

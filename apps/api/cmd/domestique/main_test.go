@@ -67,6 +67,28 @@ func linkAccount(t *testing.T, dsn, provider, rider string) {
 	}
 }
 
+// seedOwnedRoute writes a route directly, owned by the given rider. The
+// CLI's own import command has no owner concept — it is a bulk filesystem
+// import, not an authenticated upload — and an unowned route now resolves
+// to nobody, since a nil-target route reaches only its owner's own
+// accounts (see config.TargetsFor). Tests that need a route which actually
+// reaches somewhere seed one this way instead of going through import.
+func seedOwnedRoute(t *testing.T, dsn, owner string) {
+	t.Helper()
+
+	db, err := source.OpenDB(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if _, err := db.Create(t.Context(), source.CreateRequest{
+		Name: "Kemmelberg Loop", GPX: []byte(exampleGPX), UploadedBy: owner,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func write(t *testing.T, path, body string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
@@ -204,8 +226,8 @@ func TestCLIPlanWithALinkedAccount(t *testing.T) {
 	dir := workspace(t)
 	db := filepath.Join(dir, "data", "routes.db")
 
-	mustRun(t, "import", "--db", db, "--from", "./incoming")
 	linkAccount(t, db, "garmin", "one")
+	seedOwnedRoute(t, db, "one")
 
 	out := mustRun(t, "plan", "--db", db)
 	if !strings.Contains(out, "create") || !strings.Contains(out, "garmin:one") {
@@ -216,8 +238,8 @@ func TestCLIPlanWithALinkedAccount(t *testing.T) {
 func TestCLIPushDryRunChangesNothing(t *testing.T) {
 	dir := workspace(t)
 	db := filepath.Join(dir, "data", "routes.db")
-	mustRun(t, "import", "--db", db, "--from", "./incoming")
 	linkAccount(t, db, "garmin", "one")
+	seedOwnedRoute(t, db, "one")
 
 	out := mustRun(t, "push", "--db", db, "--dry-run")
 	if !strings.Contains(out, "dry run") {
@@ -235,8 +257,8 @@ func TestCLIPushDryRunChangesNothing(t *testing.T) {
 func TestCLIPushFailsWhileAdaptersAreStubs(t *testing.T) {
 	dir := workspace(t)
 	db := filepath.Join(dir, "data", "routes.db")
-	mustRun(t, "import", "--db", db, "--from", "./incoming")
 	linkAccount(t, db, "garmin", "one")
+	seedOwnedRoute(t, db, "one")
 
 	_, err := capture(t, "push", "--db", db)
 	if err == nil {

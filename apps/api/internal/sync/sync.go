@@ -7,6 +7,7 @@ import (
 	"sort"
 
 	"github.com/wncservices/domestique/apps/api/internal/config"
+	"github.com/wncservices/domestique/apps/api/internal/crew"
 	"github.com/wncservices/domestique/apps/api/internal/model"
 	"github.com/wncservices/domestique/apps/api/internal/state"
 	"github.com/wncservices/domestique/apps/api/internal/targets"
@@ -17,11 +18,13 @@ import (
 //
 // The accounts are passed in rather than read from config: they are linked by
 // riders through the UI and live in the database, so the caller fetches them.
+// crews is likewise fetched fresh by the caller — a member removed since the
+// last plan must stop appearing on this one, not on the next process restart.
 //
 // It returns an error rather than treating unreadable state as empty: an empty
 // plan reads as "nothing to do", but empty *state* means "push everything
 // again", and the two must never be confused.
-func BuildPlan(ctx context.Context, routes []model.Route, linked []model.Account, store state.Store) (model.Plan, error) {
+func BuildPlan(ctx context.Context, routes []model.Route, linked []model.Account, store state.Store, crews crew.Snapshot) (model.Plan, error) {
 	var plan model.Plan
 
 	for _, account := range linked {
@@ -32,7 +35,7 @@ func BuildPlan(ctx context.Context, routes []model.Route, linked []model.Account
 
 		desired := map[string]model.Route{}
 		for _, route := range routes {
-			for _, target := range config.TargetsFor(route, linked) {
+			for _, target := range config.TargetsFor(route, linked, crews) {
 				if target == account.ID {
 					desired[route.Slug] = route
 				}

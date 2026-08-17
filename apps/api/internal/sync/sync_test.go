@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/wncservices/domestique/apps/api/internal/crew"
 	"github.com/wncservices/domestique/apps/api/internal/model"
 	"github.com/wncservices/domestique/apps/api/internal/state"
 )
@@ -16,14 +17,28 @@ func testAccounts() []model.Account {
 	}
 }
 
-// testRoutes is a route as the library hands one over. The diff engine only
-// reads the slug, the targets and the content hash, so there is no need to go
-// near a real library here.
+// testCrews is the shared-library scenario testRoutes' route is shared
+// into: rider "one" owns it and shares it to a crew rider "two" also
+// belongs to — the only way, since crews landed, for one route to reach
+// more than its owner's own accounts.
+func testCrews() crew.Snapshot {
+	return crew.Snapshot{
+		Crews:          []crew.Crew{{ID: "crew:test", Owner: "one"}},
+		ApprovedRiders: crew.MemberSet{"crew:test": {"one", "two"}},
+	}
+}
+
+// testRoutes is a route as the library hands one over, owned by "one" and
+// shared to testCrews' crew — the diff engine only reads the slug, the
+// targets, the owner and the content hash, so there is no need to go near
+// a real library here.
 func testRoutes(t *testing.T) []model.Route {
 	t.Helper()
+	shared := []string{"crew:test"}
 	return []model.Route{{
-		RouteMeta:   model.RouteMeta{Name: "Kemmelberg Loop"},
+		RouteMeta:   model.RouteMeta{Name: "Kemmelberg Loop", Targets: &shared},
 		Slug:        "kemmelberg-loop",
+		Owner:       "one",
 		ContentHash: "hash-v1",
 	}}
 }
@@ -39,7 +54,7 @@ func newStore(t *testing.T) state.Store {
 
 func TestBuildPlanCreatesUnsyncedRoutes(t *testing.T) {
 	routes, linked := testRoutes(t), testAccounts()
-	plan := mustPlan(t, routes, linked, newStore(t))
+	plan := mustPlan(t, routes, linked, newStore(t), testCrews())
 
 	changes := plan.Changes()
 	if want := len(routes) * len(linked); len(changes) != want {
@@ -55,7 +70,7 @@ func TestBuildPlanCreatesUnsyncedRoutes(t *testing.T) {
 func TestBuildPlanIsIdempotent(t *testing.T) {
 	routes, linked, store := testRoutes(t), testAccounts(), newStore(t)
 
-	for _, item := range mustPlan(t, routes, linked, store).Changes() {
+	for _, item := range mustPlan(t, routes, linked, store, testCrews()).Changes() {
 		if err := store.Record(t.Context(), state.Entry{
 			AccountID:   item.AccountID,
 			Slug:        item.Slug,
@@ -66,7 +81,7 @@ func TestBuildPlanIsIdempotent(t *testing.T) {
 		}
 	}
 
-	if changes := mustPlan(t, routes, linked, store).Changes(); len(changes) != 0 {
+	if changes := mustPlan(t, routes, linked, store, testCrews()).Changes(); len(changes) != 0 {
 		t.Fatalf("re-plan after a full push produced %d changes, want 0", len(changes))
 	}
 }
@@ -84,7 +99,7 @@ func TestBuildPlanDeletesRoutesDroppedFromLibrary(t *testing.T) {
 	}
 
 	var deletes int
-	for _, item := range mustPlan(t, routes, linked, store).Changes() {
+	for _, item := range mustPlan(t, routes, linked, store, testCrews()).Changes() {
 		if item.Op == model.OpDelete {
 			deletes++
 			if item.RemoteID != "remote-123" {
@@ -112,7 +127,7 @@ func TestBuildPlanUpdatesChangedRoutes(t *testing.T) {
 	}
 
 	var found bool
-	for _, item := range mustPlan(t, routes, linked, store).Changes() {
+	for _, item := range mustPlan(t, routes, linked, store, testCrews()).Changes() {
 		if item.Slug == route.Slug && item.AccountID == account {
 			found = true
 			if item.Op != model.OpUpdate {
@@ -128,15 +143,20 @@ func TestBuildPlanUpdatesChangedRoutes(t *testing.T) {
 	}
 }
 
-// A route that names its own targets must not be pushed anywhere else — this
-// is what keeps one rider's private routes off the other's head unit.
-func TestBuildPlanHonoursPerRouteTargets(t *testing.T) {
+// A route shared to a crew must not be pushed to an account outside that
+// crew's current membership — this is what keeps one rider's private
+// routes off a rider who isn't in the crew, integration-tested through
+// BuildPlan itself rather than only at TargetsFor's own level.
+func TestBuildPlanHonoursCrewMembership(t *testing.T) {
 	routes, linked, store := testRoutes(t), testAccounts(), newStore(t)
 
-	only := []string{"garmin:one"}
-	routes[0].Targets = &only
+	// Narrower than testCrews(): "two" is not a member here.
+	ownerOnly := crew.Snapshot{
+		Crews:          []crew.Crew{{ID: "crew:test", Owner: "one"}},
+		ApprovedRiders: crew.MemberSet{"crew:test": {"one"}},
+	}
 
-	for _, item := range mustPlan(t, routes, linked, store).Changes() {
+	for _, item := range mustPlan(t, routes, linked, store, ownerOnly).Changes() {
 		if item.Slug == routes[0].Slug && item.AccountID != "garmin:one" {
 			t.Errorf("targeted route planned for %s as well", item.AccountID)
 		}

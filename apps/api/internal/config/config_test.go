@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/wncservices/domestique/apps/api/internal/crew"
 	"github.com/wncservices/domestique/apps/api/internal/model"
 )
 
@@ -100,57 +101,144 @@ func TestValidateRejectsAnEmptyDSN(t *testing.T) {
 	}
 }
 
-func TestTargetsForDefaultsToEveryLinkedAccount(t *testing.T) {
+// A route with no targets used to reach every linked account, system-wide,
+// with no consent from whoever owned the other accounts. That was the gap
+// crews exist to close: the default now is the owner's own accounts only.
+func TestTargetsForDefaultsToTheOwnersOwnAccounts(t *testing.T) {
 	linked := []model.Account{
 		{ID: "garmin:one", Provider: model.ProviderGarmin, Rider: "one"},
 		{ID: "wahoo:two", Provider: model.ProviderWahoo, Rider: "two"},
 	}
+	noCrews := crew.Snapshot{}
 
-	// No targets named: every linked account, which is the useful default for
-	// a library two people share.
-	if got := TargetsFor(model.Route{}, linked); len(got) != 2 {
-		t.Errorf("targets = %v, want both linked accounts", got)
-	}
-
-	// Targets named: exactly those. This is what keeps one rider's private
-	// routes off the other's head unit.
-	only := []string{"garmin:one"}
-	route := model.Route{RouteMeta: model.RouteMeta{Targets: &only}}
-	if got := TargetsFor(route, linked); len(got) != 1 || got[0] != "garmin:one" {
+	route := model.Route{Owner: "one"}
+	if got := TargetsFor(route, linked, noCrews); len(got) != 1 || got[0] != "garmin:one" {
 		t.Errorf("targets = %v, want [garmin:one]", got)
 	}
 
-	// An explicitly empty list means nowhere, not "everywhere".
-	none := []string{}
-	route = model.Route{RouteMeta: model.RouteMeta{Targets: &none}}
-	if got := TargetsFor(route, linked); len(got) != 0 {
+	// An owner with no linked account of their own reaches nowhere.
+	route = model.Route{Owner: "nobody-links-anything"}
+	if got := TargetsFor(route, linked, noCrews); len(got) != 0 {
 		t.Errorf("targets = %v, want none", got)
 	}
 
-	// And with nothing linked there is nowhere to push, which is honest
-	// rather than an error.
-	if got := TargetsFor(model.Route{}, nil); len(got) != 0 {
-		t.Errorf("targets = %v, want none when nothing is linked", got)
+	// An unowned route (CLI-imported, or from before ownership was tracked)
+	// reaches nobody — the safe direction, not "everyone".
+	if got := TargetsFor(model.Route{}, linked, noCrews); len(got) != 0 {
+		t.Errorf("targets = %v, want none for an unowned route", got)
+	}
+
+	// An explicitly empty list still means nowhere, unchanged from before
+	// crews existed.
+	none := []string{}
+	route = model.Route{Owner: "one", RouteMeta: model.RouteMeta{Targets: &none}}
+	if got := TargetsFor(route, linked, noCrews); len(got) != 0 {
+		t.Errorf("targets = %v, want none", got)
+	}
+}
+
+// This is the property the whole feature exists for: a route shared to a
+// crew reaches exactly that crew's current approved members, and nobody
+// else — not a rider with a linked account who never joined.
+func TestTargetsForResolvesACrewToItsCurrentApprovedMembers(t *testing.T) {
+	linked := []model.Account{
+		{ID: "garmin:one", Provider: model.ProviderGarmin, Rider: "one"},
+		{ID: "wahoo:two", Provider: model.ProviderWahoo, Rider: "two"},
+		{ID: "garmin:three", Provider: model.ProviderGarmin, Rider: "three"},
+	}
+	crews := crew.Snapshot{
+		Crews:          []crew.Crew{{ID: "crew:sunday-club", Name: "Sunday Club", Owner: "one"}},
+		ApprovedRiders: crew.MemberSet{"crew:sunday-club": {"one", "two"}},
+	}
+
+	shared := []string{"crew:sunday-club"}
+	route := model.Route{Owner: "one", RouteMeta: model.RouteMeta{Targets: &shared}}
+
+	got := TargetsFor(route, linked, crews)
+	want := map[string]bool{"garmin:one": true, "wahoo:two": true}
+	if len(got) != len(want) {
+		t.Fatalf("targets = %v, want exactly %v", got, want)
+	}
+	for _, id := range got {
+		if !want[id] {
+			t.Errorf("unexpected target %q — rider three is not a crew member", id)
+		}
+	}
+}
+
+// Membership is resolved fresh on every call, never stored on the route —
+// removing a member must stop them appearing on the very next resolution,
+// with nobody touching the route itself.
+func TestTargetsForStopsReachingARemovedMember(t *testing.T) {
+	linked := []model.Account{
+		{ID: "garmin:one", Provider: model.ProviderGarmin, Rider: "one"},
+		{ID: "wahoo:two", Provider: model.ProviderWahoo, Rider: "two"},
+	}
+	shared := []string{"crew:sunday-club"}
+	route := model.Route{Owner: "one", RouteMeta: model.RouteMeta{Targets: &shared}}
+
+	before := crew.Snapshot{
+		Crews:          []crew.Crew{{ID: "crew:sunday-club", Owner: "one"}},
+		ApprovedRiders: crew.MemberSet{"crew:sunday-club": {"one", "two"}},
+	}
+	if got := TargetsFor(route, linked, before); len(got) != 2 {
+		t.Fatalf("targets = %v, want both members' accounts", got)
+	}
+
+	after := crew.Snapshot{
+		Crews:          []crew.Crew{{ID: "crew:sunday-club", Owner: "one"}},
+		ApprovedRiders: crew.MemberSet{"crew:sunday-club": {"one"}},
+	}
+	if got := TargetsFor(route, linked, after); len(got) != 1 || got[0] != "garmin:one" {
+		t.Errorf("targets = %v, want only the owner's own account once the member is gone", got)
+	}
+}
+
+// A route written before crews existed can hold a raw account id in
+// Targets. It must never resolve to that account — the concrete proof that
+// the migration story in the crew design holds: no script touches old
+// rows, the resolver's own fallback is the fix.
+func TestTargetsForIgnoresALegacyRawAccountID(t *testing.T) {
+	linked := []model.Account{
+		{ID: "garmin:one", Provider: model.ProviderGarmin, Rider: "one"},
+		{ID: "wahoo:two", Provider: model.ProviderWahoo, Rider: "two"},
+	}
+	legacy := []string{"wahoo:two"}
+	route := model.Route{Owner: "one", RouteMeta: model.RouteMeta{Targets: &legacy}}
+
+	got := TargetsFor(route, linked, crew.Snapshot{})
+	if len(got) != 1 || got[0] != "garmin:one" {
+		t.Errorf("targets = %v, want only the owner's own account — the legacy id must never resolve", got)
 	}
 }
 
 func TestUnknownTargetsAreReported(t *testing.T) {
-	linked := []model.Account{{ID: "garmin:one", Provider: model.ProviderGarmin, Rider: "one"}}
-
-	typo := []string{"garmin:onee"}
-	route := model.Route{RouteMeta: model.RouteMeta{Targets: &typo}}
-	if unknown := UnknownTargets(route, linked); len(unknown) != 1 {
-		t.Errorf("unknown = %v, want the typo flagged", unknown)
+	crews := crew.Snapshot{
+		Crews:          []crew.Crew{{ID: "crew:sunday-club", Owner: "one"}},
+		ApprovedRiders: crew.MemberSet{"crew:sunday-club": {"one"}},
 	}
 
-	good := []string{"garmin:one"}
-	route = model.Route{RouteMeta: model.RouteMeta{Targets: &good}}
-	if unknown := UnknownTargets(route, linked); len(unknown) != 0 {
+	unrelated := []string{"crew:does-not-exist"}
+	route := model.Route{Owner: "one", RouteMeta: model.RouteMeta{Targets: &unrelated}}
+	if unknown := UnknownTargets(route, crews); len(unknown) != 1 {
+		t.Errorf("unknown = %v, want the unknown crew flagged", unknown)
+	}
+
+	good := []string{"crew:sunday-club"}
+	route = model.Route{Owner: "one", RouteMeta: model.RouteMeta{Targets: &good}}
+	if unknown := UnknownTargets(route, crews); len(unknown) != 0 {
 		t.Errorf("unknown = %v, want none", unknown)
 	}
 
-	// A route with no targets inherits the linked set, so nothing is unknown.
-	if unknown := UnknownTargets(model.Route{}, linked); len(unknown) != 0 {
+	// A raw account id from before crews existed is unknown too.
+	legacy := []string{"garmin:one"}
+	route = model.Route{Owner: "one", RouteMeta: model.RouteMeta{Targets: &legacy}}
+	if unknown := UnknownTargets(route, crews); len(unknown) != 1 {
+		t.Errorf("unknown = %v, want the legacy account id flagged", unknown)
+	}
+
+	// A route with no targets has nothing to flag.
+	if unknown := UnknownTargets(model.Route{}, crews); len(unknown) != 0 {
 		t.Errorf("unknown = %v, want none", unknown)
 	}
 }
