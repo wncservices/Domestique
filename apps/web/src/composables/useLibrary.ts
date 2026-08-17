@@ -25,6 +25,13 @@ const error = ref('')
 let inFlight: Promise<void> | null = null
 
 async function load(): Promise<void> {
+  // Every page's onMounted calls refresh() again, so this reruns on each
+  // navigation, not just the first. Without resetting loading here, only
+  // the very first call ever showed a loading state — every later fetch
+  // ran invisibly, and a page whose own slice of data hadn't arrived yet
+  // (e.g. the first visit to a page this session) rendered its empty state
+  // before quietly swapping in real data a moment later.
+  loading.value = true
   error.value = ''
   try {
     // config() and me() answer for anonymous visitors too (both exempted
