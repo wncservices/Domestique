@@ -84,6 +84,10 @@ const enrolling = ref(false)
 const removingFactorId = ref('')
 const removeTarget = ref<MfaEnrollment | null>(null)
 const removingFactor = ref(false)
+// Set whenever a ticket URL might not have opened on its own — see
+// startMfaEnroll. A real <a> the rider clicks themselves always works,
+// unlike a second window.open attempt.
+const enrollUrl = ref('')
 
 const factorLabels: Record<string, string> = {
   totp: 'Authenticator app',
@@ -119,14 +123,27 @@ async function loadMfa() {
 // Opens Auth0's own hosted enrollment page in a new tab — nothing to embed,
 // and the rider is still on Settings in this tab when they're done, so a
 // manual refresh (rather than guessing when they've finished) picks it up.
+//
+// window.open here runs after an await, which means it is no longer inside
+// the click's own user-activation window by the time the response comes
+// back — browsers (Safari always, Chrome/Firefox often, depending on how
+// long the round trip took) silently block it instead of opening the tab.
+// There is no reliable cross-browser way to detect that after the fact
+// (a blocked call can return either null or a window that immediately
+// closes itself), so rather than guessing, a real link stays visible until
+// the rider clicks it themselves — an actual click on an <a> is always a
+// trusted user gesture, so it can never be blocked the way a second
+// window.open attempt could be.
 async function startMfaEnroll() {
   enrolling.value = true
+  enrollUrl.value = ''
   try {
     const { ticketUrl } = await api.enrollMfa()
     window.open(ticketUrl, '_blank', 'noopener')
+    enrollUrl.value = ticketUrl
     toast.add({
-      title: 'Finish setup in the new tab',
-      description: 'Come back and refresh once you\'ve added it.',
+      title: 'Enrollment ready',
+      description: 'Opened in a new tab — if you didn\'t see it, use the link below.',
       icon: 'i-lucide-external-link',
       color: 'info',
     })
@@ -315,16 +332,34 @@ onMounted(async () => {
           </div>
           <p v-else class="mb-2 text-xs text-dimmed">Nothing set up yet.</p>
 
-          <UButton
-            size="sm"
-            variant="soft"
-            icon="i-lucide-shield-plus"
-            class="mt-2"
-            :loading="enrolling"
-            @click="startMfaEnroll"
-          >
-            Add a factor
-          </UButton>
+          <div class="mt-2 flex flex-wrap items-center gap-2">
+            <UButton
+              size="sm"
+              variant="soft"
+              icon="i-lucide-shield-plus"
+              :loading="enrolling"
+              @click="startMfaEnroll"
+            >
+              Add a factor
+            </UButton>
+            <!-- The new tab this opens on click can be silently blocked by
+                 the browser (see startMfaEnroll's own comment) — this stays
+                 up as a guaranteed-to-work fallback until the rider uses it
+                 or starts a fresh attempt. -->
+            <UButton
+              v-if="enrollUrl"
+              :to="enrollUrl"
+              external
+              target="_blank"
+              rel="noopener noreferrer"
+              size="sm"
+              variant="outline"
+              color="info"
+              icon="i-lucide-external-link"
+            >
+              Continue in Auth0
+            </UButton>
+          </div>
         </div>
       </div>
     </UCard>
