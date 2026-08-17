@@ -23,6 +23,7 @@ import (
 	"github.com/wncservices/domestique/apps/api/internal/accounts"
 	"github.com/wncservices/domestique/apps/api/internal/auth"
 	"github.com/wncservices/domestique/apps/api/internal/config"
+	"github.com/wncservices/domestique/apps/api/internal/crew"
 	"github.com/wncservices/domestique/apps/api/internal/fitcourse"
 	"github.com/wncservices/domestique/apps/api/internal/garmin"
 	"github.com/wncservices/domestique/apps/api/internal/gpx"
@@ -120,6 +121,12 @@ type Server struct {
 	// own optional credentials.
 	People PeopleConnector
 
+	// Crew holds who trusts whom with their routes — see internal/crew.
+	// Unlike Links/Settings/People, no nil-degradation story: it needs no
+	// external credential, only the database every deployment already has,
+	// so it is wired unconditionally in runServe.
+	Crew *crew.Store
+
 	// pushMu serialises pushes: two concurrent reconciles against the same
 	// account would race on remote ids and on the state file.
 	pushMu sync.Mutex
@@ -174,6 +181,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/people", s.handlePeopleList)
 	mux.HandleFunc("POST /api/people", s.handlePeopleInvite)
 	mux.HandleFunc("PUT /api/people/{id}/role", s.handlePeopleSetRole)
+
+	mux.HandleFunc("POST /api/crews", s.handleCreateCrew)
+	mux.HandleFunc("GET /api/crews", s.handleListCrews)
+	mux.HandleFunc("DELETE /api/crews/{id}", s.handleDeleteCrew)
+	mux.HandleFunc("POST /api/crews/{id}/join", s.handleJoinCrew)
+	mux.HandleFunc("PUT /api/crews/{id}/members/{rider}", s.handleApproveCrewMember)
+	mux.HandleFunc("DELETE /api/crews/{id}/members/{rider}", s.handleRemoveCrewMember)
 
 	// Not under /api: these are browser navigations (redirects, a form post
 	// from the SPA), not JSON calls, so they sit outside the /api/ 404

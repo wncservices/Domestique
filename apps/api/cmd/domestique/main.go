@@ -29,6 +29,7 @@ import (
 	"github.com/wncservices/domestique/apps/api/internal/auth"
 	"github.com/wncservices/domestique/apps/api/internal/auth0mgmt"
 	"github.com/wncservices/domestique/apps/api/internal/config"
+	"github.com/wncservices/domestique/apps/api/internal/crew"
 	"github.com/wncservices/domestique/apps/api/internal/fitcourse"
 	"github.com/wncservices/domestique/apps/api/internal/garmin"
 	"github.com/wncservices/domestique/apps/api/internal/gpx"
@@ -636,11 +637,19 @@ func runServe(src *source.DB, cfg *config.Config, store state.Store, addr, webDi
 		return err
 	}
 
+	// Wired unconditionally, the same as Accounts — a crew needs nothing
+	// beyond the database every deployment already has.
+	crewStore, err := crew.UseDB(src.Conn(), src.DSN())
+	if err != nil {
+		return err
+	}
+
 	srv := &api.Server{
 		Source:   src,
 		Config:   cfg,
 		Store:    store,
 		Accounts: accountStore,
+		Crew:     crewStore,
 		Auth:     authenticator,
 		Log:      log,
 	}
