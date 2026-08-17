@@ -94,6 +94,11 @@ komoot:
   domestique komoot import [ids...]  import them (all planned routes if no ids)
 
   Credentials come from KOMOOT_EMAIL and KOMOOT_PASSWORD in the environment.
+  --owner RIDER    rider to record as the owner of imported routes — the CLI
+                   has no signed-in identity of its own, so this is how an
+                   imported route gets one at all. Omit it and the routes
+                   come in ownerless, same as before; an owner can still be
+                   claimed for them afterward from the web UI.
 `
 
 // version is set at build time: -ldflags="-X main.version=v1.2.3".
@@ -124,6 +129,7 @@ func run(args []string) error {
 	from := fs.String("from", "", "directory of GPX routes to import")
 	out := fs.String("out", "", "file to write (default <slug>.fit)")
 	cues := fs.Bool("cues", false, "add turn cues inferred from the track's shape")
+	owner := fs.String("owner", "", "komoot import: rider to record as the owner of imported routes")
 
 	var positional []string
 
@@ -195,7 +201,7 @@ func run(args []string) error {
 	case "serve":
 		return runServe(src, cfg, store, *addr, *webDir)
 	case "komoot":
-		return runKomoot(src, cfg, positional)
+		return runKomoot(src, cfg, positional, *owner)
 	case "fit":
 		return runFIT(src, positional, *out, *cues)
 	case "rename-rider":
@@ -303,7 +309,7 @@ func komootClient() (*komoot.Client, error) {
 	return client, nil
 }
 
-func runKomoot(dst *source.DB, cfg *config.Config, args []string) error {
+func runKomoot(dst *source.DB, cfg *config.Config, args []string, owner string) error {
 	sub := "list"
 	if len(args) > 0 {
 		sub = args[0]
@@ -351,10 +357,11 @@ func runKomoot(dst *source.DB, cfg *config.Config, args []string) error {
 				continue
 			}
 			if _, err := dst.Create(context.Background(), source.CreateRequest{
-				Filename: tour.Name + ".gpx",
-				Name:     tour.Name,
-				Tags:     []string{"komoot", "komoot:" + tour.ID},
-				GPX:      raw,
+				Filename:   tour.Name + ".gpx",
+				Name:       tour.Name,
+				Tags:       []string{"komoot", "komoot:" + tour.ID},
+				UploadedBy: owner,
+				GPX:        raw,
 			}); err != nil {
 				problems = append(problems, fmt.Sprintf("%s (%s): %v", tour.Name, tour.ID, err))
 				continue
