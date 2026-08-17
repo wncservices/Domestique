@@ -84,6 +84,67 @@ func TestEncodeRoundTrip(t *testing.T) {
 	}
 }
 
+func TestDecodeRoundTrip(t *testing.T) {
+	points := []gpx.Point{
+		{Lat: 50.7920, Lon: 2.8180, Ele: 42, HasEle: true},
+		{Lat: 50.7982, Lon: 2.8344, Ele: 128, HasEle: true},
+		{Lat: 50.8007, Lon: 2.8437, Ele: 139, HasEle: true},
+	}
+
+	raw, err := Encode(points, Options{Name: "Kemmelberg Loop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Decode(raw)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if len(got) != len(points) {
+		t.Fatalf("got %d points, want %d", len(got), len(points))
+	}
+	for i, p := range got {
+		if math.Abs(p.Lat-points[i].Lat) > 1e-6 {
+			t.Errorf("point %d lat = %.7f, want %.7f", i, p.Lat, points[i].Lat)
+		}
+		if math.Abs(p.Lon-points[i].Lon) > 1e-6 {
+			t.Errorf("point %d lon = %.7f, want %.7f", i, p.Lon, points[i].Lon)
+		}
+		if !p.HasEle {
+			t.Errorf("point %d lost its elevation", i)
+		}
+		// Altitude's scale is 1/5 m — a shade more than 0.2 tolerates rounding.
+		if math.Abs(p.Ele-points[i].Ele) > 0.25 {
+			t.Errorf("point %d ele = %.2f, want %.2f", i, p.Ele, points[i].Ele)
+		}
+	}
+}
+
+func TestDecodeWithoutElevationLeavesHasEleFalse(t *testing.T) {
+	points := []gpx.Point{{Lat: 50.79, Lon: 2.81}, {Lat: 50.80, Lon: 2.84}}
+
+	raw, err := Encode(points, Options{Name: "No elevation"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Decode(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, p := range got {
+		if p.HasEle {
+			t.Errorf("point %d reported an elevation Encode never wrote: %v", i, p)
+		}
+	}
+}
+
+func TestDecodeRejectsGarbage(t *testing.T) {
+	if _, err := Decode([]byte("not a fit file")); err == nil {
+		t.Fatal("garbage bytes decoded without error")
+	}
+}
+
 func TestEncodeCarriesLapSummary(t *testing.T) {
 	points := straightNorth(5, 100)
 

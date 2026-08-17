@@ -17,60 +17,75 @@ import (
 // Every failure here is "this rider cannot push to Wahoo," never "the push
 // is broken" — one account failing must leave the rest of the plan alone,
 // the same contract garminCourses keeps.
+func (s *Server) wahooRoutes(ctx context.Context, rider string) (targets.WahooRoutes, error) {
+	token, err := s.wahooAccessToken(ctx, rider)
+	if err != nil {
+		return nil, err
+	}
+	return wahooSessionClient{client: s.Wahoo, token: token}, nil
+}
+
+// wahooAccessToken resolves one rider's working Wahoo access token,
+// refreshing it first if it has expired. The one "get me a token for this
+// rider" step both push (wahooRoutes, above) and sync-back
+// (wahooroutes.go's wahooSessionFor) need — pulled out here since it used
+// to live only inside wahooRoutes, before sync-back needed the token on its
+// own without also getting wrapped in wahooSessionClient.
 //
 // Unlike Garmin, an expired token is not the end of the connection: Wahoo
 // issued a refresh token for exactly this, so a stale access token is
 // refreshed transparently here rather than asking the rider to reconnect —
 // reconnecting is reserved for when the refresh token itself no longer
 // works (revoked, or Wahoo expired it for inactivity).
-func (s *Server) wahooRoutes(ctx context.Context, rider string) (targets.WahooRoutes, error) {
+func (s *Server) wahooAccessToken(ctx context.Context, rider string) (string, error) {
 	if s.Wahoo == nil {
-		return nil, errors.New("this deployment has no Wahoo app credentials configured")
+		return "", errors.New("this deployment has no Wahoo app credentials configured")
 	}
 	if s.Links == nil || rider == "" {
-		return nil, errors.New("no Wahoo sign-in to push with")
+		return "", errors.New("no Wahoo sign-in to use")
 	}
 
 	_, secret, err := s.Links.Secret(wahooProvider, rider)
 	if err != nil {
-		return nil, fmt.Errorf("%s has not connected Wahoo: %w", rider, err)
+		return "", fmt.Errorf("%s has not connected Wahoo: %w", rider, err)
 	}
 
 	var session wahoo.Session
 	if err := json.Unmarshal([]byte(secret), &session); err != nil {
-		return nil, fmt.Errorf("the stored Wahoo sign-in for %s is unreadable: %w", rider, err)
+		return "", fmt.Errorf("the stored Wahoo sign-in for %s is unreadable: %w", rider, err)
 	}
 
-	if session.Expired() {
-		refreshed, err := s.Wahoo.Refresh(ctx, session.RefreshToken)
-		if err != nil {
-			return nil, fmt.Errorf("%s's Wahoo sign-in could not be refreshed: reconnect it in Settings: %w", rider, err)
-		}
-		session = refreshed
-
-		// #nosec G117 -- gosec flags AccessToken as a marshaled secret-looking
-		// field; this JSON exists only long enough to reach providerlink.Save
-		// a few lines down, which seals it with the app's AES-256-GCM key
-		// before it reaches the database. Same false positive as
-		// handleWahooCallback's identical marshal in wahooconnect.go.
-		sealed, err := json.Marshal(session)
-		if err != nil {
-			return nil, fmt.Errorf("encoding the refreshed wahoo session: %w", err)
-		}
-		// Save is a full upsert, not a patch — Email/DisplayName have to be
-		// carried forward explicitly or a refresh silently blanks them.
-		link, err := s.Links.Get(wahooProvider, rider)
-		if err != nil {
-			return nil, fmt.Errorf("re-reading the wahoo connection for %s: %w", rider, err)
-		}
-		if _, err := s.Links.Save(wahooProvider, rider, providerlink.Connection{
-			Email: link.Email, DisplayName: link.DisplayName, Secret: string(sealed),
-		}); err != nil {
-			return nil, fmt.Errorf("storing the refreshed wahoo session: %w", err)
-		}
+	if !session.Expired() {
+		return session.AccessToken, nil
 	}
 
-	return wahooSessionClient{client: s.Wahoo, token: session.AccessToken}, nil
+	refreshed, err := s.Wahoo.Refresh(ctx, session.RefreshToken)
+	if err != nil {
+		return "", fmt.Errorf("%s's Wahoo sign-in could not be refreshed: reconnect it in Settings: %w", rider, err)
+	}
+
+	// #nosec G117 -- gosec flags AccessToken as a marshaled secret-looking
+	// field; this JSON exists only long enough to reach providerlink.Save
+	// a few lines down, which seals it with the app's AES-256-GCM key
+	// before it reaches the database. Same false positive as
+	// handleWahooCallback's identical marshal in wahooconnect.go.
+	sealed, err := json.Marshal(refreshed)
+	if err != nil {
+		return "", fmt.Errorf("encoding the refreshed wahoo session: %w", err)
+	}
+	// Save is a full upsert, not a patch — Email/DisplayName have to be
+	// carried forward explicitly or a refresh silently blanks them.
+	link, err := s.Links.Get(wahooProvider, rider)
+	if err != nil {
+		return "", fmt.Errorf("re-reading the wahoo connection for %s: %w", rider, err)
+	}
+	if _, err := s.Links.Save(wahooProvider, rider, providerlink.Connection{
+		Email: link.Email, DisplayName: link.DisplayName, Secret: string(sealed),
+	}); err != nil {
+		return "", fmt.Errorf("storing the refreshed wahoo session: %w", err)
+	}
+
+	return refreshed.AccessToken, nil
 }
 
 // wahooSessionClient adapts *wahoo.Client (whose route methods take an

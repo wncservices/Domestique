@@ -1,0 +1,181 @@
+<script setup lang="ts">
+import { computed, onMounted, ref } from 'vue'
+import { useToast } from '@nuxt/ui/composables'
+import { api } from '@/api/client'
+import type { WahooConnection, WahooDuplicateGroup } from '@/api/types'
+
+const emit = defineEmits<{ changed: [] }>()
+
+const toast = useToast()
+
+// Fetched independently rather than taken as a prop — WahooRoutesPanel does
+// the same, and the two panels are otherwise unrelated components on the
+// same page; sharing this one field isn't worth coupling them.
+const connection = ref<WahooConnection>({ connected: false, canConnect: false })
+const groups = ref<WahooDuplicateGroup[]>([])
+const loading = ref(false)
+const deleting = ref(false)
+const error = ref('')
+const confirmingDelete = ref(false)
+
+// Which route ids are marked to go. A default, not a decision made for the
+// rider: every checkbox stays editable, this only picks a sensible starting
+// point so cleaning up several groups isn't several individual judgment calls.
+const toDelete = ref<Set<string>>(new Set())
+
+/** Keeps the oldest copy of each group, marks the rest for deletion — the
+ *  oldest is the one most likely to already be synced elsewhere (a device,
+ *  a route in the library) and the repeats are what accumulated afterwards. */
+function defaultSelection(groups: WahooDuplicateGroup[]): Set<string> {
+  const ids = new Set<string>()
+  for (const group of groups) {
+    const sorted = [...group.routes].sort((a, b) => (a.updatedAt ?? '').localeCompare(b.updatedAt ?? ''))
+    for (const route of sorted.slice(1)) ids.add(route.id)
+  }
+  return ids
+}
+
+async function load() {
+  loading.value = true
+  error.value = ''
+  try {
+    groups.value = await api.wahooRouteDuplicates()
+    toDelete.value = defaultSelection(groups.value)
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    loading.value = false
+  }
+}
+
+function toggle(id: string, on: boolean) {
+  const next = new Set(toDelete.value)
+  if (on) next.add(id)
+  else next.delete(id)
+  toDelete.value = next
+}
+
+const selectedCount = computed(() => toDelete.value.size)
+
+async function deleteSelected() {
+  if (!selectedCount.value) return
+  confirmingDelete.value = false
+
+  deleting.value = true
+  error.value = ''
+  const ids = [...toDelete.value]
+  const failures: string[] = []
+  for (const id of ids) {
+    try {
+      await api.wahooRouteDelete(id)
+    } catch (err) {
+      failures.push(err instanceof Error ? err.message : String(err))
+    }
+  }
+  deleting.value = false
+
+  const succeeded = ids.length - failures.length
+  toast.add({
+    title: `Deleted ${succeeded} route${succeeded === 1 ? '' : 's'}`,
+    description: failures.length ? `${failures.length} could not be deleted.` : undefined,
+    icon: 'i-lucide-trash-2',
+    color: failures.length ? 'warning' : 'success',
+  })
+  if (failures.length) error.value = failures[0]
+
+  await load()
+  emit('changed')
+}
+
+onMounted(async () => {
+  try {
+    connection.value = await api.wahooConnection()
+  } catch {
+    return
+  }
+  if (connection.value.connected) await load()
+})
+</script>
+
+<template>
+  <UCard v-if="connection.connected && (loading || groups.length)" variant="outline">
+    <template #header>
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 class="flex items-center gap-2 font-medium text-highlighted">
+            <UIcon name="i-lucide-copy-x" />
+            Duplicate routes on Wahoo
+          </h2>
+          <p class="text-sm text-muted">
+            <template v-if="loading">Checking…</template>
+            <template v-else>
+              {{ groups.length }} route{{ groups.length === 1 ? '' : 's' }} pushed more than once
+            </template>
+          </p>
+        </div>
+        <div class="flex gap-2">
+          <UButton icon="i-lucide-refresh-cw" color="neutral" variant="ghost" :loading="loading" @click="load">
+            Refresh
+          </UButton>
+          <UButton
+            icon="i-lucide-trash-2"
+            color="error"
+            :loading="deleting"
+            :disabled="!selectedCount"
+            @click="confirmingDelete = true"
+          >
+            Delete {{ selectedCount }} selected
+          </UButton>
+        </div>
+      </div>
+    </template>
+
+    <UAlert
+      v-if="error"
+      color="error"
+      variant="subtle"
+      icon="i-lucide-triangle-alert"
+      :description="error"
+      class="mb-4"
+    />
+
+    <div class="flex flex-col gap-4">
+      <div v-for="group in groups" :key="group.name" class="rounded-lg border border-default p-3">
+        <p class="mb-2 text-sm font-medium text-highlighted">{{ group.name }}</p>
+        <div class="flex flex-col divide-y divide-default">
+          <label
+            v-for="route in group.routes"
+            :key="route.id"
+            class="flex flex-wrap items-center gap-3 py-1.5 first:pt-0 last:pb-0"
+          >
+            <UCheckbox
+              :model-value="toDelete.has(route.id)"
+              @update:model-value="(v: boolean | 'indeterminate') => toggle(route.id, v === true)"
+            />
+            <span class="flex-1 text-sm text-muted">
+              {{ (route.distanceM / 1000).toFixed(1) }} km
+              · {{ Math.round(route.ascentM) }} m
+              <span v-if="route.updatedAt">· {{ new Date(route.updatedAt).toLocaleDateString() }}</span>
+            </span>
+            <UBadge v-if="!toDelete.has(route.id)" color="success" variant="subtle" size="sm">keep</UBadge>
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <UModal v-model:open="confirmingDelete" title="Delete these routes from Wahoo?">
+      <template #body>
+        <p class="text-sm text-toned">
+          {{ selectedCount }} route{{ selectedCount === 1 ? '' : 's' }} will be removed from
+          Wahoo. This cannot be undone.
+        </p>
+      </template>
+      <template #footer>
+        <div class="flex justify-end gap-2">
+          <UButton color="neutral" variant="ghost" @click="confirmingDelete = false">Cancel</UButton>
+          <UButton color="error" :loading="deleting" @click="deleteSelected">Delete</UButton>
+        </div>
+      </template>
+    </UModal>
+  </UCard>
+</template>

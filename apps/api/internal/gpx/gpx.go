@@ -157,6 +157,62 @@ func ContentHash(points []Point, name, description string) string {
 	return hex.EncodeToString(h.Sum(nil))[:32]
 }
 
+// renderDoc mirrors just enough of the GPX schema to write a planned route —
+// the write side of gpxDoc, kept separate since a `*string` element pointer
+// (gpxPoint.Ele) reads absent-vs-empty cleanly but marshals a nil into
+// nothing useful; Render always has a real elevation or none at all, never
+// something in between worth a pointer over.
+type renderDoc struct {
+	XMLName xml.Name `xml:"gpx"`
+	Version string   `xml:"version,attr"`
+	Creator string   `xml:"creator,attr"`
+	NS      string   `xml:"xmlns,attr"`
+	Trk     struct {
+		Name string `xml:"name"`
+		Seg  struct {
+			Points []renderPoint `xml:"trkpt"`
+		} `xml:"trkseg"`
+	} `xml:"trk"`
+}
+
+type renderPoint struct {
+	Lat float64  `xml:"lat,attr"`
+	Lon float64  `xml:"lon,attr"`
+	Ele *float64 `xml:"ele,omitempty"`
+}
+
+// Render writes points as a minimal GPX 1.1 track — the reverse of
+// ParsePoints. For a track that did not start life as GPX (a FIT course
+// decoded via fitcourse.Decode, for instance) but still needs to become one
+// to reach source.CreateRequest.GPX, the one input every route in the
+// library is built from.
+func Render(name string, points []Point) ([]byte, error) {
+	if len(points) < 2 {
+		return nil, fmt.Errorf("gpx: need at least 2 points to render, got %d", len(points))
+	}
+
+	var doc renderDoc
+	doc.Version = "1.1"
+	doc.Creator = "Domestique"
+	doc.NS = "http://www.topografix.com/GPX/1/1"
+	doc.Trk.Name = name
+
+	for _, p := range points {
+		point := renderPoint{Lat: p.Lat, Lon: p.Lon}
+		if p.HasEle {
+			ele := p.Ele
+			point.Ele = &ele
+		}
+		doc.Trk.Seg.Points = append(doc.Trk.Seg.Points, point)
+	}
+
+	out, err := xml.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("gpx: render: %w", err)
+	}
+	return append([]byte(xml.Header), out...), nil
+}
+
 // DistanceM is the great-circle distance between two points, in metres.
 func DistanceM(a, b Point) float64 { return haversineM(a, b) }
 

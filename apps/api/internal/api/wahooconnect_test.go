@@ -3,6 +3,7 @@ package api_test
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -42,6 +43,33 @@ type fakeWahooUpstream struct {
 	updatedRoutes map[string]url.Values
 	deletedRoutes []string
 	routeAuth     []string
+
+	// listedRoutes is what GET /v1/routes answers with — set directly by
+	// sync-back tests, JSON-encoded verbatim so a test can shape exactly
+	// the fields it cares about (deleted, external_id, ...) without this
+	// fake needing its own copy of wahoo.Route.
+	listedRoutes []map[string]any
+	// files serves the FIT bytes addRoute pointed a listed route's
+	// file.url at — this fake's stand-in for Wahoo's CDN, same host as the
+	// API itself so DownloadRoute's own-host check attaches the bearer
+	// token the same way a real cross-host CDN link would not (that case
+	// is covered at the wahoo package's own level, in wahoo_test.go).
+	files    map[string][]byte
+	fileAuth []string
+}
+
+// addRoute appends a route to what GET /v1/routes returns, pointing its
+// file at fitBytes served from this same fake server. route's "id" key
+// decides the file's name; callers set every other field GET /v1/routes
+// hands back that the test cares about.
+func (f *fakeWahooUpstream) addRoute(route map[string]any, fitBytes []byte) {
+	name := fmt.Sprintf("route-%v.fit", route["id"])
+	route["file"] = map[string]string{"url": f.server.URL + "/files/" + name}
+	if f.files == nil {
+		f.files = map[string][]byte{}
+	}
+	f.files[name] = fitBytes
+	f.listedRoutes = append(f.listedRoutes, route)
 }
 
 func newFakeWahooUpstream(t *testing.T) *fakeWahooUpstream {
@@ -64,6 +92,14 @@ func newFakeWahooUpstream(t *testing.T) *fakeWahooUpstream {
 		_ = json.NewEncoder(w).Encode(wahoo.Profile{ID: 7, Email: "rider@example.test", First: "Rider", Last: "One"})
 	})
 	mux.HandleFunc("/v1/routes", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			out := f.listedRoutes
+			if out == nil {
+				out = []map[string]any{}
+			}
+			_ = json.NewEncoder(w).Encode(out)
+			return
+		}
 		f.routeAuth = append(f.routeAuth, r.Header.Get("Authorization"))
 		if err := r.ParseForm(); err != nil {
 			t.Fatal(err)
@@ -72,6 +108,16 @@ func newFakeWahooUpstream(t *testing.T) *fakeWahooUpstream {
 		id := f.nextRouteID
 		f.nextRouteID++
 		_ = json.NewEncoder(w).Encode(map[string]any{"id": id})
+	})
+	mux.HandleFunc("/files/", func(w http.ResponseWriter, r *http.Request) {
+		f.fileAuth = append(f.fileAuth, r.Header.Get("Authorization"))
+		name := strings.TrimPrefix(r.URL.Path, "/files/")
+		data, ok := f.files[name]
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write(data)
 	})
 	mux.HandleFunc("/v1/routes/", func(w http.ResponseWriter, r *http.Request) {
 		id := strings.TrimPrefix(r.URL.Path, "/v1/routes/")
@@ -100,6 +146,7 @@ type wahooHarness struct {
 	box      *secrets.Box
 	links    *providerlink.Store
 	accounts *accounts.Store
+	store    state.Store
 	upstream *fakeWahooUpstream
 	db       *source.DB
 }
@@ -182,18 +229,28 @@ func newWahooHarness(t *testing.T, withKey bool) *wahooHarness {
 
 	return &wahooHarness{
 		t: t, client: client, base: server.URL, box: box,
-		links: links, accounts: accountStore, upstream: upstream, db: db,
+		links: links, accounts: accountStore, store: stateStore, upstream: upstream, db: db,
 	}
 }
 
-func (h *wahooHarness) as(user, groups, method, path string) *http.Response {
+// as issues a request as a user in the given groups. body is optional and
+// variadic so every existing no-body call site stays untouched — passing
+// one string sends it as a JSON request body.
+func (h *wahooHarness) as(user, groups, method, path string, body ...string) *http.Response {
 	h.t.Helper()
-	req, err := http.NewRequest(method, h.base+path, nil)
+	var reader io.Reader
+	if len(body) > 0 && body[0] != "" {
+		reader = strings.NewReader(body[0])
+	}
+	req, err := http.NewRequest(method, h.base+path, reader)
 	if err != nil {
 		h.t.Fatal(err)
 	}
 	req.Header.Set("Remote-User", user)
 	req.Header.Set("Remote-Groups", groups)
+	if reader != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	resp, err := h.client.Do(req)
 	if err != nil {
 		h.t.Fatal(err)

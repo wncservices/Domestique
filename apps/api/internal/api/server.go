@@ -182,6 +182,10 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /api/wahoo/connection", s.handleWahooConnection)
 	mux.HandleFunc("DELETE /api/wahoo/connection", s.handleWahooDisconnect)
+	mux.HandleFunc("GET /api/wahoo/routes", s.handleWahooRouteList)
+	mux.HandleFunc("GET /api/wahoo/routes/duplicates", s.handleWahooRouteDuplicates)
+	mux.HandleFunc("DELETE /api/wahoo/routes/{id}", s.handleWahooRouteDelete)
+	mux.HandleFunc("POST /api/wahoo/routes/import", s.handleWahooRouteImport)
 
 	mux.HandleFunc("GET /api/people", s.handlePeopleList)
 	mux.HandleFunc("POST /api/people", s.handlePeopleInvite)

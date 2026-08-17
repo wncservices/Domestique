@@ -304,6 +304,154 @@ func (c *Client) DeleteRoute(ctx context.Context, accessToken, id string) error 
 	return nil
 }
 
+// Route is one route already on the rider's Wahoo account — GET /v1/routes'
+// shape, trimmed to what this app needs. Deleted routes never reach here:
+// ListRoutes filters route[deleted]==true out itself, the same reasoning
+// Komoot's Tours filters out recorded rides by default — a caller that
+// wants "what's actually here to sync back" should not have to re-derive
+// that filter itself.
+type Route struct {
+	ID          string
+	ExternalID  string
+	Name        string
+	Description string
+	DistanceM   float64
+	AscentM     float64
+	StartLat    float64
+	StartLng    float64
+	// FileURL is where the FIT course lives — a CDN link, not this client's
+	// own API host, so DownloadRoute deliberately does not attach the
+	// bearer token used to fetch this list. See DownloadRoute's own doc
+	// comment.
+	FileURL   string
+	UpdatedAt time.Time
+	CreatedAt time.Time
+}
+
+// routeListItem is GET /v1/routes' JSON shape, verified against the Cloud
+// API docs (cloud-api.wahooligan.com): id, user_id, name, description,
+// file.url, workout_type_family_id, external_id, provider_updated_at,
+// deleted, start_lat, start_lng, distance, ascent, descent, updated_at,
+// created_at. Only the fields this app uses are decoded.
+type routeListItem struct {
+	ID          int64  `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	File        struct {
+		URL string `json:"url"`
+	} `json:"file"`
+	ExternalID string  `json:"external_id"`
+	Deleted    bool    `json:"deleted"`
+	StartLat   float64 `json:"start_lat"`
+	StartLng   float64 `json:"start_lng"`
+	Distance   float64 `json:"distance"`
+	Ascent     float64 `json:"ascent"`
+	UpdatedAt  string  `json:"updated_at"`
+	CreatedAt  string  `json:"created_at"`
+}
+
+// ListRoutes lists what is already on the rider's Wahoo account — the sync-
+// back direction, as distinct from CreateRoute/UpdateRoute/DeleteRoute
+// which push the other way.
+func (c *Client) ListRoutes(ctx context.Context, accessToken string) ([]Route, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.APIBase+"/v1/routes", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("wahoo: list routes: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return nil, fmt.Errorf("wahoo: reading route list: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("wahoo: list routes returned %d: %s", resp.StatusCode, snippet(body))
+	}
+
+	var items []routeListItem
+	if err := json.Unmarshal(body, &items); err != nil {
+		return nil, fmt.Errorf("wahoo: unreadable route list: %s", snippet(body))
+	}
+
+	routes := make([]Route, 0, len(items))
+	for _, it := range items {
+		if it.Deleted {
+			continue
+		}
+		updated, _ := time.Parse(time.RFC3339, it.UpdatedAt)
+		created, _ := time.Parse(time.RFC3339, it.CreatedAt)
+		routes = append(routes, Route{
+			ID:          strconv.FormatInt(it.ID, 10),
+			ExternalID:  it.ExternalID,
+			Name:        it.Name,
+			Description: it.Description,
+			DistanceM:   it.Distance,
+			AscentM:     it.Ascent,
+			StartLat:    it.StartLat,
+			StartLng:    it.StartLng,
+			FileURL:     it.File.URL,
+			UpdatedAt:   updated,
+			CreatedAt:   created,
+		})
+	}
+	return routes, nil
+}
+
+// DownloadRoute fetches the FIT course for one route, from the CDN url
+// ListRoutes returned in Route.FileURL.
+//
+// Deliberately does not attach an Authorization header unless fileURL is on
+// this client's own API host. The CDN Wahoo hands the file back from lives
+// on a different host than api.wahooligan.com (cdn.wahooligan.com in the
+// Cloud API docs' own example), and sending this rider's bearer token to
+// whatever host happens to show up in a response field is exactly the
+// SSRF-with-credential-disclosure shape internal/komoot's allowedHost check
+// exists to close off — see that package's doc comment for the fuller
+// version of this reasoning, which applies here even though nothing here
+// follows a paginated chain of links the way Komoot's client does. A plain
+// GET is what a CDN link is for; if the file host ever does need auth, that
+// will surface as a clear 401/403 rather than a silent credential leak.
+func (c *Client) DownloadRoute(ctx context.Context, accessToken, fileURL string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fileURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("wahoo: building route download request: %w", err)
+	}
+	if sameHost(c.APIBase, fileURL) {
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+	}
+
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("wahoo: download route: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+	if err != nil {
+		return nil, fmt.Errorf("wahoo: reading route download: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("wahoo: route download returned %d: %s", resp.StatusCode, snippet(body))
+	}
+	return body, nil
+}
+
+func sameHost(base, target string) bool {
+	b, err1 := url.Parse(base)
+	t, err2 := url.Parse(target)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	return strings.EqualFold(b.Host, t.Host)
+}
+
 // routeRequest is Create and Update's shared shape: same form-encoded body,
 // same response parsing, different method and URL.
 //
