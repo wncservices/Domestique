@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useLibrary } from '@/composables/useLibrary'
 import LibraryDuplicatesPanel from '@/components/LibraryDuplicatesPanel.vue'
 import PlanPanel from '@/components/PlanPanel.vue'
@@ -31,6 +31,31 @@ const visibleRoutes = computed(() => {
       route.description.toLowerCase().includes(needle) ||
       route.tags.some((tag) => tag.toLowerCase().includes(needle)),
   )
+})
+
+// Client-side pagination over the already-fetched array: the library is one
+// GET already paid for on every page load, and every server-side consumer
+// of the same List() (CLI plan/push/validate, the API's own plan/push) needs
+// the whole thing anyway, so slicing here is far cheaper than threading
+// limit/offset all the way through that shared method.
+const pageSize = 24
+const page = ref(1)
+
+// A new search result set (or a route disappearing off the current page,
+// e.g. after a delete) can leave `page` pointing past the end — reset to a
+// page that actually exists rather than showing an empty grid with visible
+// results left unshown above it.
+watch(visibleRoutes, () => {
+  const maxPage = Math.max(1, Math.ceil(visibleRoutes.value.length / pageSize))
+  if (page.value > maxPage) page.value = maxPage
+})
+watch(search, () => {
+  page.value = 1
+})
+
+const pagedRoutes = computed(() => {
+  const start = (page.value - 1) * pageSize
+  return visibleRoutes.value.slice(start, start + pageSize)
 })
 
 async function push(items: { accountId: string; slug: string }[]) {
@@ -110,18 +135,28 @@ async function push(items: { accountId: string; slug: string }[]) {
         :description="`No route matches “${search}”.`"
       />
 
-      <div v-else class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        <RouteCard
-          v-for="route in visibleRoutes"
-          :key="route.slug"
-          :route="route"
-          :accounts="accounts"
-          :writable="canUpload"
-          :me="me"
-          @deleted="refresh"
-          @updated="refresh"
+      <template v-else>
+        <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <RouteCard
+            v-for="route in pagedRoutes"
+            :key="route.slug"
+            :route="route"
+            :accounts="accounts"
+            :writable="canUpload"
+            :me="me"
+            @deleted="refresh"
+            @updated="refresh"
+          />
+        </div>
+
+        <UPagination
+          v-if="visibleRoutes.length > pageSize"
+          v-model:page="page"
+          :total="visibleRoutes.length"
+          :items-per-page="pageSize"
+          class="mt-6 justify-center"
         />
-      </div>
+      </template>
     </section>
   </div>
 </template>
