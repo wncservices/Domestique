@@ -54,6 +54,7 @@ function lastSync(device: GarminDevice): string {
 const linking = ref<Provider | null>(null)
 const unlinking = ref('')
 const error = ref('')
+const unlinkTarget = ref<Account | null>(null)
 
 const providers: { id: Provider; name: string; icon: string }[] = [
   { id: 'garmin', name: 'Garmin', icon: 'i-lucide-watch' },
@@ -101,8 +102,7 @@ async function link(provider: Provider) {
 }
 
 async function unlink(account: Account) {
-  if (!confirm(`Unlink ${account.label}? Routes will stop syncing to it.`)) return
-
+  unlinkTarget.value = null
   unlinking.value = account.id
   error.value = ''
   try {
@@ -208,7 +208,7 @@ async function unlink(account: Account) {
           size="xs"
           :loading="unlinking === account.id"
           aria-label="Unlink"
-          @click="unlink(account)"
+          @click="unlinkTarget = account"
         />
 
         <!-- The units Connect will sync a pushed course to. Shown under the
@@ -246,5 +246,25 @@ async function unlink(account: Account) {
     />
 
     <GarminSignIn v-model:open="signingIn" :connection="props.garmin" @changed="onGarminChanged" />
+
+    <UModal :open="!!unlinkTarget" title="Unlink this account?" @update:open="unlinkTarget = null">
+      <template #body>
+        <p class="text-sm text-toned">
+          “{{ unlinkTarget?.label }}” will stop syncing routes once unlinked.
+        </p>
+      </template>
+      <template #footer>
+        <div class="flex justify-end gap-2">
+          <UButton color="neutral" variant="ghost" @click="unlinkTarget = null">Cancel</UButton>
+          <UButton
+            color="error"
+            :loading="!!unlinkTarget && unlinking === unlinkTarget.id"
+            @click="unlinkTarget && unlink(unlinkTarget)"
+          >
+            Unlink
+          </UButton>
+        </div>
+      </template>
+    </UModal>
   </UCard>
 </template>

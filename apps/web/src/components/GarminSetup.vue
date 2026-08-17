@@ -20,6 +20,7 @@ const secret = ref('')
 const busy = ref(false)
 const error = ref('')
 const open = ref(false)
+const confirmingClear = ref(false)
 
 async function save() {
   busy.value = true
@@ -38,10 +39,7 @@ async function save() {
 }
 
 async function clear() {
-  if (!confirm('Remove the stored Garmin app keys? Riders will not be able to sign in unless the deployment supplies them another way.')) {
-    return
-  }
-
+  confirmingClear.value = false
   busy.value = true
   error.value = ''
   try {
@@ -112,7 +110,7 @@ async function clear() {
             variant="ghost"
             size="sm"
             :loading="busy"
-            @click="clear"
+            @click="confirmingClear = true"
           >
             Remove
           </UButton>
@@ -156,5 +154,19 @@ async function clear() {
         </div>
       </form>
     </template>
+
+    <UModal v-model:open="confirmingClear" title="Remove Garmin app keys?">
+      <template #body>
+        <p class="text-sm text-toned">
+          Riders will not be able to sign in unless the deployment supplies them another way.
+        </p>
+      </template>
+      <template #footer>
+        <div class="flex justify-end gap-2">
+          <UButton color="neutral" variant="ghost" @click="confirmingClear = false">Cancel</UButton>
+          <UButton color="error" :loading="busy" @click="clear">Remove</UButton>
+        </div>
+      </template>
+    </UModal>
   </div>
 </template>
