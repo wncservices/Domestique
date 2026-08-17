@@ -6,8 +6,18 @@ import { api } from '@/api/client'
 import ColorModeToggle from '@/components/ColorModeToggle.vue'
 import { useLibrary } from '@/composables/useLibrary'
 
-const { me, accounts, routes, error, refresh, totalDistance, totalAscent, canUpload, canManagePeople } =
-  useLibrary()
+const {
+  me,
+  accounts,
+  routes,
+  error,
+  refresh,
+  totalDistance,
+  totalAscent,
+  canUpload,
+  canManagePeople,
+  canManageCrews,
+} = useLibrary()
 const route = useRoute()
 const toast = useToast()
 
@@ -67,6 +77,7 @@ const links = computed(() =>
     { to: '/', label: 'Library', icon: 'i-lucide-route' },
     canUpload.value ? { to: '/add', label: 'Add route', icon: 'i-lucide-plus' } : null,
     { to: '/settings', label: 'Settings', icon: 'i-lucide-settings' },
+    canManageCrews.value ? { to: '/crews', label: 'Crews', icon: 'i-lucide-users-round' } : null,
     canManagePeople.value ? { to: '/people', label: 'People', icon: 'i-lucide-users' } : null,
   ].filter((link) => link !== null),
 )

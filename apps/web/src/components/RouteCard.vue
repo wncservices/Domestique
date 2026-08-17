@@ -55,8 +55,13 @@ const editingTargets = ref(false)
 const draftTargets = ref<string[]>([])
 const savingTargets = ref(false)
 
+// Only crews the route's *owner* currently belongs to are legal targets —
+// own devices are implicit and never need naming, and the server rejects
+// anything else at write time. Not every account in the deployment: that
+// was the picker before crews existed, and it is exactly what let a rider
+// push straight onto a stranger's device with no consent.
 const targetOptions = computed(() =>
-  props.accounts.map((a) => ({ label: a.label || a.id, value: a.id })),
+  props.route.ownerCrews.map((c) => ({ label: c.name, value: c.id })),
 )
 
 function openTargets() {
@@ -181,8 +186,21 @@ async function remove() {
         size="xs"
         aria-label="Download GPX"
       />
+      <UTooltip
+        v-if="canEdit && !targetOptions.length"
+        text="Join or create a crew first to share this route beyond your own devices"
+      >
+        <UButton
+          icon="i-lucide-watch"
+          color="neutral"
+          variant="ghost"
+          size="xs"
+          disabled
+          aria-label="Choose target devices"
+        />
+      </UTooltip>
       <UButton
-        v-if="canEdit && targetOptions.length"
+        v-else-if="canEdit"
         icon="i-lucide-watch"
         color="neutral"
         variant="ghost"

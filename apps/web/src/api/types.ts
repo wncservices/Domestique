@@ -46,6 +46,7 @@ export type Permission =
   | 'garmin:sync'
   | 'accounts:manage'
   | 'people:manage'
+  | 'crews:manage'
 
 export interface Me {
   /** Whether *this* request is signed in — not whether the deployment has
@@ -65,6 +66,37 @@ export interface Me {
    *  and always absent under authMode oidc, which signs out through
    *  api.logout() instead: the app holds that session and ends it itself. */
   logoutUrl?: string
+}
+
+/** One rider's standing with a crew. */
+export interface CrewMember {
+  rider: string
+  status: 'pending' | 'approved'
+}
+
+/** A set of riders who trust each other with their routes — the only way a
+ *  route may reach an account beyond its own owner's. See RouteCard.vue's
+ *  target picker and CrewsPage.vue. */
+export interface Crew {
+  id: string
+  name: string
+  owner: string
+  /** Whether the caller may manage this crew — its owner, or an admin.
+   *  Members is only ever present when this is true. */
+  mine: boolean
+  /** The caller's own standing with this crew — always present, even for a
+   *  crew that isn't theirs, so the UI knows whether to offer "Request to
+   *  join" or show "Pending". */
+  membershipStatus: 'none' | 'pending' | 'approved'
+  /** The approved roster size. Always visible — a rider needs it to judge
+   *  whether a crew is worth requesting to join. */
+  memberCount: number
+  /** Pending and approved members together. Only present when `mine`. */
+  members?: CrewMember[]
+}
+
+export interface CreateCrewRequest {
+  name: string
 }
 
 export interface KomootTour {
@@ -167,9 +199,17 @@ export interface Route {
   contentHash: string
   origin: string
   updatedAt: string
+  /** Crew ids this route is shared to — own devices are implicit and never
+   *  listed here. Empty/absent means the owner's own accounts only. */
   targets: string[]
-  /** Targets naming accounts that do not exist — usually a typo. */
+  /** Entries in `targets` that no longer resolve — a crew since deleted,
+   *  one the owner left, or (from before crews existed) a raw account id.
+   *  Never syncs anywhere either way. */
   unknownTargets: string[]
+  /** Crews the route's *owner* currently, approvedly, belongs to — what a
+   *  target picker may legally offer, correct even when an admin is
+   *  editing someone else's route. */
+  ownerCrews: { id: string; name: string }[]
   syncState: SyncStatus[]
 }
 
