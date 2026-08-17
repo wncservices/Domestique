@@ -195,20 +195,37 @@ func (s *Server) riderLink(r *http.Request) (providerlink.Link, error) {
 // environment: if somebody went to the trouble of connecting their account,
 // importing from a different account would be a surprising thing to do.
 func (s *Server) komootFor(r *http.Request) KomootImporter {
-	if s.Links != nil && s.Connector != nil {
-		rider := auth.FromContext(r.Context()).User
-		if rider != "" {
-			userID, token, err := s.Links.Secret(komootProvider, rider)
-			switch {
-			case err == nil:
-				return s.Connector.Resume(userID, token)
-			case errors.Is(err, providerlink.ErrNotFound), errors.Is(err, secrets.ErrNoKey):
-				// Nothing stored, or nothing readable. Fall through to the
-				// shared client rather than failing the request.
-			default:
-				s.logger().Warn("komoot credentials unusable", "rider", rider, "err", err)
-			}
-		}
+	if client := s.komootOwnConnectionFor(r); client != nil {
+		return client
 	}
 	return s.Komoot
+}
+
+// komootOwnConnectionFor resolves only the caller's own personal Komoot
+// connection — never s.Komoot, the deployment-wide shared client komootFor
+// falls back to when nobody has connected personally. Destructive
+// operations (deleting a tour) use this instead of komootFor: "nobody
+// connected personally, so act against the shared account" is the right
+// default for listing and importing — every rider can already see what a
+// shared account offers — but exactly the wrong one for delete, which would
+// otherwise let any rider who never authenticated against the shared
+// account still remove tours from it.
+func (s *Server) komootOwnConnectionFor(r *http.Request) KomootImporter {
+	if s.Links == nil || s.Connector == nil {
+		return nil
+	}
+	rider := auth.FromContext(r.Context()).User
+	if rider == "" {
+		return nil
+	}
+	userID, token, err := s.Links.Secret(komootProvider, rider)
+	switch {
+	case err == nil:
+		return s.Connector.Resume(userID, token)
+	case errors.Is(err, providerlink.ErrNotFound), errors.Is(err, secrets.ErrNoKey):
+		return nil
+	default:
+		s.logger().Warn("komoot credentials unusable", "rider", rider, "err", err)
+		return nil
+	}
 }

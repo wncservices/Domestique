@@ -177,9 +177,15 @@ func (s *Server) handleKomootTourDelete(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	client := s.komootFor(r)
+	// Deliberately the caller's own connection only, never the
+	// deployment-wide shared account komootFor would fall back to — see
+	// komootOwnConnectionFor's own doc comment for why delete is different
+	// from listing and importing here.
+	client := s.komootOwnConnectionFor(r)
 	if client == nil {
-		s.komootDisabled(w)
+		writeJSON(w, http.StatusPreconditionFailed, map[string]string{
+			"error": "Not signed in to Komoot — connect your account in Settings",
+		})
 		return
 	}
 
