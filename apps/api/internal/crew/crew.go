@@ -405,6 +405,29 @@ func (s *Store) Members(ctx context.Context, crewID string) ([]Member, error) {
 	return out, rows.Err()
 }
 
+// HasRider reports whether rider holds any row in crew_members, pending or
+// approved, across every crew — not just approved ones like Snapshot's own
+// ApprovedRiders, since a rider mid-request is still a real rider nobody
+// else may become. Used to check a normalized identity is not already
+// somebody's before a rename is allowed to claim it.
+func (s *Store) HasRider(ctx context.Context, rider string) (bool, error) {
+	rider = normalizeRider(rider)
+	if rider == "" {
+		return false, nil
+	}
+	var exists int
+	err := s.db.QueryRowContext(ctx, s.dialect.Rebind(
+		`SELECT 1 FROM crew_members WHERE rider = ? LIMIT 1`), rider).Scan(&exists)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("check crew membership: %w", err)
+	default:
+		return true, nil
+	}
+}
+
 // RequestJoin records a rider's request to join a crew. It is a no-op
 // error, not silent, if the rider already has a pending or approved row —
 // callers should not double-request over an existing one.
