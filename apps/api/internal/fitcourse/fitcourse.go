@@ -25,11 +25,14 @@ package fitcourse
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"math"
 	"time"
 
+	"github.com/muktihari/fit/decoder"
 	"github.com/muktihari/fit/encoder"
+	"github.com/muktihari/fit/profile/basetype"
 	"github.com/muktihari/fit/profile/filedef"
 	"github.com/muktihari/fit/profile/mesgdef"
 	"github.com/muktihari/fit/profile/typedef"
@@ -141,6 +144,38 @@ func Encode(points []gpx.Point, opts Options) ([]byte, error) {
 		return nil, fmt.Errorf("fitcourse: encode: %w", err)
 	}
 	return buf.Bytes(), nil
+}
+
+// Decode reads a FIT course file back into its track — the reverse of
+// Encode. Used to sync a route already on a rider's Wahoo account back into
+// the library: Wahoo hands back FIT for a route the same way it takes FIT to
+// create one (see this file's own doc comment for why Wahoo speaks FIT and
+// not GPX at all).
+//
+// Only position and altitude survive the round trip — the same two fields
+// Encode ever wrote per point. Name, sport and course points are Wahoo's
+// concern to report separately (its route object already carries a name),
+// not this function's.
+func Decode(data []byte) ([]gpx.Point, error) {
+	fitFile, err := decoder.New(bytes.NewReader(data)).Decode()
+	if err != nil {
+		return nil, fmt.Errorf("fitcourse: decode: %w", err)
+	}
+
+	course := filedef.NewCourse(fitFile.Messages...)
+	if len(course.Records) == 0 {
+		return nil, errors.New("fitcourse: no track points in course")
+	}
+
+	points := make([]gpx.Point, 0, len(course.Records))
+	for _, r := range course.Records {
+		p := gpx.Point{Lat: r.PositionLatDegrees(), Lon: r.PositionLongDegrees()}
+		if r.Altitude != basetype.Uint16Invalid {
+			p.Ele, p.HasEle = r.AltitudeScaled(), true
+		}
+		points = append(points, p)
+	}
+	return points, nil
 }
 
 // Turns infers turn cues for a track, computing the distances itself.

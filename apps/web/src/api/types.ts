@@ -44,6 +44,7 @@ export type Permission =
   | 'sync:push'
   | 'komoot:import'
   | 'garmin:sync'
+  | 'wahoo:sync'
   | 'accounts:manage'
   | 'people:manage'
   | 'crews:manage'
@@ -326,6 +327,37 @@ export interface GarminConnection {
   unavailable?: string
   /** Set when what is missing is the consumer, which an admin can supply. */
   consumer?: GarminConsumer
+}
+
+/** One route already on the rider's own Wahoo account — sync-back, the
+ *  reverse direction from pushing. */
+export interface WahooRoute {
+  id: string
+  name: string
+  distanceM: number
+  ascentM: number
+  updatedAt?: string
+  /** Already tracked as something this app pushed to (or pulled from) this
+   *  account — exact match, not a guess. */
+  imported: boolean
+  /** Set when a library route looks like the same ride, either by an exact
+   *  route[external_id] match (this app stamps every route it pushes with
+   *  the library slug) or, failing that, by distance and start point —
+   *  a hint, not a certainty, the same idea as Garmin's own field. */
+  possibleDuplicate?: string
+}
+
+export interface WahooRouteImportResult {
+  imported: string[]
+  skipped: Record<string, string>
+}
+
+/** Wahoo routes that look like repeated copies of each other — same name,
+ *  same distance — found by comparing the account's own route list against
+ *  itself, not against the library. */
+export interface WahooDuplicateGroup {
+  name: string
+  routes: WahooRoute[]
 }
 
 /** One rider's authorization of their own Wahoo account.

@@ -5,9 +5,19 @@ import GarminDuplicatesPanel from '@/components/GarminDuplicatesPanel.vue'
 import KomootDuplicatesPanel from '@/components/KomootDuplicatesPanel.vue'
 import KomootPanel from '@/components/KomootPanel.vue'
 import UploadPanel from '@/components/UploadPanel.vue'
+import WahooRoutesPanel from '@/components/WahooRoutesPanel.vue'
+import WahooDuplicatesPanel from '@/components/WahooDuplicatesPanel.vue'
 
-const { accounts, config, canUpload, canImportKomoot, canSyncGarmin, komootEnabled, refresh } =
-  useLibrary()
+const {
+  accounts,
+  config,
+  canUpload,
+  canImportKomoot,
+  canSyncGarmin,
+  canSyncWahoo,
+  komootEnabled,
+  refresh,
+} = useLibrary()
 </script>
 
 <template>
@@ -32,5 +42,8 @@ const { accounts, config, canUpload, canImportKomoot, canSyncGarmin, komootEnabl
 
     <GarminCoursesPanel v-if="canSyncGarmin" @imported="refresh" />
     <GarminDuplicatesPanel v-if="canSyncGarmin" />
+
+    <WahooRoutesPanel v-if="canSyncWahoo" @imported="refresh" />
+    <WahooDuplicatesPanel v-if="canSyncWahoo" />
   </div>
 </template>

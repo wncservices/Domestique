@@ -15,6 +15,9 @@ import type {
   KomootDuplicateGroup,
   KomootTour,
   WahooConnection,
+  WahooDuplicateGroup,
+  WahooRoute,
+  WahooRouteImportResult,
   LinkAccountRequest,
   Me,
   MfaEnrollment,
@@ -143,6 +146,20 @@ export const api = {
   wahooConnection: () => request<WahooConnection>('/api/wahoo/connection'),
   wahooDisconnect: () =>
     request<WahooConnection>('/api/wahoo/connection', { method: 'DELETE' }),
+
+  wahooRoutes: () => request<WahooRoute[]>('/api/wahoo/routes'),
+  wahooRouteImport: (routeIds: string[]) =>
+    request<WahooRouteImportResult>('/api/wahoo/routes/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ routeIds }),
+    }),
+  wahooRouteDuplicates: () =>
+    request<WahooDuplicateGroup[]>('/api/wahoo/routes/duplicates'),
+  wahooRouteDelete: (id: string) =>
+    request<{ status: string }>(`/api/wahoo/routes/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
 
   garminConsumer: () => request<GarminConsumer>('/api/garmin/consumer'),
   setGarminConsumer: (key: string, secret: string) =>

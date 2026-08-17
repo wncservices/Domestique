@@ -53,6 +53,41 @@ func TestReadPointsRejectsTooFewPoints(t *testing.T) {
 	}
 }
 
+func TestRenderRoundTripsThroughParsePoints(t *testing.T) {
+	points := []Point{
+		{Lat: 50.7920, Lon: 2.8180, Ele: 42, HasEle: true},
+		{Lat: 50.7982, Lon: 2.8344},
+		{Lat: 50.8007, Lon: 2.8437, Ele: 139, HasEle: true},
+	}
+
+	raw, err := Render("Kemmelberg Loop", points)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+
+	got, err := ParsePoints(raw)
+	if err != nil {
+		t.Fatalf("our own parser rejected Render's output: %v\n%s", err, raw)
+	}
+	if len(got) != len(points) {
+		t.Fatalf("got %d points, want %d", len(got), len(points))
+	}
+	for i, p := range got {
+		if p.Lat != points[i].Lat || p.Lon != points[i].Lon {
+			t.Errorf("point %d = %+v, want %+v", i, p, points[i])
+		}
+		if p.HasEle != points[i].HasEle || (p.HasEle && p.Ele != points[i].Ele) {
+			t.Errorf("point %d elevation = %+v, want %+v", i, p, points[i])
+		}
+	}
+}
+
+func TestRenderRejectsTooFewPoints(t *testing.T) {
+	if _, err := Render("Too short", []Point{{Lat: 50, Lon: 3}}); err == nil {
+		t.Fatal("a single-point track rendered without error")
+	}
+}
+
 func TestComputeStats(t *testing.T) {
 	points, err := ReadPoints(writeGPX(t, twoPointGPX))
 	if err != nil {

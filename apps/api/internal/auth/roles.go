@@ -64,6 +64,9 @@ const (
 	// own Garmin account — sync-back, as distinct from PermPush, which sends
 	// the library's routes the other way.
 	PermGarminSync Permission = "garmin:sync"
+	// PermWahooSync is the same sync-back relationship PermGarminSync has to
+	// PermPush, for a rider's own Wahoo account.
+	PermWahooSync Permission = "wahoo:sync"
 	// PermManageAccounts is linking and unlinking head units. A rider manages
 	// their own; touching somebody else's additionally needs PermEditAny.
 	PermManageAccounts Permission = "accounts:manage"
@@ -94,6 +97,7 @@ var minimumRole = map[Permission]Role{
 	PermPush:           RoleRider,
 	PermKomootSync:     RoleRider,
 	PermGarminSync:     RoleRider,
+	PermWahooSync:      RoleRider,
 	PermManageAccounts: RoleRider,
 	PermManageCrews:    RoleRider,
 	PermEditAny:        RoleAdmin,
@@ -117,7 +121,7 @@ func (r Role) Permissions() []Permission {
 	var out []Permission
 	for _, p := range []Permission{
 		PermReadRoutes, PermUploadRoute, PermEditOwn, PermEditAny, PermPush,
-		PermKomootSync, PermGarminSync, PermManageAccounts, PermManageCrews,
+		PermKomootSync, PermGarminSync, PermWahooSync, PermManageAccounts, PermManageCrews,
 		PermManageSettings, PermManagePeople,
 	} {
 		if r.Can(p) {

@@ -292,6 +292,115 @@ func TestDeleteRouteSurfacesAnUpstreamFailure(t *testing.T) {
 	}
 }
 
+func TestListRoutesFiltersDeletedAndParsesFields(t *testing.T) {
+	var gotAuth string
+	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/routes" {
+			t.Errorf("%s %s, want GET /v1/routes", r.Method, r.URL.Path)
+		}
+		gotAuth = r.Header.Get("Authorization")
+		_, _ = w.Write([]byte(`[
+			{
+				"id": 5, "name": "Kemmelberg", "description": "hilly",
+				"file": {"url": "https://cdn.example.test/route.fit"},
+				"external_id": "kemmelberg-loop", "deleted": false,
+				"start_lat": 50.79, "start_lng": 2.81,
+				"distance": 5500.0, "ascent": 100.0,
+				"updated_at": "2026-08-01T10:00:00Z", "created_at": "2026-07-01T10:00:00Z"
+			},
+			{
+				"id": 6, "name": "Gone", "deleted": true,
+				"file": {"url": "https://cdn.example.test/gone.fit"}
+			}
+		]`))
+	})
+
+	routes, err := c.ListRoutes(t.Context(), "at")
+	if err != nil {
+		t.Fatalf("ListRoutes: %v", err)
+	}
+	if gotAuth != "Bearer at" {
+		t.Errorf("Authorization = %q", gotAuth)
+	}
+	if len(routes) != 1 {
+		t.Fatalf("got %d routes, want 1 (the deleted one filtered out)", len(routes))
+	}
+
+	got := routes[0]
+	if got.ID != "5" || got.ExternalID != "kemmelberg-loop" || got.Name != "Kemmelberg" {
+		t.Errorf("route = %+v", got)
+	}
+	if got.FileURL != "https://cdn.example.test/route.fit" {
+		t.Errorf("file url = %q", got.FileURL)
+	}
+	if got.DistanceM != 5500 || got.AscentM != 100 {
+		t.Errorf("stats = %+v", got)
+	}
+	if got.UpdatedAt.IsZero() {
+		t.Error("updated_at not parsed")
+	}
+}
+
+func TestListRoutesSurfacesAnUpstreamFailure(t *testing.T) {
+	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	if _, err := c.ListRoutes(t.Context(), "at"); err == nil {
+		t.Fatal("expected an error for a 401")
+	}
+}
+
+func TestDownloadRouteFromTheAPIHostCarriesAuth(t *testing.T) {
+	var gotAuth string
+	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		_, _ = w.Write([]byte("fit-bytes"))
+	})
+
+	got, err := c.DownloadRoute(t.Context(), "at", c.APIBase+"/v1/routes/5/file")
+	if err != nil {
+		t.Fatalf("DownloadRoute: %v", err)
+	}
+	if string(got) != "fit-bytes" {
+		t.Errorf("body = %q", got)
+	}
+	if gotAuth != "Bearer at" {
+		t.Errorf("Authorization to our own API host = %q, want Bearer at", gotAuth)
+	}
+}
+
+// The CDN link Wahoo hands back is a different host from the API. Sending
+// this rider's bearer token there would leak it to whatever host happens to
+// show up in a response field — see DownloadRoute's own doc comment.
+func TestDownloadRouteNeverSendsTheTokenToAnotherHost(t *testing.T) {
+	var gotAuth string
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		_, _ = w.Write([]byte("fit-bytes"))
+	}))
+	t.Cleanup(cdn.Close)
+
+	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("should never reach the API host — the file lives on the CDN")
+	})
+
+	if _, err := c.DownloadRoute(t.Context(), "at", cdn.URL+"/route.fit"); err != nil {
+		t.Fatalf("DownloadRoute: %v", err)
+	}
+	if gotAuth != "" {
+		t.Errorf("Authorization leaked to a different host: %q", gotAuth)
+	}
+}
+
+func TestDownloadRouteSurfacesAnUpstreamFailure(t *testing.T) {
+	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	if _, err := c.DownloadRoute(t.Context(), "at", c.APIBase+"/v1/routes/5/file"); err == nil {
+		t.Fatal("expected an error for a 404")
+	}
+}
+
 func TestCreateRouteRejectsAnEmptyFile(t *testing.T) {
 	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("should not have reached the upstream at all")
