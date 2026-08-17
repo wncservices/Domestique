@@ -5,7 +5,7 @@ import { api } from '@/api/client'
 import type { Crew } from '@/api/types'
 import { useLibrary } from '@/composables/useLibrary'
 
-const { crews, accounts, routes, me, loading, error, refresh } = useLibrary()
+const { crews, accounts, routes, me, loading, error, refresh, can } = useLibrary()
 const toast = useToast()
 
 // Every rider identifier the app already knows about, from data already
@@ -184,6 +184,99 @@ async function deleteCrew() {
 
 const pendingFor = (crew: Crew) => crew.members?.filter((m) => m.status === 'pending') ?? []
 const approvedFor = (crew: Crew) => crew.members?.filter((m) => m.status === 'approved') ?? []
+
+// --- auto-share (owner/admin only: changes what the crew does for every
+// member's future uploads, not just the caller's own membership) ---
+
+const togglingAutoShare = ref('')
+
+async function toggleAutoShare(crew: Crew, autoShare: boolean) {
+  togglingAutoShare.value = crew.id
+  try {
+    await api.setCrewAutoShare(crew.id, autoShare)
+    toast.add({
+      title: autoShare ? `New uploads will default to ${crew.name}` : `Auto-share turned off for ${crew.name}`,
+      icon: 'i-lucide-share-2',
+      color: 'success',
+    })
+    await refresh()
+  } catch (err) {
+    toast.add({
+      title: 'Could not change auto-share',
+      description: err instanceof Error ? err.message : String(err),
+      icon: 'i-lucide-triangle-alert',
+      color: 'error',
+    })
+  } finally {
+    togglingAutoShare.value = ''
+  }
+}
+
+// --- share your own routes to a crew you belong to (existing routes;
+// auto-share above only ever affects uploads made after it's turned on) ---
+
+const shareTarget = ref<Crew | null>(null)
+const shareSelections = ref<string[]>([])
+const sharing = ref(false)
+
+// Only routes the viewer may actually retarget — mirrors RouteCard's own
+// canEdit rule (routes:edit-any, or routes:edit-own on a route they own).
+// Someone else's routes aren't offered here even if they're also a member;
+// the route's owner is the one who shares it.
+const myRoutes = computed(() =>
+  routes.value.filter(
+    (r) =>
+      can('routes:edit-any') ||
+      (can('routes:edit-own') && !!r.owner && r.owner.toLowerCase() === (me.value?.user ?? '').toLowerCase()),
+  ),
+)
+
+const shareOptions = computed(() => myRoutes.value.map((r) => ({ label: r.name, value: r.slug })))
+
+function openShare(crew: Crew) {
+  shareSelections.value = myRoutes.value.filter((r) => r.targets.includes(crew.id)).map((r) => r.slug)
+  shareTarget.value = crew
+}
+
+async function saveShare() {
+  const crew = shareTarget.value
+  if (!crew) return
+  sharing.value = true
+
+  const changed = myRoutes.value.filter((r) => r.targets.includes(crew.id) !== shareSelections.value.includes(r.slug))
+  const failures: string[] = []
+  await Promise.all(
+    changed.map(async (route) => {
+      const wanted = shareSelections.value.includes(route.slug)
+      const nextTargets = wanted
+        ? [...route.targets, crew.id]
+        : route.targets.filter((t) => t !== crew.id)
+      try {
+        await api.updateTargets(route.slug, nextTargets)
+      } catch {
+        failures.push(route.name)
+      }
+    }),
+  )
+
+  sharing.value = false
+  if (failures.length) {
+    toast.add({
+      title: `Could not update ${failures.length} route${failures.length === 1 ? '' : 's'}`,
+      description: failures.join(', '),
+      icon: 'i-lucide-triangle-alert',
+      color: 'error',
+    })
+  } else if (changed.length) {
+    toast.add({
+      title: `Updated ${changed.length} route${changed.length === 1 ? '' : 's'}`,
+      icon: 'i-lucide-check',
+      color: 'success',
+    })
+  }
+  shareTarget.value = null
+  await refresh()
+}
 </script>
 
 <template>
@@ -224,6 +317,20 @@ const approvedFor = (crew: Crew) => crew.members?.filter((m) => m.status === 'ap
             <UBadge color="neutral" variant="subtle" size="sm">
               {{ crew.memberCount }} member{{ crew.memberCount === 1 ? '' : 's' }}
             </UBadge>
+
+            <!-- Any approved member can share their own routes here, not
+                 just the owner — sharing a route only needs the route's
+                 owner to belong to the crew, the same rule the server
+                 enforces at write time. -->
+            <UButton
+              v-if="crew.membershipStatus === 'approved'"
+              size="sm"
+              variant="soft"
+              icon="i-lucide-route"
+              @click="openShare(crew)"
+            >
+              Share your routes
+            </UButton>
 
             <template v-if="!crew.mine">
               <UButton
@@ -267,6 +374,19 @@ const approvedFor = (crew: Crew) => crew.members?.filter((m) => m.status === 'ap
 
           <!-- Owner's own view: add someone directly, see who's waiting, who's in. -->
           <div v-if="crew.mine" class="ml-1 flex flex-col gap-2 border-l-2 border-default pl-4">
+            <UTooltip
+              text="When on, any new route a member uploads with no explicit sharing choice of their own is shared here automatically. Existing routes are never touched by this — turning it on doesn't reach back and share anything already uploaded."
+            >
+              <label class="flex w-fit items-center gap-2 text-sm text-toned">
+                <USwitch
+                  :model-value="crew.autoShare"
+                  :loading="togglingAutoShare === crew.id"
+                  @update:model-value="(v: boolean) => toggleAutoShare(crew, v)"
+                />
+                Auto-share new uploads
+              </label>
+            </UTooltip>
+
             <form
               class="flex items-center gap-2"
               @submit.prevent="addMember(crew)"
@@ -395,6 +515,37 @@ const approvedFor = (crew: Crew) => crew.members?.filter((m) => m.status === 'ap
             Cancel
           </UButton>
           <UButton color="error" :loading="deleting" @click="deleteCrew">Delete</UButton>
+        </div>
+      </template>
+    </UModal>
+
+    <UModal
+      :open="!!shareTarget"
+      :title="`Share routes to ${shareTarget?.name ?? ''}`"
+      @update:open="shareTarget = null"
+    >
+      <template #body>
+        <div class="flex flex-col gap-3">
+          <p class="text-sm text-toned">
+            Which of your own routes should reach {{ shareTarget?.name }}?
+          </p>
+          <UCheckboxGroup
+            v-if="shareOptions.length"
+            v-model="shareSelections"
+            :items="shareOptions"
+            class="max-h-72 overflow-y-auto"
+          />
+          <p v-else class="text-xs text-dimmed">
+            You don't have any routes of your own to share yet.
+          </p>
+        </div>
+      </template>
+      <template #footer>
+        <div class="flex justify-end gap-2">
+          <UButton color="neutral" variant="ghost" :disabled="sharing" @click="shareTarget = null">
+            Cancel
+          </UButton>
+          <UButton :loading="sharing" :disabled="!shareOptions.length" @click="saveShare">Save</UButton>
         </div>
       </template>
     </UModal>

@@ -210,6 +210,12 @@ export const api = {
     }),
   deleteCrew: (id: string) =>
     request<{ status: string }>(`/api/crews/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  setCrewAutoShare: (id: string, autoShare: boolean) =>
+    request<Crew>(`/api/crews/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ autoShare }),
+    }),
   joinCrew: (id: string) =>
     request<Crew>(`/api/crews/${encodeURIComponent(id)}/join`, { method: 'POST' }),
   /** The owner's other way in: enrolls a rider directly, without them ever

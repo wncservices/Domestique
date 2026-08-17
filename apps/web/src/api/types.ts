@@ -91,6 +91,11 @@ export interface Crew {
   /** The approved roster size. Always visible — a rider needs it to judge
    *  whether a crew is worth requesting to join. */
   memberCount: number
+  /** Whether a member uploading with no explicit target choice gets it
+   *  shared here by default. Visible to everyone, not just `mine` — it
+   *  changes what *any* member's own uploads default to, not only the
+   *  owner's. Only the owner or an admin may change it. */
+  autoShare: boolean
   /** Pending and approved members together. Only present when `mine`. */
   members?: CrewMember[]
 }

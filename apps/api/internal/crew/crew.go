@@ -49,9 +49,15 @@ const (
 
 // Crew is a set of riders who trust each other with their routes.
 type Crew struct {
-	ID        string
-	Name      string
-	Owner     string
+	ID    string
+	Name  string
+	Owner string
+	// AutoShare, when true, makes this crew a default target: a member who
+	// uploads a route with no explicit sharing choice of their own gets it
+	// shared here automatically, instead of reaching only their own
+	// accounts. It never touches a route that already exists, and it never
+	// overrides an explicit choice — only fills in when the rider made none.
+	AutoShare bool
 	CreatedAt string
 	UpdatedAt string
 }
@@ -103,6 +109,7 @@ CREATE TABLE IF NOT EXISTS crews (
     id         TEXT PRIMARY KEY,
     name       TEXT NOT NULL,
     owner      TEXT NOT NULL,
+    auto_share INTEGER NOT NULL DEFAULT FALSE,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -130,7 +137,29 @@ func UseDB(db *sql.DB, dsn string) (*Store, error) {
 	if _, err := db.Exec(schema()); err != nil {
 		return nil, fmt.Errorf("migrate crew tables: %w", err)
 	}
+	if err := store.addAutoShareColumn(); err != nil {
+		return nil, fmt.Errorf("migrate crew tables: %w", err)
+	}
 	return store, nil
+}
+
+// addAutoShareColumn adds auto_share to a crews table that predates the
+// column — CREATE TABLE IF NOT EXISTS above is a no-op against a table that
+// already exists, so a genuinely new column needs its own step. This runs
+// every startup; once the column is there, the ALTER fails with a
+// database-specific "it's already there" error (SQLite says "duplicate
+// column name", Postgres says "already exists") that is the expected
+// steady state, not a real failure — anything else still surfaces.
+func (s *Store) addAutoShareColumn() error {
+	_, err := s.db.Exec(`ALTER TABLE crews ADD COLUMN auto_share INTEGER NOT NULL DEFAULT FALSE`)
+	if err == nil {
+		return nil
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "duplicate column") || strings.Contains(msg, "already exists") {
+		return nil
+	}
+	return err
 }
 
 // idPrefix marks a target as a crew rather than the raw account ids
@@ -213,8 +242,8 @@ func (s *Store) uniqueID(ctx context.Context, base string) (string, error) {
 func (s *Store) Get(ctx context.Context, id string) (Crew, error) {
 	var c Crew
 	err := s.db.QueryRowContext(ctx, s.dialect.Rebind(`
-        SELECT id, name, owner, created_at, updated_at FROM crews WHERE id = ?`), id).
-		Scan(&c.ID, &c.Name, &c.Owner, &c.CreatedAt, &c.UpdatedAt)
+        SELECT id, name, owner, auto_share, created_at, updated_at FROM crews WHERE id = ?`), id).
+		Scan(&c.ID, &c.Name, &c.Owner, &c.AutoShare, &c.CreatedAt, &c.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Crew{}, ErrNotFound
 	}
@@ -224,7 +253,7 @@ func (s *Store) Get(ctx context.Context, id string) (Crew, error) {
 // List returns every crew, in a stable order.
 func (s *Store) List(ctx context.Context) ([]Crew, error) {
 	rows, err := s.db.QueryContext(ctx, `
-        SELECT id, name, owner, created_at, updated_at FROM crews ORDER BY name`)
+        SELECT id, name, owner, auto_share, created_at, updated_at FROM crews ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("read crews: %w", err)
 	}
@@ -233,12 +262,44 @@ func (s *Store) List(ctx context.Context) ([]Crew, error) {
 	var out []Crew
 	for rows.Next() {
 		var c Crew
-		if err := rows.Scan(&c.ID, &c.Name, &c.Owner, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.Name, &c.Owner, &c.AutoShare, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("read crews: %w", err)
 		}
 		out = append(out, c)
 	}
 	return out, rows.Err()
+}
+
+// SetAutoShare flips whether this crew is a default target for its
+// members' future uploads. Existing routes are never touched by this call —
+// it only changes what an upload with no explicit target choice defaults
+// to, from the next upload onward.
+func (s *Store) SetAutoShare(ctx context.Context, id string, autoShare bool) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	result, err := s.db.ExecContext(ctx, s.dialect.Rebind(`
+        UPDATE crews SET auto_share = ?, updated_at = ? WHERE id = ?`),
+		autoShare, now, id)
+	if err != nil {
+		return fmt.Errorf("set crew auto-share: %w", err)
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// AutoShareCrewsFor returns the ids of every crew rider currently,
+// approvedly belongs to that has auto-share on — what a new upload with no
+// explicit target choice of its own should default to, in place of nil's
+// usual owner-only default.
+func (s Snapshot) AutoShareCrewsFor(rider string) []string {
+	var out []string
+	for _, c := range s.Crews {
+		if c.AutoShare && s.ApprovedRiders.Has(c.ID, rider) {
+			out = append(out, c.ID)
+		}
+	}
+	return out
 }
 
 // Snapshot returns every crew and its current approved membership in two
