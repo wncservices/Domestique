@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, useTemplateRef, watch } from 'vue'
 import { api } from '@/api/client'
 
 const props = defineProps<{ slug: string }>()
@@ -7,6 +7,7 @@ const props = defineProps<{ slug: string }>()
 const points = ref<[number, number][]>([])
 const failed = ref(false)
 const loading = ref(true)
+const visible = ref(false)
 
 const WIDTH = 320
 const HEIGHT = 160
@@ -26,8 +27,38 @@ async function load() {
   }
 }
 
-onMounted(load)
-watch(() => props.slug, load)
+// A library page can hold dozens of cards; fetching every track's points on
+// mount fired them all at once, most for a card the rider never scrolled to.
+// Loading only once the card is (near) the viewport turns that into just
+// the ones actually seen — rootMargin starts the fetch a little early so it
+// has usually finished by the time scrolling brings the card fully in.
+const root = useTemplateRef<HTMLElement>('root')
+let observer: IntersectionObserver | null = null
+
+onMounted(() => {
+  observer = new IntersectionObserver(
+    (entries) => {
+      if (!entries[0]?.isIntersecting) return
+      visible.value = true
+      observer?.disconnect()
+      load()
+    },
+    { rootMargin: '200px' },
+  )
+  if (root.value) observer.observe(root.value)
+})
+
+onBeforeUnmount(() => observer?.disconnect())
+
+// A remount-free slug change (props.slug reassigned on an existing
+// instance) only matters once the card has actually loaded once — reloading
+// before that would just fetch data for something still off-screen.
+watch(
+  () => props.slug,
+  () => {
+    if (visible.value) load()
+  },
+)
 
 /**
  * Projects lat/lon onto the viewbox. Longitude is scaled by cos(latitude) so a
@@ -75,6 +106,7 @@ const start = computed(() => {
 
 <template>
   <div
+    ref="root"
     class="aspect-[2/1] grid place-items-center overflow-hidden rounded-lg bg-elevated/50"
   >
     <USkeleton v-if="loading" class="size-full" />
