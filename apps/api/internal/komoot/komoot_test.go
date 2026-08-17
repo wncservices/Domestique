@@ -112,6 +112,24 @@ func fakeKomoot(t *testing.T) (*Client, *httptest.Server) {
 		_, _ = w.Write([]byte("<html><body>Not here any more</body></html>"))
 	})
 
+	mux.HandleFunc("/v007/tours/to-delete", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			t.Errorf("DeleteTour used method %s, want DELETE", r.Method)
+		}
+		user, pass, ok := r.BasicAuth()
+		if !ok || user != testUserID || pass != testToken {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		// The real API answers a successful delete with no body — nothing
+		// for DeleteTour's nil `into` to decode.
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	mux.HandleFunc("/v007/tours/already-gone", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
@@ -241,6 +259,33 @@ func TestGPXIsParsableByOurOwnReader(t *testing.T) {
 	stats := gpx.ComputeStats(points)
 	if stats.DistanceM == 0 {
 		t.Error("distance came out zero")
+	}
+}
+
+func TestDeleteTourSendsAuthenticatedDeleteRequest(t *testing.T) {
+	c, _ := fakeKomoot(t)
+	if err := c.Login(context.Background(), testEmail, testPassword); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.DeleteTour(context.Background(), "to-delete"); err != nil {
+		t.Fatalf("DeleteTour: %v", err)
+	}
+}
+
+func TestDeleteTourSurfacesUpstreamFailure(t *testing.T) {
+	c, _ := fakeKomoot(t)
+	if err := c.Login(context.Background(), testEmail, testPassword); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.DeleteTour(context.Background(), "already-gone"); err == nil {
+		t.Fatal("deleting a tour Komoot no longer has reported success")
+	}
+}
+
+func TestDeleteTourRequiresLogin(t *testing.T) {
+	c, _ := fakeKomoot(t)
+	if err := c.DeleteTour(context.Background(), "to-delete"); err == nil {
+		t.Fatal("DeleteTour worked without logging in")
 	}
 }
 

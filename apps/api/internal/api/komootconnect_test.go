@@ -45,6 +45,7 @@ type fakeImporter struct{ tours []komoot.Tour }
 
 func (f *fakeImporter) Tours(context.Context, bool) ([]komoot.Tour, error) { return f.tours, nil }
 func (f *fakeImporter) GPX(context.Context, string) ([]byte, error)        { return []byte("<gpx/>"), nil }
+func (f *fakeImporter) DeleteTour(context.Context, string) error           { return nil }
 
 func (c *fakeConnector) Connect(_ context.Context, email, password string) (api.KomootImporter, api.KomootSession, error) {
 	c.email, c.password = email, password
@@ -390,6 +391,8 @@ func (s *slowImporter) Tours(context.Context, bool) ([]komoot.Tour, error) {
 	}
 	return out, nil
 }
+
+func (s *slowImporter) DeleteTour(context.Context, string) error { return nil }
 
 func (s *slowImporter) GPX(_ context.Context, id string) ([]byte, error) {
 	s.mu.Lock()
