@@ -12,6 +12,7 @@ const groups = ref<RouteDuplicateGroup[]>([])
 const loading = ref(false)
 const deleting = ref(false)
 const error = ref('')
+const confirmingDelete = ref(false)
 
 // Which slugs are marked to go. A default, not a decision made for the
 // rider: every checkbox stays editable.
@@ -73,13 +74,7 @@ function pushSummary(route: Route): string {
 
 async function deleteSelected() {
   if (!selectedCount.value) return
-  if (
-    !confirm(
-      `Delete ${selectedCount.value} route${selectedCount.value === 1 ? '' : 's'} from the library? This cannot be undone.`,
-    )
-  ) {
-    return
-  }
+  confirmingDelete.value = false
 
   deleting.value = true
   error.value = ''
@@ -133,7 +128,7 @@ async function deleteSelected() {
             color="error"
             :loading="deleting"
             :disabled="!selectedCount"
-            @click="deleteSelected"
+            @click="confirmingDelete = true"
           >
             Delete {{ selectedCount }} selected
           </UButton>
@@ -174,5 +169,20 @@ async function deleteSelected() {
         </div>
       </div>
     </div>
+
+    <UModal v-model:open="confirmingDelete" title="Delete these routes?">
+      <template #body>
+        <p class="text-sm text-toned">
+          {{ selectedCount }} route{{ selectedCount === 1 ? '' : 's' }} will be removed from the
+          library. This cannot be undone.
+        </p>
+      </template>
+      <template #footer>
+        <div class="flex justify-end gap-2">
+          <UButton color="neutral" variant="ghost" @click="confirmingDelete = false">Cancel</UButton>
+          <UButton color="error" :loading="deleting" @click="deleteSelected">Delete</UButton>
+        </div>
+      </template>
+    </UModal>
   </UCard>
 </template>

@@ -16,6 +16,7 @@ const groups = ref<GarminDuplicateGroup[]>([])
 const loading = ref(false)
 const deleting = ref(false)
 const error = ref('')
+const confirmingDelete = ref(false)
 
 // Which course ids are marked to go. A default, not a decision made for the
 // rider: every checkbox stays editable, this only picks a sensible starting
@@ -58,13 +59,7 @@ const selectedCount = computed(() => toDelete.value.size)
 
 async function deleteSelected() {
   if (!selectedCount.value) return
-  if (
-    !confirm(
-      `Delete ${selectedCount.value} course${selectedCount.value === 1 ? '' : 's'} from Garmin? This cannot be undone.`,
-    )
-  ) {
-    return
-  }
+  confirmingDelete.value = false
 
   deleting.value = true
   error.value = ''
@@ -127,7 +122,7 @@ onMounted(async () => {
             color="error"
             :loading="deleting"
             :disabled="!selectedCount"
-            @click="deleteSelected"
+            @click="confirmingDelete = true"
           >
             Delete {{ selectedCount }} selected
           </UButton>
@@ -167,5 +162,20 @@ onMounted(async () => {
         </div>
       </div>
     </div>
+
+    <UModal v-model:open="confirmingDelete" title="Delete these courses from Garmin?">
+      <template #body>
+        <p class="text-sm text-toned">
+          {{ selectedCount }} course{{ selectedCount === 1 ? '' : 's' }} will be removed from
+          Garmin. This cannot be undone.
+        </p>
+      </template>
+      <template #footer>
+        <div class="flex justify-end gap-2">
+          <UButton color="neutral" variant="ghost" @click="confirmingDelete = false">Cancel</UButton>
+          <UButton color="error" :loading="deleting" @click="deleteSelected">Delete</UButton>
+        </div>
+      </template>
+    </UModal>
   </UCard>
 </template>
