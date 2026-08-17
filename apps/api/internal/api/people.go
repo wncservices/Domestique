@@ -22,6 +22,10 @@ type PeopleConnector interface {
 	SetRoles(ctx context.Context, userID string, roleNames []string) error
 	SendInviteEmail(ctx context.Context, email string) error
 	FindByEmail(ctx context.Context, email string) ([]auth0mgmt.Person, error)
+	UpdateName(ctx context.Context, userID, name string) (auth0mgmt.Person, error)
+	ListEnrollments(ctx context.Context, userID string) ([]auth0mgmt.Enrollment, error)
+	CreateGuardianEnrollmentTicket(ctx context.Context, userID string) (string, error)
+	DeleteEnrollment(ctx context.Context, enrollmentID string) error
 }
 
 type personDTO struct {

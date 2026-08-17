@@ -93,6 +93,7 @@ type storedIdentity struct {
 	Name   string   `json:"name,omitempty"`
 	Email  string   `json:"email,omitempty"`
 	Groups []string `json:"groups,omitempty"`
+	Sub    string   `json:"sub,omitempty"`
 }
 
 // Create issues a session for id and returns the opaque cookie value.
@@ -113,7 +114,7 @@ func (s *Store) Create(id auth.Identity, ttl time.Duration) (token string, expir
 	expiresAt = now.Add(ttl)
 
 	raw, err := json.Marshal(storedIdentity{
-		User: id.User, Name: id.Name, Email: id.Email, Groups: id.Groups,
+		User: id.User, Name: id.Name, Email: id.Email, Groups: id.Groups, Sub: id.Sub,
 	})
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("sessions: encoding identity: %w", err)
@@ -183,8 +184,40 @@ func (s *Store) Lookup(token string) (auth.Identity, bool) {
 		return auth.Identity{}, false
 	}
 	return auth.Identity{
-		User: stored.User, Name: stored.Name, Email: stored.Email, Groups: stored.Groups,
+		User: stored.User, Name: stored.Name, Email: stored.Email, Groups: stored.Groups, Sub: stored.Sub,
 	}, true
+}
+
+// UpdateName rewrites the display name held in an existing session, so a
+// rider who changes their name through Settings sees it reflected right
+// away rather than waiting up to sessionTTL for a fresh login to pick it up
+// from the ID token again. A no-op, not an error, when the token does not
+// resolve to a live session — the Management API write this follows has
+// already succeeded either way, and the next real login will carry the new
+// name regardless.
+func (s *Store) UpdateName(token, name string) error {
+	if !s.CanStore() || token == "" {
+		return nil
+	}
+	id, ok := s.Lookup(token)
+	if !ok {
+		return nil
+	}
+
+	raw, err := json.Marshal(storedIdentity{
+		User: id.User, Name: name, Email: id.Email, Groups: id.Groups, Sub: id.Sub,
+	})
+	if err != nil {
+		return fmt.Errorf("sessions: encoding identity: %w", err)
+	}
+	sealed, err := s.box.Seal(string(raw))
+	if err != nil {
+		return err
+	}
+
+	// #nosec G701 -- constant statement, bound parameters.
+	_, err = s.db.Exec(s.dialect.Rebind(`UPDATE sessions SET identity = ? WHERE token = ?`), sealed, token)
+	return err
 }
 
 // Delete ends a session. Deleting one that is not there is not an error —

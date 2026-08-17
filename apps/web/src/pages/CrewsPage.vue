@@ -185,6 +185,16 @@ async function deleteCrew() {
 const pendingFor = (crew: Crew) => crew.members?.filter((m) => m.status === 'pending') ?? []
 const approvedFor = (crew: Crew) => crew.members?.filter((m) => m.status === 'approved') ?? []
 
+// --- manage members (owner/admin only): add/approve/remove and auto-share
+// all live behind one popup instead of always-expanded inline, so a rider
+// in several crews sees one row per crew rather than a growing list of
+// member rosters underneath each one. ---
+
+const manageTarget = ref<Crew | null>(null)
+// Keeps the modal showing the crew it opened for even after `crews` is
+// replaced wholesale by the next refresh() — matching by id, not identity.
+const managingCrew = computed(() => crews.value.find((c) => c.id === manageTarget.value?.id) ?? null)
+
 // --- auto-share (owner/admin only: changes what the crew does for every
 // member's future uploads, not just the caller's own membership) ---
 
@@ -222,16 +232,32 @@ const sharing = ref(false)
 // Only routes the viewer may actually retarget — mirrors RouteCard's own
 // canEdit rule (routes:edit-any, or routes:edit-own on a route they own).
 // Someone else's routes aren't offered here even if they're also a member;
-// the route's owner is the one who shares it.
+// the route's owner is the one who shares it. !!r.owner is required
+// regardless of which permission branch matched: the server's own
+// validateCrewTargets checks the route *owner's* crew membership, and an
+// ownerless route (an import with no --owner) belongs to nobody, so it can
+// never legally be shared to any crew — offering it here would just be a
+// picker item that always 400s on save.
 const myRoutes = computed(() =>
   routes.value.filter(
     (r) =>
-      can('routes:edit-any') ||
-      (can('routes:edit-own') && !!r.owner && r.owner.toLowerCase() === (me.value?.user ?? '').toLowerCase()),
+      !!r.owner &&
+      (can('routes:edit-any') ||
+        (can('routes:edit-own') && r.owner.toLowerCase() === (me.value?.user ?? '').toLowerCase())),
   ),
 )
 
 const shareOptions = computed(() => myRoutes.value.map((r) => ({ label: r.name, value: r.slug })))
+
+// True once every offered route is selected — drives the "Select all" /
+// "Select none" toggle below without a separate ref to keep in sync.
+const allRoutesSelected = computed(
+  () => shareOptions.value.length > 0 && shareSelections.value.length === shareOptions.value.length,
+)
+
+function toggleSelectAllRoutes() {
+  shareSelections.value = allRoutesSelected.value ? [] : shareOptions.value.map((o) => o.value)
+}
 
 function openShare(crew: Crew) {
   shareSelections.value = myRoutes.value.filter((r) => r.targets.includes(crew.id)).map((r) => r.slug)
@@ -308,60 +334,78 @@ async function saveShare() {
       />
 
       <div v-if="crews.length" class="flex flex-col divide-y divide-default">
-        <div v-for="crew in crews" :key="crew.id" class="flex flex-col gap-3 py-3 first:pt-0 last:pb-0">
-          <div class="flex flex-wrap items-center gap-3">
-            <div class="min-w-0 flex-1">
-              <p class="truncate text-sm text-highlighted">{{ crew.name }}</p>
-              <p class="truncate font-mono text-xs text-dimmed">{{ crew.id }} · owner {{ crew.owner }}</p>
-            </div>
-            <UBadge color="neutral" variant="subtle" size="sm">
-              {{ crew.memberCount }} member{{ crew.memberCount === 1 ? '' : 's' }}
-            </UBadge>
+        <div
+          v-for="crew in crews"
+          :key="crew.id"
+          class="flex flex-wrap items-center gap-3 py-3 first:pt-0 last:pb-0"
+        >
+          <div class="min-w-0 flex-1">
+            <p class="truncate text-sm text-highlighted">{{ crew.name }}</p>
+            <p class="truncate font-mono text-xs text-dimmed">{{ crew.id }} · owner {{ crew.owner }}</p>
+          </div>
 
-            <!-- Any approved member can share their own routes here, not
-                 just the owner — sharing a route only needs the route's
-                 owner to belong to the crew, the same rule the server
-                 enforces at write time. -->
+          <UBadge color="neutral" variant="subtle" size="sm">
+            {{ crew.memberCount }} member{{ crew.memberCount === 1 ? '' : 's' }}
+          </UBadge>
+          <UTooltip v-if="crew.autoShare" text="New route uploads default to sharing here">
+            <UBadge color="primary" variant="subtle" size="sm" icon="i-lucide-share-2">Auto-share</UBadge>
+          </UTooltip>
+          <UBadge v-if="crew.mine && pendingFor(crew).length" color="warning" variant="subtle" size="sm">
+            {{ pendingFor(crew).length }} waiting
+          </UBadge>
+
+          <!-- Any approved member can share their own routes here, not
+               just the owner — sharing a route only needs the route's
+               owner to belong to the crew, the same rule the server
+               enforces at write time. -->
+          <UButton
+            v-if="crew.membershipStatus === 'approved'"
+            size="sm"
+            variant="soft"
+            icon="i-lucide-route"
+            @click="openShare(crew)"
+          >
+            Share your routes
+          </UButton>
+
+          <template v-if="!crew.mine">
             <UButton
-              v-if="crew.membershipStatus === 'approved'"
+              v-if="crew.membershipStatus === 'none'"
               size="sm"
-              variant="soft"
-              icon="i-lucide-route"
-              @click="openShare(crew)"
+              icon="i-lucide-hand"
+              :loading="joining === crew.id"
+              @click="join(crew)"
             >
-              Share your routes
+              Request to join
             </UButton>
-
-            <template v-if="!crew.mine">
+            <UBadge v-else-if="crew.membershipStatus === 'pending'" color="warning" variant="subtle" size="sm">
+              {{ membershipLabel(crew) }}
+            </UBadge>
+            <template v-else-if="crew.membershipStatus === 'approved'">
+              <UBadge color="success" variant="subtle" size="sm">{{ membershipLabel(crew) }}</UBadge>
               <UButton
-                v-if="crew.membershipStatus === 'none'"
                 size="sm"
-                icon="i-lucide-hand"
-                :loading="joining === crew.id"
-                @click="join(crew)"
+                color="neutral"
+                variant="ghost"
+                icon="i-lucide-log-out"
+                :loading="removing === `${crew.id}:${me?.user}`"
+                @click="removeMember(crew, me?.user ?? '')"
               >
-                Request to join
+                Leave
               </UButton>
-              <UBadge v-else-if="crew.membershipStatus === 'pending'" color="warning" variant="subtle" size="sm">
-                {{ membershipLabel(crew) }}
-              </UBadge>
-              <template v-else-if="crew.membershipStatus === 'approved'">
-                <UBadge color="success" variant="subtle" size="sm">{{ membershipLabel(crew) }}</UBadge>
-                <UButton
-                  size="sm"
-                  color="neutral"
-                  variant="ghost"
-                  icon="i-lucide-log-out"
-                  :loading="removing === `${crew.id}:${me?.user}`"
-                  @click="removeMember(crew, me?.user ?? '')"
-                >
-                  Leave
-                </UButton>
-              </template>
             </template>
+          </template>
 
+          <!-- Owner's own view: everything that manages the roster (add,
+               approve, remove, auto-share) lives behind one button instead
+               of an always-expanded block — a rider who owns several crews
+               would otherwise be scrolling past every member list on this
+               page just to find the one they came for. -->
+          <template v-else>
+            <UButton size="sm" variant="soft" icon="i-lucide-settings-2" @click="manageTarget = crew">
+              Manage members
+            </UButton>
             <UButton
-              v-else
               size="sm"
               color="error"
               variant="ghost"
@@ -370,99 +414,7 @@ async function saveShare() {
             >
               Delete
             </UButton>
-          </div>
-
-          <!-- Owner's own view: add someone directly, see who's waiting, who's in. -->
-          <div v-if="crew.mine" class="ml-1 flex flex-col gap-2 border-l-2 border-default pl-4">
-            <UTooltip
-              text="When on, any new route a member uploads with no explicit sharing choice of their own is shared here automatically. Existing routes are never touched by this — turning it on doesn't reach back and share anything already uploaded."
-            >
-              <label class="flex w-fit items-center gap-2 text-sm text-toned">
-                <USwitch
-                  :model-value="crew.autoShare"
-                  :loading="togglingAutoShare === crew.id"
-                  @update:model-value="(v: boolean) => toggleAutoShare(crew, v)"
-                />
-                Auto-share new uploads
-              </label>
-            </UTooltip>
-
-            <form
-              class="flex items-center gap-2"
-              @submit.prevent="addMember(crew)"
-            >
-              <USelectMenu
-                v-model="addMemberInput[crew.id]"
-                :items="suggestedRiders(crew)"
-                create-item="always"
-                placeholder="Search or add a rider by username"
-                icon="i-lucide-search"
-                size="sm"
-                class="max-w-xs"
-                @create="(rider: string) => (addMemberInput[crew.id] = rider)"
-              />
-              <UButton
-                type="submit"
-                size="xs"
-                icon="i-lucide-user-plus"
-                :loading="addingMember === crew.id"
-                :disabled="!addMemberInput[crew.id]?.trim()"
-              >
-                Add
-              </UButton>
-            </form>
-
-            <div
-              v-for="member in pendingFor(crew)"
-              :key="`pending-${member.rider}`"
-              class="flex items-center gap-2 text-sm"
-            >
-              <UIcon name="i-lucide-clock" class="size-4 text-dimmed" />
-              <span class="flex-1 text-toned">{{ member.rider }} wants to join</span>
-              <UButton
-                size="xs"
-                icon="i-lucide-check"
-                :loading="approving === `${crew.id}:${member.rider}`"
-                @click="approveMember(crew, member.rider)"
-              >
-                Approve
-              </UButton>
-              <UButton
-                size="xs"
-                color="neutral"
-                variant="ghost"
-                icon="i-lucide-x"
-                :loading="removing === `${crew.id}:${member.rider}`"
-                @click="removeMember(crew, member.rider)"
-              >
-                Deny
-              </UButton>
-            </div>
-
-            <div
-              v-for="member in approvedFor(crew)"
-              :key="`approved-${member.rider}`"
-              class="flex items-center gap-2 text-sm"
-            >
-              <UIcon name="i-lucide-user-check" class="size-4 text-dimmed" />
-              <span class="flex-1 text-toned">{{ member.rider }}</span>
-              <UButton
-                v-if="member.rider.toLowerCase() !== crew.owner.toLowerCase()"
-                size="xs"
-                color="neutral"
-                variant="ghost"
-                icon="i-lucide-x"
-                :loading="removing === `${crew.id}:${member.rider}`"
-                @click="removeMember(crew, member.rider)"
-              >
-                Remove
-              </UButton>
-            </div>
-
-            <p v-if="!pendingFor(crew).length && !approvedFor(crew).length" class="text-xs text-dimmed">
-              Nobody else has joined yet.
-            </p>
-          </div>
+          </template>
         </div>
       </div>
 
@@ -526,9 +478,20 @@ async function saveShare() {
     >
       <template #body>
         <div class="flex flex-col gap-3">
-          <p class="text-sm text-toned">
-            Which of your own routes should reach {{ shareTarget?.name }}?
-          </p>
+          <div class="flex items-center justify-between gap-3">
+            <p class="text-sm text-toned">
+              Which of your own routes should reach {{ shareTarget?.name }}?
+            </p>
+            <UButton
+              v-if="shareOptions.length"
+              size="xs"
+              color="neutral"
+              variant="ghost"
+              @click="toggleSelectAllRoutes"
+            >
+              {{ allRoutesSelected ? 'Select none' : 'Select all' }}
+            </UButton>
+          </div>
           <UCheckboxGroup
             v-if="shareOptions.length"
             v-model="shareSelections"
@@ -546,6 +509,109 @@ async function saveShare() {
             Cancel
           </UButton>
           <UButton :loading="sharing" :disabled="!shareOptions.length" @click="saveShare">Save</UButton>
+        </div>
+      </template>
+    </UModal>
+
+    <UModal
+      :open="!!manageTarget"
+      :title="`Manage ${manageTarget?.name ?? ''}`"
+      @update:open="manageTarget = null"
+    >
+      <template #body>
+        <div v-if="managingCrew" class="flex flex-col gap-4">
+          <UTooltip
+            text="When on, any new route a member uploads with no explicit sharing choice of their own is shared here automatically. Existing routes are never touched by this — turning it on doesn't reach back and share anything already uploaded."
+          >
+            <label class="flex w-fit items-center gap-2 text-sm text-toned">
+              <USwitch
+                :model-value="managingCrew.autoShare"
+                :loading="togglingAutoShare === managingCrew.id"
+                @update:model-value="(v: boolean) => toggleAutoShare(managingCrew!, v)"
+              />
+              Auto-share new uploads
+            </label>
+          </UTooltip>
+
+          <form class="flex items-center gap-2" @submit.prevent="addMember(managingCrew)">
+            <USelectMenu
+              v-model="addMemberInput[managingCrew.id]"
+              :items="suggestedRiders(managingCrew)"
+              create-item="always"
+              placeholder="Search or add a rider by username"
+              icon="i-lucide-search"
+              size="sm"
+              class="max-w-xs"
+              @create="(rider: string) => (addMemberInput[managingCrew!.id] = rider)"
+            />
+            <UButton
+              type="submit"
+              size="xs"
+              icon="i-lucide-user-plus"
+              :loading="addingMember === managingCrew.id"
+              :disabled="!addMemberInput[managingCrew.id]?.trim()"
+            >
+              Add
+            </UButton>
+          </form>
+
+          <div class="flex flex-col gap-2">
+            <div
+              v-for="member in pendingFor(managingCrew)"
+              :key="`pending-${member.rider}`"
+              class="flex items-center gap-2 text-sm"
+            >
+              <UIcon name="i-lucide-clock" class="size-4 text-dimmed" />
+              <span class="flex-1 text-toned">{{ member.rider }} wants to join</span>
+              <UButton
+                size="xs"
+                icon="i-lucide-check"
+                :loading="approving === `${managingCrew.id}:${member.rider}`"
+                @click="approveMember(managingCrew!, member.rider)"
+              >
+                Approve
+              </UButton>
+              <UButton
+                size="xs"
+                color="neutral"
+                variant="ghost"
+                icon="i-lucide-x"
+                :loading="removing === `${managingCrew.id}:${member.rider}`"
+                @click="removeMember(managingCrew!, member.rider)"
+              >
+                Deny
+              </UButton>
+            </div>
+
+            <div
+              v-for="member in approvedFor(managingCrew)"
+              :key="`approved-${member.rider}`"
+              class="flex items-center gap-2 text-sm"
+            >
+              <UIcon name="i-lucide-user-check" class="size-4 text-dimmed" />
+              <span class="flex-1 text-toned">{{ member.rider }}</span>
+              <UButton
+                v-if="member.rider.toLowerCase() !== managingCrew.owner.toLowerCase()"
+                size="xs"
+                color="neutral"
+                variant="ghost"
+                icon="i-lucide-x"
+                :loading="removing === `${managingCrew.id}:${member.rider}`"
+                @click="removeMember(managingCrew!, member.rider)"
+              >
+                Remove
+              </UButton>
+            </div>
+
+            <p v-if="!pendingFor(managingCrew).length && !approvedFor(managingCrew).length" class="text-xs text-dimmed">
+              Nobody else has joined yet.
+            </p>
+          </div>
+        </div>
+      </template>
+      <template #footer>
+        <div class="flex justify-end">
+          <UButton color="neutral" variant="ghost" @click="manageTarget = null">Done</UButton>
         </div>
       </template>
     </UModal>

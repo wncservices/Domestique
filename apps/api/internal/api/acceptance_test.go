@@ -1098,6 +1098,42 @@ func TestUploadRejectsAnUnknownTarget(t *testing.T) {
 	}
 }
 
+// A route with no owner (an import with no --owner, the CLI path this HTTP
+// harness can't reach directly — hence seeding it through h.source.Create
+// rather than h.upload) can never validly name a crew target: crew
+// membership is keyed by rider, and "" is not a rider. The error has to
+// name that reason specifically, not just report a formatting artifact of
+// interpolating an empty owner into the normal message.
+func TestUpdateTargetsOnAnOwnerlessRouteFailsWithAClearReason(t *testing.T) {
+	h := newHarness(t)
+
+	created, err := h.source.Create(context.Background(), source.CreateRequest{
+		Name: "Nobody's Route", GPX: exampleGPX(t),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp := h.do(http.MethodPatch, "/api/routes/"+created.Slug,
+		strings.NewReader(`{"targets":["crew:soloone"]}`), "application/json")
+	h.expectStatus(resp, http.StatusBadRequest)
+
+	var body struct {
+		Error string `json:"error"`
+	}
+	h.decode(resp, &body)
+	if !strings.Contains(body.Error, "no owner") {
+		t.Errorf("error = %q, want it to explain the route has no owner", body.Error)
+	}
+
+	// Clearing targets back to none is still a no-op, not an error — an
+	// ownerless route has nowhere to share regardless, but "share nowhere"
+	// must not be confused with "name an illegal crew".
+	resp = h.do(http.MethodPatch, "/api/routes/"+created.Slug,
+		strings.NewReader(`{"targets":[]}`), "application/json")
+	h.expectStatus(resp, http.StatusOK)
+}
+
 // A crew reference that was valid when a route was shared to it can go
 // stale later — the crew gets deleted — without the route itself ever
 // being touched. UnknownTargets is what tells a rider their route quietly

@@ -139,6 +139,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/config", s.handleConfig)
 	mux.Handle("GET /api/metrics", metricsHandler())
 	mux.HandleFunc("GET /api/me", s.handleMe)
+	mux.HandleFunc("PATCH /api/me", s.handleUpdateMe)
+	mux.HandleFunc("POST /api/me/password-reset", s.handleSelfPasswordReset)
+	mux.HandleFunc("GET /api/me/mfa", s.handleListMFA)
+	mux.HandleFunc("POST /api/me/mfa/enroll", s.handleEnrollMFA)
+	mux.HandleFunc("DELETE /api/me/mfa/{id}", s.handleRemoveMFA)
 	mux.HandleFunc("GET /api/accounts", s.handleAccounts)
 	mux.HandleFunc("POST /api/accounts", s.handleLinkAccount)
 	mux.HandleFunc("DELETE /api/accounts/{id}", s.handleUnlinkAccount)
@@ -451,12 +456,20 @@ type meDTO struct {
 	// LogoutURL is the identity provider's, not this app's: the session being
 	// ended belongs to the proxy. Empty means no sign-out button.
 	LogoutURL string `json:"logoutUrl,omitempty"`
+	// CanEditName and CanChangePassword tell Settings' Profile card whether
+	// it has anything to offer. Both need id.Sub (only ModeOIDC ever
+	// populates it) and a configured Management API client; changing a
+	// password additionally needs the identity to be a database connection
+	// — a Google-linked rider has no password here to change.
+	CanEditName       bool `json:"canEditName"`
+	CanChangePassword bool `json:"canChangePassword"`
 }
 
 // handleMe tells the UI who it is talking to and what to show. Without it the
 // frontend would have to guess, and would offer buttons that 403.
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	id := auth.FromContext(r.Context())
+	canEditName := s.People != nil && id.Sub != ""
 	writeJSON(w, http.StatusOK, meDTO{
 		// Enabled() alone used to be enough, because under mode: proxy an
 		// anonymous request never reached this handler at all — Traefik's
@@ -464,16 +477,194 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		// signed in" were the same fact by construction. mode: oidc breaks
 		// that: /api/me is now reachable while anonymous (see authenticate),
 		// on purpose, so the two questions have to be asked separately.
-		Authenticated: s.authenticator().Enabled() && !id.Anonymous(),
-		AuthMode:      string(s.authenticator().Mode()),
-		User:          id.User,
-		Name:          id.Name,
-		Email:         id.Email,
-		Groups:        orEmpty(id.Groups),
-		Role:          roleLabel(id.Role),
-		Permissions:   orEmpty(id.Role.Permissions()),
-		LogoutURL:     s.authenticator().LogoutURL(),
+		Authenticated:     s.authenticator().Enabled() && !id.Anonymous(),
+		AuthMode:          string(s.authenticator().Mode()),
+		User:              id.User,
+		Name:              id.Name,
+		Email:             id.Email,
+		Groups:            orEmpty(id.Groups),
+		Role:              roleLabel(id.Role),
+		Permissions:       orEmpty(id.Role.Permissions()),
+		LogoutURL:         s.authenticator().LogoutURL(),
+		CanEditName:       canEditName,
+		CanChangePassword: canEditName && id.Provider() == "auth0",
 	})
+}
+
+// handleUpdateMe lets a signed-in rider change their own display name —
+// Auth0 is the system of record (Update writes there first), and the
+// current session is patched to match afterward so the change is visible
+// immediately rather than after sessionTTL forces a fresh login.
+func (s *Server) handleUpdateMe(w http.ResponseWriter, r *http.Request) {
+	sub, ok := s.meAuth0Sub(w, r)
+	if !ok {
+		return
+	}
+
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name cannot be empty"})
+		return
+	}
+
+	if _, err := s.People.UpdateName(r.Context(), sub, name); err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+
+	// Best-effort: the Auth0 write above already succeeded, so a session
+	// that fails to pick up the new name here just keeps showing the old
+	// one until it expires or the rider signs in again — not worth failing
+	// an otherwise-successful request over.
+	if cookie, err := r.Cookie(auth.SessionCookieName); err == nil {
+		if err := s.Sessions.UpdateName(cookie.Value, name); err != nil {
+			s.logger().Warn("updating session after name change failed", "err", err)
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"name": name})
+}
+
+// handleSelfPasswordReset sends the signed-in rider Auth0's own
+// "reset your password" email — the same public endpoint the People page
+// reuses for invites (see auth0mgmt.SendInviteEmail's doc comment); a
+// forgotten password and a rider who wants a new one complete the identical
+// flow. Only offered for a database-connection identity: a Google-linked
+// rider has no password here to reset in the first place.
+func (s *Server) handleSelfPasswordReset(w http.ResponseWriter, r *http.Request) {
+	id := auth.FromContext(r.Context())
+	if id.Sub == "" {
+		writeJSON(w, http.StatusPreconditionFailed, map[string]string{
+			"error": "this account has no Auth0 identity to reset a password for",
+		})
+		return
+	}
+	if provider := id.Provider(); provider != "auth0" {
+		writeJSON(w, http.StatusPreconditionFailed, map[string]string{
+			"error": fmt.Sprintf("this account signs in through %s — there is no password to reset here", provider),
+		})
+		return
+	}
+	if !s.peopleAvailable(w) {
+		return
+	}
+	if id.Email == "" {
+		writeJSON(w, http.StatusPreconditionFailed, map[string]string{"error": "no email on file for this account"})
+		return
+	}
+
+	if err := s.People.SendInviteEmail(r.Context(), id.Email); err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "sent"})
+}
+
+type enrollmentDTO struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
+	Type   string `json:"type"`
+	Name   string `json:"name,omitempty"`
+}
+
+// meAuth0Sub is the sub-check shared by every /api/me/mfa handler — separate
+// from peopleAvailable, which only speaks to whether a Management API client
+// exists at all.
+func (s *Server) meAuth0Sub(w http.ResponseWriter, r *http.Request) (string, bool) {
+	id := auth.FromContext(r.Context())
+	if id.Sub == "" {
+		writeJSON(w, http.StatusPreconditionFailed, map[string]string{
+			"error": "this account has no Auth0 identity to manage",
+		})
+		return "", false
+	}
+	if !s.peopleAvailable(w) {
+		return "", false
+	}
+	return id.Sub, true
+}
+
+// handleListMFA reports the rider's own enrolled factors — an authenticator
+// app, a phone, a security key, whatever Guardian's tenant-wide policy
+// allows. Not gated on a database-connection identity the way password
+// reset is: MFA applies regardless of how a rider signs in.
+func (s *Server) handleListMFA(w http.ResponseWriter, r *http.Request) {
+	sub, ok := s.meAuth0Sub(w, r)
+	if !ok {
+		return
+	}
+	enrollments, err := s.People.ListEnrollments(r.Context(), sub)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	out := make([]enrollmentDTO, 0, len(enrollments))
+	for _, e := range enrollments {
+		out = append(out, enrollmentDTO{ID: e.ID, Status: e.Status, Type: e.Type, Name: e.Name})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// handleEnrollMFA hands back a one-time link to Auth0's own hosted
+// enrollment page — this app never renders a QR code or talks to an
+// authenticator app itself, it only asks Guardian for the ticket and lets
+// the rider's browser take it from there.
+func (s *Server) handleEnrollMFA(w http.ResponseWriter, r *http.Request) {
+	sub, ok := s.meAuth0Sub(w, r)
+	if !ok {
+		return
+	}
+	ticketURL, err := s.People.CreateGuardianEnrollmentTicket(r.Context(), sub)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"ticketUrl": ticketURL})
+}
+
+// handleRemoveMFA deletes one of the rider's own factors. The ownership
+// check here is load-bearing, not defensive dressing: Guardian's delete
+// endpoint (see auth0mgmt.DeleteEnrollment) is keyed by enrollment id alone,
+// with no user scoping of its own — without first confirming the id belongs
+// to whoever is asking, any signed-in rider could strip another rider's MFA
+// by guessing or having ever seen their enrollment id, which is exactly the
+// kind of account-takeover step MFA exists to prevent.
+func (s *Server) handleRemoveMFA(w http.ResponseWriter, r *http.Request) {
+	sub, ok := s.meAuth0Sub(w, r)
+	if !ok {
+		return
+	}
+	enrollmentID := r.PathValue("id")
+
+	enrollments, err := s.People.ListEnrollments(r.Context(), sub)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	owned := false
+	for _, e := range enrollments {
+		if e.ID == enrollmentID {
+			owned = true
+			break
+		}
+	}
+	if !owned {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "not your enrollment"})
+		return
+	}
+
+	if err := s.People.DeleteEnrollment(r.Context(), enrollmentID); err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "removed"})
 }
 
 func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request) {
@@ -1107,6 +1298,17 @@ func (s *Server) routeOwner(ctx context.Context, slug string) (string, error) {
 // implicit and never need naming; crews are the only sharing mechanism a
 // client may name here.
 func validateCrewTargets(targets []string, owner string, crews crew.Snapshot) error {
+	if len(targets) == 0 {
+		return nil
+	}
+	if owner == "" {
+		// Every crew's ApprovedRiders is keyed by a real rider — an empty
+		// owner (an import with no --owner) belongs to none of them, so the
+		// loop below would always fail here anyway. Naming that directly
+		// beats "\"crew:x\" is not a crew  currently belongs to", which is
+		// what owner interpolating to "" produced instead.
+		return fmt.Errorf("this route has no owner, so it cannot be shared to a crew — set an owner first")
+	}
 	for _, t := range targets {
 		if !crews.ApprovedRiders.Has(t, owner) {
 			return fmt.Errorf("%q is not a crew %s currently belongs to", t, owner)

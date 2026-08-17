@@ -292,6 +292,7 @@ func (s *Server) identityFromToken(idToken *oidc.IDToken) (auth.Identity, error)
 		Name:   strings.TrimSpace(stringClaim(claims, "name")),
 		Email:  strings.TrimSpace(stringClaim(claims, "email")),
 		Groups: stringSliceClaim(claims, groupsClaim),
+		Sub:    strings.TrimSpace(idToken.Subject),
 	}, nil
 }
 

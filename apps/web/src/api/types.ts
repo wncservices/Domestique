@@ -66,6 +66,26 @@ export interface Me {
    *  and always absent under authMode oidc, which signs out through
    *  api.logout() instead: the app holds that session and ends it itself. */
   logoutUrl?: string
+  /** Whether Settings' Profile card can rename this account through Auth0's
+   *  Management API — needs authMode oidc and a deployment with Management
+   *  API credentials configured. */
+  canEditName: boolean
+  /** Whether Settings' Profile card can send this account a password-reset
+   *  email — canEditName, and this identity is an Auth0 database
+   *  (email+password) connection rather than a social one like Google,
+   *  which has no password here to reset. */
+  canChangePassword: boolean
+}
+
+/** One MFA factor tied to the signed-in rider's own Auth0 account — gated
+ *  the same as canEditName, since managing it needs the same Auth0 account
+ *  to act on. Enrolling and confirming a new one both happen on Auth0's own
+ *  hosted page (see api.enrollMfa); this app only lists and removes. */
+export interface MfaEnrollment {
+  id: string
+  status: 'pending' | 'confirmed'
+  type: string
+  name?: string
 }
 
 /** One rider's standing with a crew. */

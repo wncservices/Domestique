@@ -16,6 +16,7 @@ import type {
   WahooConnection,
   LinkAccountRequest,
   Me,
+  MfaEnrollment,
   InvitePersonRequest,
   LibraryResponse,
   Person,
@@ -78,6 +79,21 @@ function encodeSlug(slug: string): string {
 export const api = {
   config: () => request<AppConfig>('/api/config'),
   me: () => request<Me>('/api/me'),
+  updateMe: (name: string) =>
+    request<{ name: string }>('/api/me', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    }),
+  sendPasswordReset: () =>
+    request<{ status: string }>('/api/me/password-reset', { method: 'POST' }),
+
+  mfaEnrollments: () => request<MfaEnrollment[]>('/api/me/mfa'),
+  /** Returns Auth0's own hosted enrollment page — this app navigates the
+   *  rider there rather than rendering a QR code itself. */
+  enrollMfa: () => request<{ ticketUrl: string }>('/api/me/mfa/enroll', { method: 'POST' }),
+  removeMfaEnrollment: (id: string) =>
+    request<{ status: string }>(`/api/me/mfa/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   /** Ends an authMode oidc session. The app holds that session and ends it
    *  itself — POST rather than a link, since signing out is a state change,
    *  not a navigation. redirectTo is the issuer's own end-session URL when
