@@ -103,13 +103,19 @@ type Store struct {
 	dialect dbx.Dialect
 }
 
-func schema() string {
-	return `
+// schema takes the dialect because auto_share needs a real per-engine
+// boolean type, not a hardcoded one — SQLite is loosely typed enough that
+// "INTEGER ... DEFAULT FALSE" works by accident, but Postgres rejects FALSE
+// as a default for an INTEGER column outright (no implicit bool→int cast).
+// routesSchema in internal/source already draws on d.Boolean for exactly
+// this reason; this mirrors it.
+func schema(d dbx.Dialect) string {
+	return fmt.Sprintf(`
 CREATE TABLE IF NOT EXISTS crews (
     id         TEXT PRIMARY KEY,
     name       TEXT NOT NULL,
     owner      TEXT NOT NULL,
-    auto_share INTEGER NOT NULL DEFAULT FALSE,
+    auto_share %s NOT NULL DEFAULT FALSE,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -121,7 +127,7 @@ CREATE TABLE IF NOT EXISTS crew_members (
     decided_by   TEXT NOT NULL DEFAULT '',
     decided_at   TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (crew_id, rider)
-);`
+);`, d.Boolean)
 }
 
 // UseDB puts the crew tables in an already-open database — the same one
@@ -134,7 +140,7 @@ func UseDB(db *sql.DB, dsn string) (*Store, error) {
 	}
 
 	store := &Store{db: db, dialect: d}
-	if _, err := db.Exec(schema()); err != nil {
+	if _, err := db.Exec(schema(d)); err != nil {
 		return nil, fmt.Errorf("migrate crew tables: %w", err)
 	}
 	if err := store.addAutoShareColumn(); err != nil {
@@ -151,7 +157,8 @@ func UseDB(db *sql.DB, dsn string) (*Store, error) {
 // column name", Postgres says "already exists") that is the expected
 // steady state, not a real failure — anything else still surfaces.
 func (s *Store) addAutoShareColumn() error {
-	_, err := s.db.Exec(`ALTER TABLE crews ADD COLUMN auto_share INTEGER NOT NULL DEFAULT FALSE`)
+	_, err := s.db.Exec(fmt.Sprintf(
+		`ALTER TABLE crews ADD COLUMN auto_share %s NOT NULL DEFAULT FALSE`, s.dialect.Boolean))
 	if err == nil {
 		return nil
 	}
