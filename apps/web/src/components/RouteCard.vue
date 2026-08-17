@@ -225,8 +225,14 @@ async function remove() {
           <p class="text-sm text-toned">
             Which head units should “{{ route.name }}” sync to?
           </p>
-          <UCheckboxGroup v-model="draftTargets" :items="targetOptions" />
-          <p v-if="!draftTargets.length" class="text-xs text-dimmed">
+          <!-- Defensive, not the normal path: the trigger button is already
+               disabled once targetOptions is empty, so this only fires if a
+               crew is removed out from under an already-open modal. -->
+          <p v-if="!targetOptions.length" class="text-xs text-dimmed">
+            No crews left to share with — close this and join or create one first.
+          </p>
+          <UCheckboxGroup v-else v-model="draftTargets" :items="targetOptions" />
+          <p v-if="targetOptions.length && !draftTargets.length" class="text-xs text-dimmed">
             Nothing selected — this route will not sync to any account until targets are set
             again.
           </p>

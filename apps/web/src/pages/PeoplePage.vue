@@ -3,6 +3,7 @@ import { onMounted, ref } from 'vue'
 import { useToast } from '@nuxt/ui/composables'
 import { api, ApiError } from '@/api/client'
 import type { AssignableRole, Person } from '@/api/types'
+import { roleColor } from '@/utils/role'
 
 const toast = useToast()
 
@@ -39,17 +40,6 @@ const roleOptions: { label: string; value: AssignableRole }[] = [
   { label: 'Rider', value: 'rider' },
   { label: 'Viewer', value: 'viewer' },
 ]
-
-const roleColor = (role: string) => {
-  switch (role) {
-    case 'admin':
-      return 'primary' as const
-    case 'rider':
-      return 'success' as const
-    default:
-      return 'neutral' as const
-  }
-}
 
 // --- invite ---
 

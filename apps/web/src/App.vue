@@ -5,6 +5,7 @@ import { useToast } from '@nuxt/ui/composables'
 import { api } from '@/api/client'
 import ColorModeToggle from '@/components/ColorModeToggle.vue'
 import { useLibrary } from '@/composables/useLibrary'
+import { roleColor } from '@/utils/role'
 
 const {
   me,
@@ -47,17 +48,6 @@ async function signOut() {
     })
   }
 }
-
-const roleColor = computed(() => {
-  switch (me.value?.role) {
-    case 'admin':
-      return 'primary' as const
-    case 'rider':
-      return 'success' as const
-    default:
-      return 'neutral' as const
-  }
-})
 
 const stats = computed(() => [
   { label: 'Routes', value: String(routes.value.length), icon: 'i-lucide-route' },
@@ -110,7 +100,7 @@ onMounted(refresh)
           <div class="flex shrink-0 items-center gap-2">
             <UBadge
               v-if="me?.authenticated"
-              :color="roleColor"
+              :color="roleColor(me.role)"
               variant="subtle"
               icon="i-lucide-user"
               class="hidden sm:inline-flex"
@@ -213,8 +203,10 @@ onMounted(refresh)
         color="error"
         variant="subtle"
         icon="i-lucide-plug-zap"
+        orientation="horizontal"
         title="Could not reach the API"
         :description="error"
+        :actions="[{ label: 'Retry', color: 'error', variant: 'subtle', onClick: refresh }]"
       />
 
       <RouterView />
