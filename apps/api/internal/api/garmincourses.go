@@ -371,9 +371,11 @@ func (s *Server) handleGarminCourseImport(w http.ResponseWriter, r *http.Request
 		course := byID[id]
 
 		route, err := s.Source.Create(r.Context(), source.CreateRequest{
-			Filename:   course.Name + ".gpx",
-			Name:       course.Name,
-			Descript:   fmt.Sprintf("Synced back from Garmin (course %s)", id),
+			Filename: course.Name + ".gpx",
+			Name:     course.Name,
+			// No Descript: the "garmin" tag below already says where this
+			// came from — a redundant "Synced back from Garmin (course
+			// ...)" sentence in the description field just crowds the card.
 			Tags:       []string{"garmin", garminTag(id)},
 			UploadedBy: identity.User,
 			GPX:        got.gpx,

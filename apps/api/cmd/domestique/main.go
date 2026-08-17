@@ -353,7 +353,6 @@ func runKomoot(dst *source.DB, cfg *config.Config, args []string) error {
 			if _, err := dst.Create(context.Background(), source.CreateRequest{
 				Filename: tour.Name + ".gpx",
 				Name:     tour.Name,
-				Descript: fmt.Sprintf("Imported from Komoot (tour %s)", tour.ID),
 				Tags:     []string{"komoot", "komoot:" + tour.ID},
 				GPX:      raw,
 			}); err != nil {

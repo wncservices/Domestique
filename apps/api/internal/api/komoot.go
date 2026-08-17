@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"sync"
 
@@ -149,9 +148,11 @@ func (s *Server) handleKomootImport(w http.ResponseWriter, r *http.Request) {
 		raw := got.gpx
 
 		if _, err := s.Source.Create(r.Context(), source.CreateRequest{
-			Filename:   tour.Name + ".gpx",
-			Name:       tour.Name,
-			Descript:   fmt.Sprintf("Imported from Komoot (tour %s)", id),
+			Filename: tour.Name + ".gpx",
+			Name:     tour.Name,
+			// No Descript: the "komoot" tag below already says where this
+			// came from — a redundant "Imported from Komoot (tour ...)"
+			// sentence in the description field just crowds the card.
 			Tags:       []string{"komoot", komootTag(id)},
 			UploadedBy: identity.User,
 			GPX:        raw,
