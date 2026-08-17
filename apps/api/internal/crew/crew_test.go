@@ -339,6 +339,54 @@ func TestCrewEachEngine(t *testing.T) {
 					t.Fatalf("approve: err = %v, want ErrNotFound", err)
 				}
 			})
+
+			// Found live: a route's owner and a crew's membership record for
+			// that same real rider, written through two different paths
+			// (a typed CLI --owner flag vs. a signed-in session), ended up
+			// with different casing — "Wilant" vs "wilant". Has used to be an
+			// exact string match, so config.TargetsFor silently decided that
+			// rider had no crews at all, dropping the route from its own
+			// owner's push targets with nothing to explain why.
+			t.Run("membership is case-insensitive, both at write time and at read time", func(t *testing.T) {
+				store := open(t)
+				ctx := t.Context()
+
+				// AddMember and Create both normalize whatever casing they
+				// are given...
+				c, err := store.Create(ctx, "Sunday Club", "  Wilant  ")
+				if err != nil {
+					t.Fatalf("create: %v", err)
+				}
+				if c.Owner != "wilant" {
+					t.Fatalf("owner = %q, want normalized to wilant", c.Owner)
+				}
+				if _, err := store.AddMember(ctx, c.ID, "TIEBE", "wilant"); err != nil {
+					t.Fatalf("add member: %v", err)
+				}
+
+				snap, err := store.Snapshot(ctx)
+				if err != nil {
+					t.Fatalf("snapshot: %v", err)
+				}
+				if got := snap.ApprovedRiders[c.ID]; len(got) != 2 || got[0] != "wilant" || got[1] != "tiebe" {
+					t.Fatalf("members = %v, want [wilant tiebe] stored lowercase", got)
+				}
+
+				// ...and Has still matches even when the *caller* passes a
+				// differently-cased string than what ended up stored — the
+				// case a rider identifier reaching this package from
+				// somewhere other than a normalized write (existing data
+				// from before this fix, most concretely) still has to work.
+				if !snap.ApprovedRiders.Has(c.ID, "Wilant") {
+					t.Error(`Has(id, "Wilant") = false, want true (case-insensitive)`)
+				}
+				if !snap.ApprovedRiders.Has(c.ID, "tiebe") {
+					t.Error(`Has(id, "tiebe") = false, want true`)
+				}
+				if snap.ApprovedRiders.Has(c.ID, "stranger") {
+					t.Error(`Has(id, "stranger") = true, want false`)
+				}
+			})
 		})
 	}
 }
