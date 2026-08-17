@@ -269,14 +269,20 @@ export const api = {
     }),
   joinCrew: (id: string) =>
     request<Crew>(`/api/crews/${encodeURIComponent(id)}/join`, { method: 'POST' }),
-  /** The owner's other way in: enrolls a rider directly, without them ever
-   *  requesting to join first. */
+  /** The owner's other way in: invites a rider directly, without them ever
+   *  requesting to join first. Lands them pending, not approved, until the
+   *  invited rider confirms it themselves via approveCrewMember — unless
+   *  they already had a request in, in which case this approves it in the
+   *  same step. */
   addCrewMember: (crewId: string, rider: string) =>
     request<Crew>(`/api/crews/${encodeURIComponent(crewId)}/members`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ rider }),
     }),
+  /** Grants a pending member — the owner approving someone else's
+   *  self-request, or a rider confirming their own invite (rider === the
+   *  caller). The server decides which by who is calling it. */
   approveCrewMember: (crewId: string, rider: string) =>
     request<Crew>(
       `/api/crews/${encodeURIComponent(crewId)}/members/${encodeURIComponent(rider)}`,

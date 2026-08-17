@@ -74,11 +74,13 @@ type crewDTOOut struct {
 	Owner            string `json:"owner"`
 	Mine             bool   `json:"mine"`
 	MembershipStatus string `json:"membershipStatus"`
+	MembershipOrigin string `json:"membershipOrigin"`
 	MemberCount      int    `json:"memberCount"`
 	AutoShare        bool   `json:"autoShare"`
 	Members          []struct {
 		Rider  string `json:"rider"`
 		Status string `json:"status"`
+		Origin string `json:"origin"`
 	} `json:"members"`
 }
 
@@ -184,7 +186,9 @@ func TestJoinApproveRemoveFlow(t *testing.T) {
 // A rider removing someone else's membership needs to be the crew's owner
 // or an admin — the same ownership rule accounts and routes already keep.
 // The owner's other route into a crew: adding someone directly, without
-// that rider ever having requested to join.
+// that rider ever having requested to join. Unlike a self-request, this
+// lands the invited rider pending, not approved — the owner's say-so alone
+// is not consent from the other side; see TestInvitedRiderMustConfirm.
 func TestOwnerCanAddMemberDirectly(t *testing.T) {
 	h := newCrewHarness(t)
 	created := decodeCrew(t, h.as("wilant", "cyclists", http.MethodPost, "/api/crews", `{"name":"Family"}`))
@@ -194,19 +198,67 @@ func TestOwnerCanAddMemberDirectly(t *testing.T) {
 		t.Fatalf("add status = %d, want 200", resp.StatusCode)
 	}
 	added := decodeCrew(t, resp)
-	if added.MemberCount != 2 {
-		t.Errorf("memberCount = %d, want 2", added.MemberCount)
+	if added.MemberCount != 1 {
+		t.Errorf("memberCount = %d, want 1 (invite still unconfirmed)", added.MemberCount)
 	}
 
-	// The added rider sees themselves as approved immediately — no join,
-	// no wait.
+	// The invited rider sees a pending invite, not membership — they still
+	// have to confirm it themselves.
+	list := h.as("other", "cyclists", http.MethodGet, "/api/crews", "")
+	var out []crewDTOOut
+	if err := json.NewDecoder(list.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if out[0].MembershipStatus != "pending" {
+		t.Errorf("membershipStatus = %q, want pending", out[0].MembershipStatus)
+	}
+	if out[0].MembershipOrigin != "invite" {
+		t.Errorf("membershipOrigin = %q, want invite", out[0].MembershipOrigin)
+	}
+}
+
+// The invited rider's own confirmation is what actually grants the invite —
+// the owner's AddMember only starts it. The same endpoint the owner uses to
+// approve a self-request (PUT .../members/{rider}) does this too, when the
+// caller is the rider named in the path.
+func TestInvitedRiderMustConfirm(t *testing.T) {
+	h := newCrewHarness(t)
+	created := decodeCrew(t, h.as("wilant", "cyclists", http.MethodPost, "/api/crews", `{"name":"Family"}`))
+	h.as("wilant", "cyclists", http.MethodPost, "/api/crews/"+created.ID+"/members", `{"rider":"other"}`)
+
+	// The owner cannot grant their own invite — that would let the owner
+	// supply both sides of the consent.
+	ownerAttempt := h.as("wilant", "cyclists", http.MethodPut, "/api/crews/"+created.ID+"/members/other", "")
+	if ownerAttempt.StatusCode != http.StatusConflict {
+		t.Fatalf("owner confirming own invite: status = %d, want 409", ownerAttempt.StatusCode)
+	}
+
+	confirmed := decodeCrew(t, h.as("other", "cyclists", http.MethodPut, "/api/crews/"+created.ID+"/members/other", ""))
+	if confirmed.MemberCount != 2 {
+		t.Errorf("memberCount after confirm = %d, want 2", confirmed.MemberCount)
+	}
+
 	list := h.as("other", "cyclists", http.MethodGet, "/api/crews", "")
 	var out []crewDTOOut
 	if err := json.NewDecoder(list.Body).Decode(&out); err != nil {
 		t.Fatal(err)
 	}
 	if out[0].MembershipStatus != "approved" {
-		t.Errorf("membershipStatus = %q, want approved", out[0].MembershipStatus)
+		t.Errorf("membershipStatus after confirm = %q, want approved", out[0].MembershipStatus)
+	}
+}
+
+// The mirror case: a rider requesting to join cannot approve themselves by
+// hitting the same endpoint — that consent still needs to come from the
+// owner.
+func TestSelfRequestCannotBeSelfApproved(t *testing.T) {
+	h := newCrewHarness(t)
+	created := decodeCrew(t, h.as("wilant", "cyclists", http.MethodPost, "/api/crews", `{"name":"Family"}`))
+	h.as("other", "cyclists", http.MethodPost, "/api/crews/"+created.ID+"/join", "")
+
+	resp := h.as("other", "cyclists", http.MethodPut, "/api/crews/"+created.ID+"/members/other", "")
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("self-approving a join request: status = %d, want 404", resp.StatusCode)
 	}
 }
 
@@ -229,10 +281,28 @@ func TestAddingAnAlreadyApprovedMemberIsAConflict(t *testing.T) {
 	h := newCrewHarness(t)
 	created := decodeCrew(t, h.as("wilant", "cyclists", http.MethodPost, "/api/crews", `{"name":"Family"}`))
 	h.as("wilant", "cyclists", http.MethodPost, "/api/crews/"+created.ID+"/members", `{"rider":"other"}`)
+	h.as("other", "cyclists", http.MethodPut, "/api/crews/"+created.ID+"/members/other", "")
 
 	resp := h.as("wilant", "cyclists", http.MethodPost, "/api/crews/"+created.ID+"/members", `{"rider":"other"}`)
 	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("status = %d, want 409", resp.StatusCode)
+	}
+}
+
+// Re-inviting a rider whose invite is still unconfirmed changes nothing —
+// it must not silently grant what only the invited rider's own confirm may.
+func TestReAddingAnUnconfirmedInviteIsANoOp(t *testing.T) {
+	h := newCrewHarness(t)
+	created := decodeCrew(t, h.as("wilant", "cyclists", http.MethodPost, "/api/crews", `{"name":"Family"}`))
+	h.as("wilant", "cyclists", http.MethodPost, "/api/crews/"+created.ID+"/members", `{"rider":"other"}`)
+
+	resp := h.as("wilant", "cyclists", http.MethodPost, "/api/crews/"+created.ID+"/members", `{"rider":"other"}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("re-invite status = %d, want 200", resp.StatusCode)
+	}
+	again := decodeCrew(t, resp)
+	if again.MemberCount != 1 {
+		t.Errorf("memberCount = %d, want 1 (still unconfirmed)", again.MemberCount)
 	}
 }
 

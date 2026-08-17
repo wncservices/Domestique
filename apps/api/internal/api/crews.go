@@ -13,6 +13,11 @@ import (
 type crewMemberDTO struct {
 	Rider  string `json:"rider"`
 	Status string `json:"status"`
+	// Origin distinguishes a pending row's two shapes — "self" (the rider
+	// asked to join, waiting on the owner) or "invite" (the owner started
+	// it, waiting on the rider) — since they need the owner's own roster
+	// view to show a different action for each. Meaningless once approved.
+	Origin string `json:"origin,omitempty"`
 }
 
 type crewDTO struct {
@@ -28,6 +33,13 @@ type crewDTO struct {
 	// rider needs it to know whether "Request to join" or "Pending" is the
 	// right thing to show.
 	MembershipStatus string `json:"membershipStatus"`
+	// MembershipOrigin distinguishes the two ways a pending status can have
+	// come about — "self" (this rider asked to join; the owner still has to
+	// approve) or "invite" (the owner added this rider directly; they still
+	// have to confirm) — only meaningful, and only set, when MembershipStatus
+	// is "pending". The frontend needs it to offer "Accept/Decline" for an
+	// invite instead of just a waiting badge.
+	MembershipOrigin string `json:"membershipOrigin,omitempty"`
 	// MemberCount is the approved roster size. Always visible — existence
 	// and roster size are not sensitive, a rider needs them to discover a
 	// crew worth requesting to join.
@@ -59,12 +71,19 @@ func (s *Server) crewDTOFor(identity auth.Identity, c crew.Crew, members []crew.
 		}
 		if strings.EqualFold(m.Rider, identity.User) {
 			dto.MembershipStatus = string(m.Status)
+			if m.Status == crew.StatusPending {
+				dto.MembershipOrigin = string(m.Origin)
+			}
 		}
 	}
 	if dto.Mine {
 		dto.Members = make([]crewMemberDTO, 0, len(members))
 		for _, m := range members {
-			dto.Members = append(dto.Members, crewMemberDTO{Rider: m.Rider, Status: string(m.Status)})
+			member := crewMemberDTO{Rider: m.Rider, Status: string(m.Status)}
+			if m.Status == crew.StatusPending {
+				member.Origin = string(m.Origin)
+			}
+			dto.Members = append(dto.Members, member)
 		}
 	}
 	return dto
@@ -333,7 +352,13 @@ func (s *Server) handleAddCrewMember(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.crewDTOFor(identity, c, members))
 }
 
-// handleApproveCrewMember grants a pending request. Owner or admin only.
+// handleApproveCrewMember grants a pending member — the same URL for both
+// directions of consent, distinguished by who is calling it: a rider
+// granting their own row confirms an invite (Confirm; a self-request there
+// is refused, since that consent is already the requester's own, waiting on
+// the owner), an owner or admin granting someone else's approves a
+// self-request (Approve; an invite there is refused for the same reason in
+// reverse — the owner cannot supply the invited rider's half themselves).
 func (s *Server) handleApproveCrewMember(w http.ResponseWriter, r *http.Request) {
 	if !s.require(w, r, auth.PermManageCrews) {
 		return
@@ -349,14 +374,21 @@ func (s *Server) handleApproveCrewMember(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	identity := auth.FromContext(r.Context())
-	if !identity.CanEditRoute(c.Owner) {
-		s.forbidCrew(w, r)
-		return
-	}
 
-	if err := s.Crew.Approve(r.Context(), id, rider, identity.User); err != nil {
-		s.failCrewLookup(w, err)
-		return
+	if strings.EqualFold(identity.User, rider) {
+		if err := s.Crew.Confirm(r.Context(), id, rider); err != nil {
+			s.failCrewMemberDecision(w, err)
+			return
+		}
+	} else {
+		if !identity.CanEditRoute(c.Owner) {
+			s.forbidCrew(w, r)
+			return
+		}
+		if err := s.Crew.Approve(r.Context(), id, rider, identity.User); err != nil {
+			s.failCrewMemberDecision(w, err)
+			return
+		}
 	}
 
 	members, err := s.Crew.Members(r.Context(), id)
@@ -367,6 +399,20 @@ func (s *Server) handleApproveCrewMember(w http.ResponseWriter, r *http.Request)
 
 	s.logger().Info("crew member approved", "crew", id, "rider", rider, "by", identity.User)
 	writeJSON(w, http.StatusOK, s.crewDTOFor(identity, c, members))
+}
+
+// failCrewMemberDecision maps Approve/Confirm's own errors — including the
+// two that say "wrong side of this is trying to grant it" — on top of
+// failCrewLookup's crew.ErrNotFound handling.
+func (s *Server) failCrewMemberDecision(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, crew.ErrConfirmationRequired):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+	case errors.Is(err, crew.ErrNoInvite):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+	default:
+		s.failCrewLookup(w, err)
+	}
 }
 
 // handleRemoveCrewMember denies a pending request, removes an approved
