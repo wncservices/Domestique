@@ -29,7 +29,8 @@ const visibleRoutes = computed(() => {
       route.name.toLowerCase().includes(needle) ||
       route.slug.toLowerCase().includes(needle) ||
       route.description.toLowerCase().includes(needle) ||
-      route.tags.some((tag) => tag.toLowerCase().includes(needle)),
+      route.tags.some((tag) => tag.toLowerCase().includes(needle)) ||
+      (route.owner ?? '').toLowerCase().includes(needle),
   )
 })
 
@@ -108,7 +109,7 @@ async function push(items: { accountId: string; slug: string }[]) {
         <UInput
           v-model="search"
           icon="i-lucide-search"
-          placeholder="Filter by name, slug, tag or description"
+          placeholder="Filter by name, slug, tag, description or uploader"
           class="w-full sm:w-72"
         />
       </div>
