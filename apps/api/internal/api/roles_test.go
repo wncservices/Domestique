@@ -82,11 +82,11 @@ func newAuthHarness(t *testing.T, komootClient api.KomootImporter) *authHarness 
 	}
 
 	srv := &api.Server{
-		Source:   db,
-		Store:    store,
-		Auth:     authenticator,
-		Komoot:   komootClient,
-		Links:    links,
+		Source: db,
+		Store:  store,
+		Auth:   authenticator,
+		Komoot: komootClient,
+		Links:  links,
 		// Resume ignores the userID/token it is handed and always returns
 		// the same fake — this harness only ever needed one Komoot client
 		// to test against, whether reached via the shared fallback or (once
