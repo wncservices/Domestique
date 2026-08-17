@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/wncservices/domestique/apps/api/internal/crew"
 	"github.com/wncservices/domestique/apps/api/internal/model"
 	"github.com/wncservices/domestique/apps/api/internal/state"
 	"github.com/wncservices/domestique/apps/api/internal/targets"
@@ -52,9 +53,9 @@ func forAccount(t *testing.T, store state.Store, accountID string) map[string]st
 }
 
 // mustPlan is the same idea for BuildPlan.
-func mustPlan(t *testing.T, routes []model.Route, linked []model.Account, store state.Store) model.Plan {
+func mustPlan(t *testing.T, routes []model.Route, linked []model.Account, store state.Store, crews crew.Snapshot) model.Plan {
 	t.Helper()
-	plan, err := BuildPlan(t.Context(), routes, linked, store)
+	plan, err := BuildPlan(t.Context(), routes, linked, store, crews)
 	if err != nil {
 		t.Fatalf("BuildPlan: %v", err)
 	}

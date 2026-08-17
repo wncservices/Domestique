@@ -9,11 +9,13 @@ package config
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/wncservices/domestique/apps/api/internal/auth"
+	"github.com/wncservices/domestique/apps/api/internal/crew"
 	"github.com/wncservices/domestique/apps/api/internal/model"
 )
 
@@ -135,39 +137,86 @@ func (c *Config) Validate() error {
 
 // TargetsFor returns the accounts a route should be pushed to.
 //
-// A route that names targets goes exactly there — that is what keeps one
-// rider's private routes off the other's head unit. A route that names none
-// goes to every linked account, which is the useful default for a library two
-// people share.
-func TargetsFor(r model.Route, linked []model.Account) []string {
-	if r.Targets != nil {
-		return *r.Targets
+// Targets holds crew ids, not raw account ids — see internal/crew's package
+// doc for why. A route with no targets reaches the owner's own accounts
+// only: the useful default now that a library can be shared beyond one
+// household, and the fix for what nil used to mean (every linked account,
+// system-wide, with no consent from whoever owned the other accounts — see
+// internal/crew.go). A route naming crews reaches the owner's own accounts
+// plus every account belonging to a rider who is *currently* an approved
+// member of one of those crews — resolved fresh on every call, never
+// stored, so a membership change takes effect on the very next push without
+// anyone touching the route.
+func TargetsFor(r model.Route, linked []model.Account, crews crew.Snapshot) []string {
+	if r.Targets != nil && len(*r.Targets) == 0 {
+		return nil // explicit: nowhere
 	}
 
-	out := make([]string, 0, len(linked))
-	for _, a := range linked {
-		out = append(out, a.ID)
+	own := accountsForRider(r.Owner, linked)
+	if r.Targets == nil {
+		return own
 	}
-	return out
+
+	set := make(map[string]bool, len(own))
+	for _, id := range own {
+		set[id] = true
+	}
+	for _, t := range *r.Targets {
+		if !crews.ApprovedRiders.Has(t, r.Owner) {
+			// Stale (the crew was deleted or the owner left it), foreign (a
+			// crew the owner never belonged to), or a raw account id from
+			// before crews existed — none of these ever resolve to a push.
+			continue
+		}
+		for _, rider := range crews.ApprovedRiders[t] {
+			for _, id := range accountsForRider(rider, linked) {
+				set[id] = true
+			}
+		}
+	}
+	return sortedSetKeys(set)
 }
 
-// UnknownTargets reports targets naming accounts that are not linked, so the
-// UI can show a route that will never sync rather than leaving it silent.
-func UnknownTargets(r model.Route, linked []model.Account) []string {
+// UnknownTargets reports targets naming a crew the route's owner does not
+// currently, approvedly, belong to — a crew since deleted, one the owner
+// left, or (from before crews existed) a raw account id — so the UI can
+// show a route that will never sync rather than leaving it silent.
+func UnknownTargets(r model.Route, crews crew.Snapshot) []string {
 	if r.Targets == nil {
 		return nil
 	}
 
-	known := make(map[string]bool, len(linked))
-	for _, a := range linked {
-		known[a.ID] = true
-	}
-
 	var unknown []string
-	for _, target := range *r.Targets {
-		if !known[target] {
-			unknown = append(unknown, target)
+	for _, t := range *r.Targets {
+		if !crews.ApprovedRiders.Has(t, r.Owner) {
+			unknown = append(unknown, t)
 		}
 	}
 	return unknown
+}
+
+// accountsForRider is every linked account belonging to one rider — never
+// matching when rider is empty, since a linked account's Rider is never
+// empty: an ownerless route resolves to nobody rather than to everybody,
+// the safe direction for a route this package cannot attribute to anyone.
+func accountsForRider(rider string, linked []model.Account) []string {
+	if rider == "" {
+		return nil
+	}
+	var out []string
+	for _, a := range linked {
+		if strings.EqualFold(a.Rider, rider) {
+			out = append(out, a.ID)
+		}
+	}
+	return out
+}
+
+func sortedSetKeys(set map[string]bool) []string {
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

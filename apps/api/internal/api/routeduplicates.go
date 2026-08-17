@@ -53,9 +53,13 @@ func (s *Server) handleRouteDuplicates(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	crews, ok := s.crewSnapshot(w, r)
+	if !ok {
+		return
+	}
 
 	writeJSON(w, http.StatusOK, groupDuplicateRoutes(routes, func(rt model.Route) routeDTO {
-		return s.toRouteDTO(r.Context(), rt, linked)
+		return s.toRouteDTO(r.Context(), rt, linked, crews)
 	}))
 }
 

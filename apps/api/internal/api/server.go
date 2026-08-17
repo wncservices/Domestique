@@ -342,22 +342,37 @@ type accountDTO struct {
 }
 
 type routeDTO struct {
-	Slug           string       `json:"slug"`
-	Name           string       `json:"name"`
-	Description    string       `json:"description"`
-	Tags           []string     `json:"tags"`
-	DistanceM      float64      `json:"distanceM"`
-	AscentM        float64      `json:"ascentM"`
-	StartLat       float64      `json:"startLat"`
-	StartLng       float64      `json:"startLng"`
-	PointCount     int          `json:"pointCount"`
-	ContentHash    string       `json:"contentHash"`
-	Origin         string       `json:"origin"`
-	Owner          string       `json:"owner,omitempty"`
-	UpdatedAt      string       `json:"updatedAt"`
-	Targets        []string     `json:"targets"`
-	UnknownTargets []string     `json:"unknownTargets"`
-	SyncState      []syncStatus `json:"syncState"`
+	Slug        string   `json:"slug"`
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Tags        []string `json:"tags"`
+	DistanceM   float64  `json:"distanceM"`
+	AscentM     float64  `json:"ascentM"`
+	StartLat    float64  `json:"startLat"`
+	StartLng    float64  `json:"startLng"`
+	PointCount  int      `json:"pointCount"`
+	ContentHash string   `json:"contentHash"`
+	Origin      string   `json:"origin"`
+	Owner       string   `json:"owner,omitempty"`
+	UpdatedAt   string   `json:"updatedAt"`
+	// Targets holds crew ids, not accounts — see internal/crew. Sharing a
+	// route to a crew is the only way a client may name in here; own
+	// devices are implicit and never listed.
+	Targets []string `json:"targets"`
+	// UnknownTargets names crew ids in Targets that do not currently
+	// resolve — a crew deleted since, one the owner left, or (from before
+	// crews existed) a raw account id. Never resolves to a push either way.
+	UnknownTargets []string `json:"unknownTargets"`
+	// OwnerCrews is every crew the route's *owner* currently, approvedly,
+	// belongs to — exactly what a target picker may legally offer, correct
+	// even when an admin is editing someone else's route.
+	OwnerCrews []crewOptionDTO `json:"ownerCrews"`
+	SyncState  []syncStatus    `json:"syncState"`
+}
+
+type crewOptionDTO struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 type syncStatus struct {
@@ -615,6 +630,30 @@ func (s *Server) linkedAccounts(w http.ResponseWriter) ([]model.Account, bool) {
 	return linked, true
 }
 
+// crewSnapshot reads every crew and its current approved membership, or
+// writes the error and reports false — the same shape linkedAccounts keeps,
+// for the same reason: fetched fresh per request, never cached, so a
+// membership change takes effect on the very next call.
+//
+// Nil-safe on purpose, the same reasoning providerlink.Store.CanStore's own
+// doc comment gives: production always wires Server.Crew (runServe builds
+// it unconditionally), but a Server built by hand for a test that has
+// nothing to do with crews should not have to set one just to reach a route
+// handler. An empty Snapshot is the correct, real state of a deployment
+// before anyone has created a crew — TargetsFor falls back to the owner's
+// own accounts, exactly as if crews did not exist yet.
+func (s *Server) crewSnapshot(w http.ResponseWriter, r *http.Request) (crew.Snapshot, bool) {
+	if s.Crew == nil {
+		return crew.Snapshot{}, true
+	}
+	snap, err := s.Crew.Snapshot(r.Context())
+	if err != nil {
+		s.fail(w, err)
+		return crew.Snapshot{}, false
+	}
+	return snap, true
+}
+
 func (s *Server) handleRoutes(w http.ResponseWriter, r *http.Request) {
 	if !s.require(w, r, auth.PermReadRoutes) {
 		return
@@ -629,9 +668,13 @@ func (s *Server) handleRoutes(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	crews, ok := s.crewSnapshot(w, r)
+	if !ok {
+		return
+	}
 
 	writeJSON(w, http.StatusOK, libraryResponse{
-		Routes:   s.toRouteDTOs(r.Context(), routes, linked),
+		Routes:   s.toRouteDTOs(r.Context(), routes, linked, crews),
 		Problems: orEmpty(problems),
 	})
 }
@@ -752,8 +795,12 @@ func (s *Server) handlePlan(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	crews, ok := s.crewSnapshot(w, r)
+	if !ok {
+		return
+	}
 
-	plan, err := syncer.BuildPlan(r.Context(), routes, linked, s.Store)
+	plan, err := syncer.BuildPlan(r.Context(), routes, linked, s.Store, crews)
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -790,6 +837,10 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	crews, ok := s.crewSnapshot(w, r)
+	if !ok {
+		return
+	}
 
 	build := s.TargetFactory
 	if build == nil {
@@ -806,7 +857,7 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 		byAccount[account.ID] = target
 	}
 
-	plan, err := syncer.BuildPlan(r.Context(), routes, linked, s.Store)
+	plan, err := syncer.BuildPlan(r.Context(), routes, linked, s.Store, crews)
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -933,6 +984,17 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		req.Targets = &list
 	}
 
+	crews, ok := s.crewSnapshot(w, r)
+	if !ok {
+		return
+	}
+	if req.Targets != nil {
+		if err := validateCrewTargets(*req.Targets, uploader, crews); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+	}
+
 	route, err := s.Source.Create(r.Context(), req)
 	if err != nil {
 		// A bad GPX is the caller's problem, not a server fault.
@@ -946,7 +1008,7 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.logger().Info("route uploaded", "slug", route.Slug, "by", req.UploadedBy)
-	writeJSON(w, http.StatusCreated, s.toRouteDTO(r.Context(), route, linked))
+	writeJSON(w, http.StatusCreated, s.toRouteDTO(r.Context(), route, linked, crews))
 }
 
 func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
@@ -971,6 +1033,26 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	crews, ok := s.crewSnapshot(w, r)
+	if !ok {
+		return
+	}
+	if body.Targets != nil {
+		// Validated against the route's existing owner, fetched before the
+		// write — Update cannot change ownership, but the crew snapshot has
+		// to be checked against who actually owns the route, not against
+		// whoever is making this request (an admin may edit anyone's).
+		owner, err := s.routeOwner(r.Context(), slug)
+		if err != nil {
+			s.failLookup(w, err)
+			return
+		}
+		if err := validateCrewTargets(*body.Targets, owner, crews); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+	}
+
 	route, err := s.Source.Update(r.Context(), slug, source.UpdateRequest{
 		Name:     body.Name,
 		Descript: body.Description,
@@ -987,7 +1069,40 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, s.toRouteDTO(r.Context(), route, linked))
+	writeJSON(w, http.StatusOK, s.toRouteDTO(r.Context(), route, linked, crews))
+}
+
+// routeOwner looks up one route's current owner, the same list-and-match
+// mayEdit already does for its own ownership check — a second scan rather
+// than threading mayEdit's result through, since mayEdit answers a
+// different question (may this identity edit it) than this one (who
+// currently owns it, regardless of who is asking).
+func (s *Server) routeOwner(ctx context.Context, slug string) (string, error) {
+	routes, _, err := s.Source.List(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, route := range routes {
+		if route.Slug == slug {
+			return route.Owner, nil
+		}
+	}
+	return "", source.ErrNotFound
+}
+
+// validateCrewTargets checks a client-supplied targets list against the
+// route owner's current, approved crew membership — every entry must be a
+// crew the owner currently belongs to, or it is rejected at write time
+// rather than silently accepted and quietly non-functional. Own devices are
+// implicit and never need naming; crews are the only sharing mechanism a
+// client may name here.
+func validateCrewTargets(targets []string, owner string, crews crew.Snapshot) error {
+	for _, t := range targets {
+		if !crews.ApprovedRiders.Has(t, owner) {
+			return fmt.Errorf("%q is not a crew %s currently belongs to", t, owner)
+		}
+	}
+	return nil
 }
 
 // handleDelete removes a route from the source. It deliberately leaves sync
@@ -1013,10 +1128,10 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 
 // ---------- plumbing ----------
 
-func (s *Server) toRouteDTOs(ctx context.Context, routes []model.Route, linked []model.Account) []routeDTO {
+func (s *Server) toRouteDTOs(ctx context.Context, routes []model.Route, linked []model.Account, crews crew.Snapshot) []routeDTO {
 	out := make([]routeDTO, 0, len(routes))
 	for _, route := range routes {
-		out = append(out, s.toRouteDTO(ctx, route, linked))
+		out = append(out, s.toRouteDTO(ctx, route, linked, crews))
 	}
 	return out
 }
@@ -1033,8 +1148,8 @@ func (s *Server) stateFor(ctx context.Context, accountID string) map[string]stat
 	return entries
 }
 
-func (s *Server) toRouteDTO(ctx context.Context, r model.Route, linked []model.Account) routeDTO {
-	targetIDs := config.TargetsFor(r, linked)
+func (s *Server) toRouteDTO(ctx context.Context, r model.Route, linked []model.Account, crews crew.Snapshot) routeDTO {
+	targetIDs := config.TargetsFor(r, linked, crews)
 	statuses := make([]syncStatus, 0, len(targetIDs))
 	for _, id := range targetIDs {
 		entry, seen := s.stateFor(ctx, id)[r.Slug]
@@ -1054,6 +1169,11 @@ func (s *Server) toRouteDTO(ctx context.Context, r model.Route, linked []model.A
 		}
 	}
 
+	var rawTargets []string
+	if r.Targets != nil {
+		rawTargets = *r.Targets
+	}
+
 	return routeDTO{
 		Slug:           r.Slug,
 		Name:           r.Name,
@@ -1068,10 +1188,23 @@ func (s *Server) toRouteDTO(ctx context.Context, r model.Route, linked []model.A
 		Origin:         r.Origin,
 		Owner:          r.Owner,
 		UpdatedAt:      r.UpdatedAt,
-		Targets:        orEmpty(targetIDs),
-		UnknownTargets: orEmpty(config.UnknownTargets(r, linked)),
+		Targets:        orEmpty(rawTargets),
+		UnknownTargets: orEmpty(config.UnknownTargets(r, crews)),
+		OwnerCrews:     ownerCrewOptions(r.Owner, crews),
 		SyncState:      statuses,
 	}
+}
+
+// ownerCrewOptions is every crew a rider currently, approvedly, belongs to
+// — what a target picker may legally offer for a route they own.
+func ownerCrewOptions(owner string, crews crew.Snapshot) []crewOptionDTO {
+	out := make([]crewOptionDTO, 0, len(crews.Crews))
+	for _, c := range crews.Crews {
+		if crews.ApprovedRiders.Has(c.ID, owner) {
+			out = append(out, crewOptionDTO{ID: c.ID, Name: c.Name})
+		}
+	}
+	return out
 }
 
 func (s *Server) logger() *slog.Logger {

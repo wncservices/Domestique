@@ -177,13 +177,17 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	crews, err := openCrews(src)
+	if err != nil {
+		return err
+	}
 	switch cmd {
 	case "validate":
-		return runValidate(src, linkedAccounts)
+		return runValidate(src, linkedAccounts, crews)
 	case "plan":
-		return runPlan(src, linkedAccounts, store)
+		return runPlan(src, linkedAccounts, store, crews)
 	case "push":
-		return runPush(src, linkedAccounts, store, *dryRun)
+		return runPush(src, linkedAccounts, store, crews, *dryRun)
 	case "import":
 		return runImport(src, *from)
 	case "state":
@@ -422,6 +426,18 @@ func accountStoreFor(src *source.DB) (*accounts.Store, error) {
 	return accounts.UseDB(src.Conn(), src.DSN())
 }
 
+// openCrews reads every crew and its current approved membership, the same
+// snapshot the API's own crewSnapshot helper builds — the CLI has to close
+// the same gap TargetsFor closes for the server, or a route shared to a
+// crew would silently reach nobody but the owner when pushed from a laptop.
+func openCrews(src *source.DB) (crew.Snapshot, error) {
+	store, err := crew.UseDB(src.Conn(), src.DSN())
+	if err != nil {
+		return crew.Snapshot{}, err
+	}
+	return store.Snapshot(context.Background())
+}
+
 // openState decides where sync state lives.
 //
 // With a database source it goes in that same database, which is the whole
@@ -431,7 +447,7 @@ func openState(src *source.DB) (state.Store, error) {
 	return state.UseDB(src.Conn(), src.DSN())
 }
 
-func runValidate(src *source.DB, linked []model.Account) error {
+func runValidate(src *source.DB, linked []model.Account, crews crew.Snapshot) error {
 	routes, problems, err := src.List(context.Background())
 	if err != nil {
 		return err
@@ -443,8 +459,8 @@ func runValidate(src *source.DB, linked []model.Account) error {
 	for _, r := range routes {
 		fmt.Fprintf(w, "%s\t%s\t%.1f km\t%.0f m\t%d\t%v\n",
 			r.Slug, r.Name, r.Stats.DistanceM/1000, r.Stats.AscentM,
-			r.Stats.PointCount, config.TargetsFor(r, linked))
-		for _, unknown := range config.UnknownTargets(r, linked) {
+			r.Stats.PointCount, config.TargetsFor(r, linked, crews))
+		for _, unknown := range config.UnknownTargets(r, crews) {
 			problems = append(problems, fmt.Sprintf("%s: unknown target %q", r.Slug, unknown))
 		}
 	}
@@ -454,13 +470,13 @@ func runValidate(src *source.DB, linked []model.Account) error {
 	return reportProblems(problems)
 }
 
-func runPlan(src *source.DB, linked []model.Account, store state.Store) error {
+func runPlan(src *source.DB, linked []model.Account, store state.Store, crews crew.Snapshot) error {
 	routes, problems, err := src.List(context.Background())
 	if err != nil {
 		return err
 	}
 
-	plan, err := sync.BuildPlan(context.Background(), routes, linked, store)
+	plan, err := sync.BuildPlan(context.Background(), routes, linked, store, crews)
 	if err != nil {
 		return err
 	}
@@ -469,13 +485,13 @@ func runPlan(src *source.DB, linked []model.Account, store state.Store) error {
 	return reportProblems(problems)
 }
 
-func runPush(src *source.DB, linked []model.Account, store state.Store, dryRun bool) error {
+func runPush(src *source.DB, linked []model.Account, store state.Store, crews crew.Snapshot, dryRun bool) error {
 	routes, problems, err := src.List(context.Background())
 	if err != nil {
 		return err
 	}
 
-	plan, err := sync.BuildPlan(context.Background(), routes, linked, store)
+	plan, err := sync.BuildPlan(context.Background(), routes, linked, store, crews)
 	if err != nil {
 		return err
 	}
@@ -607,11 +623,23 @@ func runState(store state.Store) error {
 }
 
 func runServe(src *source.DB, cfg *config.Config, store state.Store, addr, webDir string) error {
-	if _, problems, err := src.List(context.Background()); err != nil {
+	routes, problems, err := src.List(context.Background())
+	if err != nil {
 		return err
-	} else if len(problems) > 0 {
-		for _, p := range problems {
-			fmt.Fprintln(os.Stderr, "problem:", p)
+	}
+	for _, p := range problems {
+		fmt.Fprintln(os.Stderr, "problem:", p)
+	}
+	// An ownerless route (CLI-imported, or uploaded before ownership was
+	// tracked) with no explicit targets used to reach every linked account;
+	// now it reaches nobody — TargetsFor has nobody to resolve "own
+	// accounts" against. Small, enumerable blast radius on the 1-2-rider
+	// deployment this actually runs on, worth naming rather than
+	// discovering at the next missed ride.
+	for _, r := range routes {
+		if r.Owner == "" && r.Targets == nil {
+			fmt.Fprintf(os.Stderr,
+				"problem: %s has no owner and no explicit targets — it will not reach any account; set an owner or share it to a crew\n", r.Slug)
 		}
 	}
 
