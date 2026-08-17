@@ -1228,6 +1228,16 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		Tags        *[]string `json:"tags"`
 		Targets     *[]string `json:"targets"`
 		Enabled     *bool     `json:"enabled"`
+		// ClaimOwner lets a rider become the owner of a route that
+		// currently has none — an import with no --owner, or a Garmin
+		// course sync-back nobody has claimed. mayEdit already treats an
+		// ownerless route as fair game for any edit-own rider (not just an
+		// admin — see auth.Identity.CanEditRoute), so this only has to
+		// enforce the one thing that check doesn't: the route must
+		// actually still be ownerless when this request lands, or two
+		// riders racing to claim the same orphan could otherwise silently
+		// steal it from each other.
+		ClaimOwner bool `json:"claimOwner,omitempty"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -1238,17 +1248,35 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if body.Targets != nil {
-		// Validated against the route's existing owner, fetched before the
-		// write — Update cannot change ownership, but the crew snapshot has
-		// to be checked against who actually owns the route, not against
-		// whoever is making this request (an admin may edit anyone's).
+
+	var newOwner *string
+	var ownerForValidation string
+	if body.Targets != nil || body.ClaimOwner {
+		// Fetched before the write either way: Targets validates against
+		// who owns the route right now, and ClaimOwner has to confirm
+		// nobody already does.
 		owner, err := s.routeOwner(r.Context(), slug)
 		if err != nil {
 			s.failLookup(w, err)
 			return
 		}
-		if err := validateCrewTargets(*body.Targets, owner, crews); err != nil {
+		ownerForValidation = owner
+
+		if body.ClaimOwner {
+			if owner != "" {
+				writeJSON(w, http.StatusConflict, map[string]string{
+					"error": "this route already has an owner",
+				})
+				return
+			}
+			claimed := auth.FromContext(r.Context()).User
+			newOwner = &claimed
+			ownerForValidation = claimed
+		}
+	}
+
+	if body.Targets != nil {
+		if err := validateCrewTargets(*body.Targets, ownerForValidation, crews); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
@@ -1260,6 +1288,7 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		Tags:     body.Tags,
 		Targets:  body.Targets,
 		Enabled:  body.Enabled,
+		Owner:    newOwner,
 	})
 	if err != nil {
 		s.failLookup(w, err)

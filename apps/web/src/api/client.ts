@@ -215,6 +215,17 @@ export const api = {
       body: JSON.stringify({ targets }),
     }),
 
+  /** Claims an ownerless route (an import with no --owner, or an unclaimed
+   *  Garmin sync-back) as the caller's own — the only way such a route ever
+   *  becomes shareable, since crew-sharing validates against the owner's
+   *  own crew membership. 409s if someone else claimed it first. */
+  claimRoute: (slug: string) =>
+    request<Route>(`/api/routes/${encodeSlug(slug)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ claimOwner: true }),
+    }),
+
   routeDuplicates: () => request<RouteDuplicateGroup[]>('/api/routes/duplicates'),
 
   crews: () => request<Crew[]>('/api/crews'),

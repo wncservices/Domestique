@@ -301,6 +301,7 @@ type routeDTO struct {
 	PointCount     int      `json:"pointCount"`
 	ContentHash    string   `json:"contentHash"`
 	Origin         string   `json:"origin"`
+	Owner          string   `json:"owner"`
 	Targets        []string `json:"targets"`
 	UnknownTargets []string `json:"unknownTargets"`
 	SyncState      []struct {
@@ -1133,6 +1134,77 @@ func TestUpdateTargetsOnAnOwnerlessRouteFailsWithAClearReason(t *testing.T) {
 		strings.NewReader(`{"targets":[]}`), "application/json")
 	h.expectStatus(resp, http.StatusOK)
 }
+
+// Claiming is the only way an ownerless route ever becomes shareable again —
+// once claimed, its owner's crew membership makes crew targets valid the
+// same way any normally-uploaded route's would.
+func TestClaimOwnerMakesAnOwnerlessRouteShareable(t *testing.T) {
+	h := newHarness(t)
+
+	created, err := h.source.Create(context.Background(), source.CreateRequest{
+		Name: "Orphan", GPX: exampleGPX(t),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp := h.do(http.MethodPatch, "/api/routes/"+created.Slug,
+		strings.NewReader(`{"claimOwner":true}`), "application/json")
+	h.expectStatus(resp, http.StatusOK)
+
+	var claimed routeDTO
+	h.decode(resp, &claimed)
+	if claimed.Owner != "local" {
+		t.Fatalf("owner = %q, want the claiming rider (local)", claimed.Owner)
+	}
+
+	// Now that it has an owner, sharing to a crew that owner belongs to
+	// works exactly like any other route's.
+	resp = h.do(http.MethodPatch, "/api/routes/"+created.Slug,
+		strings.NewReader(`{"targets":["crew:soloone"]}`), "application/json")
+	h.expectStatus(resp, http.StatusOK)
+}
+
+// Two riders racing to claim the same orphan must not silently steal it from
+// each other — the second claim has to fail once the first has landed.
+func TestClaimOwnerFailsOnAnAlreadyOwnedRoute(t *testing.T) {
+	h := newHarness(t)
+
+	created, err := h.source.Create(context.Background(), source.CreateRequest{
+		Name: "Orphan", GPX: exampleGPX(t),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.source.Update(context.Background(), created.Slug,
+		source.UpdateRequest{Owner: ptr("someone-else")}); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := h.do(http.MethodPatch, "/api/routes/"+created.Slug,
+		strings.NewReader(`{"claimOwner":true}`), "application/json")
+	h.expectStatus(resp, http.StatusConflict)
+
+	routes, _, err := h.source.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, r := range routes {
+		if r.Slug != created.Slug {
+			continue
+		}
+		found = true
+		if r.Owner != "someone-else" {
+			t.Errorf("owner = %q, a failed claim must not have touched it", r.Owner)
+		}
+	}
+	if !found {
+		t.Fatalf("route %q disappeared", created.Slug)
+	}
+}
+
+func ptr[T any](v T) *T { return &v }
 
 // A crew reference that was valid when a route was shared to it can go
 // stale later — the crew gets deleted — without the route itself ever

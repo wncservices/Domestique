@@ -95,6 +95,36 @@ async function saveTargets() {
   }
 }
 
+// An ownerless route (an import with no --owner, or an unclaimed Garmin
+// sync-back) can never be shared to a crew — validateCrewTargets checks the
+// owner's own crew membership, and there is no owner to check. Claiming is
+// first-come: the server only refuses if someone else claimed it first
+// between this card loading and the click.
+const claiming = ref(false)
+
+async function claim() {
+  claiming.value = true
+  try {
+    await api.claimRoute(props.route.slug)
+    toast.add({
+      title: 'Route claimed',
+      description: `“${props.route.name}” is now yours — you can share it to your crews.`,
+      icon: 'i-lucide-check',
+      color: 'success',
+    })
+    emit('updated')
+  } catch (err) {
+    toast.add({
+      title: 'Could not claim this route',
+      description: err instanceof Error ? err.message : String(err),
+      icon: 'i-lucide-triangle-alert',
+      color: 'error',
+    })
+  } finally {
+    claiming.value = false
+  }
+}
+
 async function remove() {
   deleting.value = true
   try {
@@ -181,6 +211,26 @@ async function remove() {
           {{ route.owner }}
         </UBadge>
       </UTooltip>
+      <!-- An import with no --owner, or an unclaimed Garmin sync-back:
+           nothing else on this card works until someone claims it, since
+           target-picking and crew-sharing both key off the owner's own
+           crew membership. First-come, so any edit-own rider gets the
+           button, not only an admin. -->
+      <UTooltip
+        v-else-if="canEdit"
+        text="This route has no owner yet, so it can't reach any device or be shared to a crew. Claim it to fix that."
+      >
+        <UButton
+          size="xs"
+          color="warning"
+          variant="outline"
+          icon="i-lucide-user-plus"
+          :loading="claiming"
+          @click="claim"
+        >
+          Claim
+        </UButton>
+      </UTooltip>
 
       <UButton
         :href="gpxUrl"
@@ -193,7 +243,11 @@ async function remove() {
       />
       <UTooltip
         v-if="canEdit && !targetOptions.length"
-        text="Join or create a crew first to share this route beyond your own devices"
+        :text="
+          route.owner
+            ? 'Join or create a crew first to share this route beyond your own devices'
+            : 'Claim this route above first — targets are chosen from the owner\'s own crews'
+        "
       >
         <UButton
           icon="i-lucide-watch"
