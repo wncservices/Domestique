@@ -15,8 +15,10 @@ package sessions
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -36,6 +38,11 @@ type Store struct {
 // schema returns the DDL as a constant per engine — see providerlink.schema
 // for why this is not one Sprintf: gosec's taint analysis follows a formatted
 // string into every later query built from the same dialect.
+//
+// token holds sha256(the real cookie value), not the bearer credential
+// itself — see hashToken. The column name stays "token" rather than
+// "token_hash": renaming it would need a migration for a purely cosmetic
+// gain, since nothing outside this file ever reads the column directly.
 func schema(d dbx.Dialect) string {
 	const sqlite = `
 CREATE TABLE IF NOT EXISTS sessions (
@@ -139,7 +146,7 @@ func (s *Store) Create(id auth.Identity, ttl time.Duration) (token string, expir
 	// #nosec G701 -- constant statement, bound parameters.
 	if _, err := s.db.Exec(s.dialect.Rebind(
 		`INSERT INTO sessions (token, identity, created_at, expires_at) VALUES (?, ?, ?, ?)`),
-		tok, sealed, now.Format(time.RFC3339), expiresAt.Format(time.RFC3339)); err != nil {
+		hashToken(tok), sealed, now.Format(time.RFC3339), expiresAt.Format(time.RFC3339)); err != nil {
 		return "", time.Time{}, fmt.Errorf("sessions: creating session: %w", err)
 	}
 	return tok, expiresAt, nil
@@ -163,7 +170,7 @@ func (s *Store) Lookup(token string) (auth.Identity, bool) {
 	var expires string
 	// #nosec G701 -- constant statement, bound parameter.
 	err := s.db.QueryRow(s.dialect.Rebind(
-		`SELECT identity, expires_at FROM sessions WHERE token = ?`), token).
+		`SELECT identity, expires_at FROM sessions WHERE token = ?`), hashToken(token)).
 		Scan(&sealed, &expires)
 	if err != nil {
 		return auth.Identity{}, false
@@ -216,7 +223,7 @@ func (s *Store) UpdateName(token, name string) error {
 	}
 
 	// #nosec G701 -- constant statement, bound parameters.
-	_, err = s.db.Exec(s.dialect.Rebind(`UPDATE sessions SET identity = ? WHERE token = ?`), sealed, token)
+	_, err = s.db.Exec(s.dialect.Rebind(`UPDATE sessions SET identity = ? WHERE token = ?`), sealed, hashToken(token))
 	return err
 }
 
@@ -228,7 +235,7 @@ func (s *Store) Delete(token string) error {
 		return nil
 	}
 	// #nosec G701 -- constant statement, bound parameter.
-	_, err := s.db.Exec(s.dialect.Rebind(`DELETE FROM sessions WHERE token = ?`), token)
+	_, err := s.db.Exec(s.dialect.Rebind(`DELETE FROM sessions WHERE token = ?`), hashToken(token))
 	return err
 }
 
@@ -240,4 +247,19 @@ func newToken() (string, error) {
 		return "", fmt.Errorf("sessions: generating token: %w", err)
 	}
 	return base64.RawURLEncoding.EncodeToString(buf), nil
+}
+
+// hashToken is what actually goes in the sessions table — never the token
+// itself. The cookie value is the bearer credential for a live session;
+// storing it verbatim would mean anyone with read access to a DB backup, a
+// replica, or a future SQL-injection bug elsewhere in the stack could set
+// that cookie and become whoever it belonged to, with the encryption key on
+// `identity` buying nothing (the server holds that key too, so it protects
+// against reading the row, not against replaying it). The token is 32
+// bytes of crypto/rand, so a plain, unsalted SHA-256 is enough — there is
+// no low-entropy secret here for a rainbow table to help with, unlike a
+// password hash.
+func hashToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
 }

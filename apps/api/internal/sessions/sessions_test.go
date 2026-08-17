@@ -151,6 +151,37 @@ func TestCreatePrunesExpiredRows(t *testing.T) {
 	}
 }
 
+// The security-critical case: the token column must hold sha256(the real
+// cookie value), never the value itself. Anyone with read access to a DB
+// backup, a replica, or a future SQL-injection bug elsewhere in the stack
+// must not be able to lift a live session straight out of a row — the
+// encryption key on `identity` does not help with that, since the server
+// holds that key too.
+func TestTokenIsStoredHashedNotInThePlain(t *testing.T) {
+	s := newStore(t, newBox(t))
+	token, _, err := s.Create(auth.Identity{User: "wilant"}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var stored string
+	if err := s.db.QueryRow(`SELECT token FROM sessions`).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored == token {
+		t.Fatal("the raw token is stored in the token column")
+	}
+	if stored != hashToken(token) {
+		t.Errorf("stored token = %q, want sha256(token) = %q", stored, hashToken(token))
+	}
+
+	// Still has to resolve, obviously — hashing at rest must be transparent
+	// to every caller of Lookup/UpdateName/Delete.
+	if _, ok := s.Lookup(token); !ok {
+		t.Error("Lookup could not find a session it just created")
+	}
+}
+
 // Tampering with the ciphertext must read as "no session", not a panic or a
 // propagated decrypt error.
 func TestTamperedSessionIsFalseNotError(t *testing.T) {
@@ -161,7 +192,7 @@ func TestTamperedSessionIsFalseNotError(t *testing.T) {
 	}
 
 	if _, err := s.db.Exec(s.dialect.Rebind(
-		`UPDATE sessions SET identity = ? WHERE token = ?`), []byte("not sealed data"), token); err != nil {
+		`UPDATE sessions SET identity = ? WHERE token = ?`), []byte("not sealed data"), hashToken(token)); err != nil {
 		t.Fatal(err)
 	}
 
