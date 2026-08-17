@@ -292,15 +292,18 @@ func (s *Server) identityFromToken(idToken *oidc.IDToken) (auth.Identity, error)
 	// itself, the one place that would explain why, is gone by the time
 	// Authorize runs a request later, since only the resolved Identity
 	// survives into the session. So this is the one place to log it: a
-	// Debug line naming the configured claim key and every top-level claim
-	// key the token actually carried, cheap enough to leave on always and
-	// specific enough that turning on debug logging for one login attempt
-	// settles whether the fix is "assign the role in the IdP" or "the
+	// line naming the configured claim key and every top-level claim key
+	// the token actually carried, specific enough on its own to settle
+	// whether the fix is "assign the role in the IdP" or "the
 	// groups_claim config doesn't match what the IdP actually sends."
+	// Warn, not Debug — main.go's handler is built at LevelInfo with no
+	// way to turn Debug on short of a redeploy, and a login that resolves
+	// no groups is exactly the kind of anomaly Warn exists for elsewhere
+	// in this file (the nonce-mismatch case just above logs the same way).
 	groupsClaim := s.authenticator().OIDC().GroupsClaim
 	groups := stringSliceClaim(claims, groupsClaim)
 	if len(groups) == 0 {
-		s.logger().Debug("oidc token resolved no groups",
+		s.logger().Warn("oidc token resolved no groups",
 			"user", user, "configured_claim", groupsClaim, "token_claim_keys", claimKeys(claims))
 	}
 	return auth.Identity{
