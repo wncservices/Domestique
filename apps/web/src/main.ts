@@ -17,6 +17,7 @@ const router = createRouter({
     { path: '/add', component: () => import('./pages/AddPage.vue') },
     { path: '/settings', component: () => import('./pages/SettingsPage.vue') },
     { path: '/people', component: () => import('./pages/PeoplePage.vue') },
+    { path: '/crews', component: () => import('./pages/CrewsPage.vue') },
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],
 })

@@ -1,6 +1,6 @@
 import { computed, ref } from 'vue'
 import { api } from '@/api/client'
-import type { Account, AppConfig, Me, Permission, PlanResponse, Route } from '@/api/types'
+import type { Account, AppConfig, Crew, Me, Permission, PlanResponse, Route } from '@/api/types'
 
 /**
  * The state every page shares.
@@ -16,6 +16,7 @@ const accounts = ref<Account[]>([])
 const routes = ref<Route[]>([])
 const problems = ref<string[]>([])
 const plan = ref<PlanResponse | null>(null)
+const crews = ref<Crew[]>([])
 
 const loading = ref(true)
 const error = ref('')
@@ -61,6 +62,11 @@ async function load(): Promise<void> {
       problems.value = []
       plan.value = null
     }
+
+    // A separate gate from routes:read: a viewer can read the library
+    // without being able to manage crews (rider-level), so this cannot
+    // ride along inside the block above.
+    crews.value = identity.permissions.includes('crews:manage') ? await api.crews() : []
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err)
   } finally {
@@ -89,6 +95,7 @@ const canSyncGarmin = computed(() => can('garmin:sync'))
 const canPush = computed(() => can('sync:push'))
 const canManageAccounts = computed(() => can('accounts:manage'))
 const canManagePeople = computed(() => can('people:manage'))
+const canManageCrews = computed(() => can('crews:manage'))
 
 const totalDistance = computed(() => routes.value.reduce((sum, r) => sum + r.distanceM, 0) / 1000)
 const totalAscent = computed(() => routes.value.reduce((sum, r) => sum + r.ascentM, 0))
@@ -104,6 +111,7 @@ export function useLibrary() {
     routes,
     problems,
     plan,
+    crews,
     loading,
     error,
     refresh,
@@ -114,6 +122,7 @@ export function useLibrary() {
     canPush,
     canManageAccounts,
     canManagePeople,
+    canManageCrews,
     komootEnabled,
     totalDistance,
     totalAscent,

@@ -2,6 +2,8 @@ import type {
   Account,
   AppConfig,
   AssignableRole,
+  Crew,
+  CreateCrewRequest,
   GarminConnection,
   GarminConsumer,
   GarminCourse,
@@ -198,6 +200,31 @@ export const api = {
     }),
 
   routeDuplicates: () => request<RouteDuplicateGroup[]>('/api/routes/duplicates'),
+
+  crews: () => request<Crew[]>('/api/crews'),
+  createCrew: (req: CreateCrewRequest) =>
+    request<Crew>('/api/crews', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+    }),
+  deleteCrew: (id: string) =>
+    request<{ status: string }>(`/api/crews/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  joinCrew: (id: string) =>
+    request<Crew>(`/api/crews/${encodeURIComponent(id)}/join`, { method: 'POST' }),
+  approveCrewMember: (crewId: string, rider: string) =>
+    request<Crew>(
+      `/api/crews/${encodeURIComponent(crewId)}/members/${encodeURIComponent(rider)}`,
+      { method: 'PUT' },
+    ),
+  /** Denies a pending request, removes an approved member, or leaves a
+   *  crew the caller is themselves a member of — the server picks which,
+   *  based on who is asking and the member's current status. */
+  removeCrewMember: (crewId: string, rider: string) =>
+    request<{ status: string }>(
+      `/api/crews/${encodeURIComponent(crewId)}/members/${encodeURIComponent(rider)}`,
+      { method: 'DELETE' },
+    ),
 
   people: () => request<Person[]>('/api/people'),
   invitePerson: (req: InvitePersonRequest) =>
