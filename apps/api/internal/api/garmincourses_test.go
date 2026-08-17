@@ -290,6 +290,62 @@ func TestGarminCourseImportIsolatesPerCourseFailures(t *testing.T) {
 	}
 }
 
+// A route already recorded (via sync_state) as synced from a given course,
+// but somehow missing its "garmin"/"garmin:<id>" tags — a historical gap,
+// not reproducible from the current code path (see
+// TestGarminCourseImportCreatesRoutes) — gets healed by re-selecting that
+// same course, rather than creating a duplicate route. Re-running the
+// import a second time must stay a no-op, not append the tags twice.
+func TestGarminCourseImportHealsMissingTagsWithoutDuplicating(t *testing.T) {
+	h := newConnectHarness(t, true)
+	h.connectGarmin("wilant")
+	h.garmin.listCourses = []garmin.Course{
+		{ID: "1", Name: "Old Import", ActivityType: "cycling"},
+	}
+	// Deliberately no gpxByID["1"]: healing must never need to re-download —
+	// if the code path regressed into treating this as a fresh import, the
+	// resulting empty GPX would fail Create and this course would land in
+	// Skipped instead of Imported, failing the assertion below.
+
+	route, err := h.db.Create(t.Context(), source.CreateRequest{
+		Filename: "old-import.gpx", Name: "Old Import", GPX: exampleGPX(t),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.store.Record(t.Context(), state.Entry{
+		AccountID: "garmin:wilant", Slug: route.Slug, RemoteID: "1",
+		ContentHash: route.ContentHash, UpdatedAt: "2026-01-01T00:00:00Z",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	for i := range 2 {
+		resp := h.as("wilant", "cyclists", http.MethodPost, "/api/garmin/courses/import", `{"courseIds":["1"]}`)
+		var result struct {
+			Imported []string          `json:"imported"`
+			Skipped  map[string]string `json:"skipped"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			t.Fatal(err)
+		}
+		if len(result.Imported) != 1 || result.Imported[0] != "1" {
+			t.Fatalf("pass %d: imported = %+v, skipped = %+v, want [\"1\"] healed", i, result.Imported, result.Skipped)
+		}
+	}
+
+	routes, _, err := h.db.List(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != 1 {
+		t.Fatalf("library = %+v, want the original route healed in place, not duplicated", routes)
+	}
+	if got := routes[0].Tags; len(got) != 2 || got[0] != "garmin" || got[1] != "garmin:1" {
+		t.Errorf("tags = %v, want exactly [garmin garmin:1] — not doubled by the second pass", got)
+	}
+}
+
 func TestGarminCourseImportRequiresAConnection(t *testing.T) {
 	h := newConnectHarness(t, true)
 

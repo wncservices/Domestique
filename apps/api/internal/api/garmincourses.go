@@ -354,21 +354,69 @@ func (s *Server) handleGarminCourseImport(w http.ResponseWriter, r *http.Request
 		wanted = append(wanted, id)
 	}
 
+	// Already recorded as synced from these courses — the frontend normally
+	// will not even offer them for selection (the checkbox is disabled), but
+	// re-selecting one on purpose is exactly how a rider heals a route that
+	// somehow ended up without its "garmin" tag: see ensureGarminTags. Split
+	// out up front so the download step below only fetches GPX for courses
+	// that are actually going to be created.
+	tracked, err := s.Store.ForAccount(r.Context(), accounts.ID(model.ProviderGarmin, rider))
+	if err != nil {
+		s.logger().Warn("could not read garmin sync state for healing", "rider", rider, "err", err)
+	}
+	trackedByRemoteID := map[string]state.Entry{}
+	for _, e := range tracked {
+		if e.RemoteID != "" {
+			trackedByRemoteID[e.RemoteID] = e
+		}
+	}
+	routes, _, err := s.Source.List(r.Context())
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	routesBySlug := map[string]model.Route{}
+	for _, rt := range routes {
+		routesBySlug[rt.Slug] = rt
+	}
+
+	var toDownload []string
+	for _, id := range wanted {
+		if _, already := trackedByRemoteID[id]; !already {
+			toDownload = append(toDownload, id)
+		}
+	}
+
 	// Downloaded a few at a time, same reasoning and the same bound as
 	// Komoot's import: sequential would mean thirty waits end to end with
 	// no response byte written until the last one finished, and this is
 	// somebody's personal account on an undocumented API, not a service to
 	// saturate.
 	const parallel = 4
-	downloads := fetchGPX(r.Context(), s.Garmin, consumer, session, wanted, parallel)
+	downloads := fetchGPX(r.Context(), s.Garmin, consumer, session, toDownload, parallel)
 
 	for _, id := range wanted {
+		course := byID[id]
+
+		if entry, already := trackedByRemoteID[id]; already {
+			route, found := routesBySlug[entry.Slug]
+			if !found {
+				result.Skipped[id] = "already tracked, but the route it points to no longer exists"
+				continue
+			}
+			if err := s.ensureGarminTags(r.Context(), route, id); err != nil {
+				result.Skipped[id] = err.Error()
+				continue
+			}
+			result.Imported = append(result.Imported, id)
+			continue
+		}
+
 		got := downloads[id]
 		if got.err != nil {
 			result.Skipped[id] = got.err.Error()
 			continue
 		}
-		course := byID[id]
 
 		route, err := s.Source.Create(r.Context(), source.CreateRequest{
 			Filename: course.Name + ".gpx",
@@ -411,6 +459,40 @@ func (s *Server) handleGarminCourseImport(w http.ResponseWriter, r *http.Request
 	s.logger().Info("garmin course sync-back finished",
 		"user", identity.User, "rider", rider, "imported", len(result.Imported), "skipped", len(result.Skipped))
 	writeJSON(w, http.StatusOK, result)
+}
+
+// ensureGarminTags backfills the "garmin"/"garmin:<id>" tags onto a route
+// that sync_state already records as coming from this exact course, but
+// which is somehow missing them — the self-healing half of re-selecting an
+// already-imported course, rather than creating a duplicate route. Every
+// current write path sets both tags at creation (see this file's own
+// tests), so this only ever has anything to do for a route whose tags
+// predate that, or lost them some other way outside this app's own code.
+// A no-op when both are already present.
+func (s *Server) ensureGarminTags(ctx context.Context, route model.Route, courseID string) error {
+	want := []string{"garmin", garminTag(courseID)}
+	have := make(map[string]bool, len(route.Tags))
+	for _, t := range route.Tags {
+		have[t] = true
+	}
+
+	// Copied rather than appended-to-in-place: route.Tags may share its
+	// backing array with a cached copy elsewhere (routesBySlug, in the
+	// handler above), and append can grow into unused capacity in that
+	// same array rather than always allocating a fresh one.
+	newTags := append([]string{}, route.Tags...)
+	changed := false
+	for _, t := range want {
+		if !have[t] {
+			newTags = append(newTags, t)
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	_, err := s.Source.Update(ctx, route.Slug, source.UpdateRequest{Tags: &newTags})
+	return err
 }
 
 type gpxDownload struct {

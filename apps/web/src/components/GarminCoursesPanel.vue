@@ -50,13 +50,20 @@ const columns: TableColumn<GarminCourse>[] = [
         'onUpdate:modelValue': (v: boolean | 'indeterminate') => toggleAll(v === true),
         'aria-label': 'Select all importable courses',
       }),
-    cell: ({ row }) =>
-      h(UCheckbox, {
+    cell: ({ row }) => {
+      const checkbox = h(UCheckbox, {
         modelValue: selected.value.includes(row.original.id),
-        disabled: row.original.imported,
         'onUpdate:modelValue': (v: boolean | 'indeterminate') => toggle(row.original.id, v === true),
         'aria-label': `Select ${row.original.name}`,
-      }),
+      })
+      // Re-selecting an already-imported course is deliberately still
+      // possible — it's how a route that ended up missing its "garmin" tag
+      // gets healed, without creating a duplicate (see garmincourses.go's
+      // handleGarminCourseImport).
+      return row.original.imported
+        ? h(UTooltip, { text: 'Already imported — select to re-check it and fix its tags if needed' }, () => checkbox)
+        : checkbox
+    },
   },
   {
     accessorKey: 'name',
