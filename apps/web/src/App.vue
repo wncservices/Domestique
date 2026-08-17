@@ -66,9 +66,9 @@ const links = computed(() =>
   [
     { to: '/', label: 'Library', icon: 'i-lucide-route' },
     canUpload.value ? { to: '/add', label: 'Add route', icon: 'i-lucide-plus' } : null,
-    { to: '/settings', label: 'Settings', icon: 'i-lucide-settings' },
     canManageCrews.value ? { to: '/crews', label: 'Crews', icon: 'i-lucide-users-round' } : null,
     canManagePeople.value ? { to: '/people', label: 'People', icon: 'i-lucide-users' } : null,
+    { to: '/settings', label: 'Settings', icon: 'i-lucide-settings' },
   ].filter((link) => link !== null),
 )
 
@@ -178,6 +178,7 @@ onMounted(refresh)
             :color="$route.path === link.to ? 'primary' : 'neutral'"
             :variant="$route.path === link.to ? 'subtle' : 'ghost'"
             size="sm"
+            :class="link.to === '/settings' ? 'ml-auto' : ''"
           >
             {{ link.label }}
           </UButton>

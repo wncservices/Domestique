@@ -22,6 +22,7 @@ type PeopleConnector interface {
 	SetRoles(ctx context.Context, userID string, roleNames []string) error
 	SendInviteEmail(ctx context.Context, email string) error
 	FindByEmail(ctx context.Context, email string) ([]auth0mgmt.Person, error)
+	UpdateName(ctx context.Context, userID, name string) (auth0mgmt.Person, error)
 }
 
 type personDTO struct {

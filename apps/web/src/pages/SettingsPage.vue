@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
-import { api } from '@/api/client'
+import { onMounted, ref, watch } from 'vue'
+import { useToast } from '@nuxt/ui/composables'
+import { api, ApiError } from '@/api/client'
 import type { GarminConnection, KomootConnection, WahooConnection } from '@/api/types'
 import { useLibrary } from '@/composables/useLibrary'
 import AccountsPanel from '@/components/AccountsPanel.vue'
@@ -10,6 +11,67 @@ import WahooConnect from '@/components/WahooConnect.vue'
 
 const { accounts, me, config, canManageAccounts, canImportKomoot, komootEnabled, refresh } =
   useLibrary()
+const toast = useToast()
+
+// --- profile: name + password, both proxied through Auth0's Management API
+// (see meDTO.canEditName/canChangePassword on the server) ---
+
+const nameInput = ref('')
+const savingName = ref(false)
+
+// Keep the field in step with the signed-in identity — most relevantly
+// right after a save round-trips through refresh().
+watch(
+  () => me.value?.name,
+  (name) => {
+    nameInput.value = name ?? ''
+  },
+  { immediate: true },
+)
+
+async function saveName() {
+  const name = nameInput.value.trim()
+  if (!name || name === me.value?.name) return
+  savingName.value = true
+  try {
+    await api.updateMe(name)
+    await refresh()
+    toast.add({ title: 'Name updated', icon: 'i-lucide-check', color: 'success' })
+  } catch (err) {
+    toast.add({
+      title: 'Could not update your name',
+      description: err instanceof Error ? err.message : String(err),
+      icon: 'i-lucide-triangle-alert',
+      color: 'error',
+    })
+  } finally {
+    savingName.value = false
+  }
+}
+
+const sendingPasswordReset = ref(false)
+
+async function sendPasswordReset() {
+  sendingPasswordReset.value = true
+  try {
+    await api.sendPasswordReset()
+    toast.add({
+      title: 'Password reset email sent',
+      description: `Check ${me.value?.email} for a link to set a new password.`,
+      icon: 'i-lucide-mail-check',
+      color: 'success',
+    })
+  } catch (err) {
+    toast.add({
+      title: 'Could not send the reset email',
+      description: err instanceof ApiError ? err.message : String(err),
+      icon: 'i-lucide-triangle-alert',
+      color: 'error',
+    })
+  } finally {
+    sendingPasswordReset.value = false
+  }
+}
 
 // Settings owns the Komoot connection now: this is the page where sign-ins
 // live, and the Add page only consumes the result.
@@ -75,6 +137,51 @@ onMounted(async () => {
 
 <template>
   <div class="flex flex-col gap-6">
+    <!-- Only ever available under authMode oidc, with Auth0 Management API
+         credentials configured — meDTO omits both flags (defaulting them
+         false) for a proxy/none deployment or one without that client. -->
+    <UCard v-if="me?.canEditName" variant="outline">
+      <template #header>
+        <h2 class="flex items-center gap-2 font-medium text-highlighted">
+          <UIcon name="i-lucide-user-round" />
+          Profile
+        </h2>
+        <p class="text-sm text-muted">Your own name and sign-in, for this account only.</p>
+      </template>
+
+      <div class="flex flex-col gap-4">
+        <UFormField label="Name">
+          <div class="flex max-w-sm gap-2">
+            <UInput v-model="nameInput" class="flex-1" @keyup.enter="saveName" />
+            <UButton
+              :loading="savingName"
+              :disabled="!nameInput.trim() || nameInput.trim() === me?.name"
+              @click="saveName"
+            >
+              Save
+            </UButton>
+          </div>
+        </UFormField>
+
+        <div>
+          <p class="mb-1 text-sm font-medium text-toned">Password</p>
+          <UButton
+            v-if="me?.canChangePassword"
+            size="sm"
+            variant="soft"
+            icon="i-lucide-mail"
+            :loading="sendingPasswordReset"
+            @click="sendPasswordReset"
+          >
+            Email me a reset link
+          </UButton>
+          <p v-else class="text-xs text-dimmed">
+            You sign in with an external provider — there's no password here to change.
+          </p>
+        </div>
+      </div>
+    </UCard>
+
     <AccountsPanel
       :accounts="accounts"
       :me="me"

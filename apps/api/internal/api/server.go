@@ -139,6 +139,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/config", s.handleConfig)
 	mux.Handle("GET /api/metrics", metricsHandler())
 	mux.HandleFunc("GET /api/me", s.handleMe)
+	mux.HandleFunc("PATCH /api/me", s.handleUpdateMe)
+	mux.HandleFunc("POST /api/me/password-reset", s.handleSelfPasswordReset)
 	mux.HandleFunc("GET /api/accounts", s.handleAccounts)
 	mux.HandleFunc("POST /api/accounts", s.handleLinkAccount)
 	mux.HandleFunc("DELETE /api/accounts/{id}", s.handleUnlinkAccount)
@@ -451,12 +453,20 @@ type meDTO struct {
 	// LogoutURL is the identity provider's, not this app's: the session being
 	// ended belongs to the proxy. Empty means no sign-out button.
 	LogoutURL string `json:"logoutUrl,omitempty"`
+	// CanEditName and CanChangePassword tell Settings' Profile card whether
+	// it has anything to offer. Both need id.Sub (only ModeOIDC ever
+	// populates it) and a configured Management API client; changing a
+	// password additionally needs the identity to be a database connection
+	// — a Google-linked rider has no password here to change.
+	CanEditName       bool `json:"canEditName"`
+	CanChangePassword bool `json:"canChangePassword"`
 }
 
 // handleMe tells the UI who it is talking to and what to show. Without it the
 // frontend would have to guess, and would offer buttons that 403.
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	id := auth.FromContext(r.Context())
+	canEditName := s.People != nil && id.Sub != ""
 	writeJSON(w, http.StatusOK, meDTO{
 		// Enabled() alone used to be enough, because under mode: proxy an
 		// anonymous request never reached this handler at all — Traefik's
@@ -464,16 +474,100 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		// signed in" were the same fact by construction. mode: oidc breaks
 		// that: /api/me is now reachable while anonymous (see authenticate),
 		// on purpose, so the two questions have to be asked separately.
-		Authenticated: s.authenticator().Enabled() && !id.Anonymous(),
-		AuthMode:      string(s.authenticator().Mode()),
-		User:          id.User,
-		Name:          id.Name,
-		Email:         id.Email,
-		Groups:        orEmpty(id.Groups),
-		Role:          roleLabel(id.Role),
-		Permissions:   orEmpty(id.Role.Permissions()),
-		LogoutURL:     s.authenticator().LogoutURL(),
+		Authenticated:     s.authenticator().Enabled() && !id.Anonymous(),
+		AuthMode:          string(s.authenticator().Mode()),
+		User:              id.User,
+		Name:              id.Name,
+		Email:             id.Email,
+		Groups:            orEmpty(id.Groups),
+		Role:              roleLabel(id.Role),
+		Permissions:       orEmpty(id.Role.Permissions()),
+		LogoutURL:         s.authenticator().LogoutURL(),
+		CanEditName:       canEditName,
+		CanChangePassword: canEditName && id.Provider() == "auth0",
 	})
+}
+
+// handleUpdateMe lets a signed-in rider change their own display name —
+// Auth0 is the system of record (Update writes there first), and the
+// current session is patched to match afterward so the change is visible
+// immediately rather than after sessionTTL forces a fresh login.
+func (s *Server) handleUpdateMe(w http.ResponseWriter, r *http.Request) {
+	id := auth.FromContext(r.Context())
+	if id.Sub == "" {
+		writeJSON(w, http.StatusPreconditionFailed, map[string]string{
+			"error": "this account has no Auth0 identity to update",
+		})
+		return
+	}
+	if !s.peopleAvailable(w) {
+		return
+	}
+
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name cannot be empty"})
+		return
+	}
+
+	if _, err := s.People.UpdateName(r.Context(), id.Sub, name); err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+
+	// Best-effort: the Auth0 write above already succeeded, so a session
+	// that fails to pick up the new name here just keeps showing the old
+	// one until it expires or the rider signs in again — not worth failing
+	// an otherwise-successful request over.
+	if cookie, err := r.Cookie(auth.SessionCookieName); err == nil {
+		if err := s.Sessions.UpdateName(cookie.Value, name); err != nil {
+			s.logger().Warn("updating session after name change failed", "err", err)
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"name": name})
+}
+
+// handleSelfPasswordReset sends the signed-in rider Auth0's own
+// "reset your password" email — the same public endpoint the People page
+// reuses for invites (see auth0mgmt.SendInviteEmail's doc comment); a
+// forgotten password and a rider who wants a new one complete the identical
+// flow. Only offered for a database-connection identity: a Google-linked
+// rider has no password here to reset in the first place.
+func (s *Server) handleSelfPasswordReset(w http.ResponseWriter, r *http.Request) {
+	id := auth.FromContext(r.Context())
+	if id.Sub == "" {
+		writeJSON(w, http.StatusPreconditionFailed, map[string]string{
+			"error": "this account has no Auth0 identity to reset a password for",
+		})
+		return
+	}
+	if provider := id.Provider(); provider != "auth0" {
+		writeJSON(w, http.StatusPreconditionFailed, map[string]string{
+			"error": fmt.Sprintf("this account signs in through %s — there is no password to reset here", provider),
+		})
+		return
+	}
+	if !s.peopleAvailable(w) {
+		return
+	}
+	if id.Email == "" {
+		writeJSON(w, http.StatusPreconditionFailed, map[string]string{"error": "no email on file for this account"})
+		return
+	}
+
+	if err := s.People.SendInviteEmail(r.Context(), id.Email); err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "sent"})
 }
 
 func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request) {

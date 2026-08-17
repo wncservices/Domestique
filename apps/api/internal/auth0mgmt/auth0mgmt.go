@@ -459,6 +459,22 @@ func (c *Client) Invite(ctx context.Context, email, name string, roleNames []str
 	return Person{UserID: created.UserID, Email: created.Email, Name: created.Name, Roles: roleNames}, nil
 }
 
+// UpdateName sets userID's display name — the self-service Settings page's
+// "change name," not the admin People page's business, so it takes no roles
+// and does no gate/permission-role bookkeeping the way Invite/SetRoles do.
+func (c *Client) UpdateName(ctx context.Context, userID, name string) (Person, error) {
+	var updated struct {
+		UserID string `json:"user_id"`
+		Email  string `json:"email"`
+		Name   string `json:"name"`
+	}
+	if err := c.do(ctx, http.MethodPatch, "/api/v2/users/"+url.PathEscape(userID),
+		map[string]any{"name": name}, &updated); err != nil {
+		return Person{}, fmt.Errorf("updating name: %w", err)
+	}
+	return Person{UserID: updated.UserID, Email: updated.Email, Name: updated.Name}, nil
+}
+
 // SetRoles makes userID's role membership exactly want — granting whatever
 // is missing, revoking whatever is present but not wanted. current is read
 // fresh rather than trusted from a caller's stale copy of the page.

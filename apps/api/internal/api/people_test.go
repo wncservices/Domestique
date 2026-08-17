@@ -28,11 +28,14 @@ type fakePeople struct {
 
 	findByEmail map[string][]auth0mgmt.Person // by email — empty/absent means no existing identity
 
-	listErr   error
-	inviteErr error
-	emailErr  error
-	rolesErr  error
-	findErr   error
+	updatedName map[string]string // by user id, last call wins
+
+	listErr       error
+	inviteErr     error
+	emailErr      error
+	rolesErr      error
+	findErr       error
+	updateNameErr error
 }
 
 func (f *fakePeople) ListPeople(context.Context, string, ...string) ([]auth0mgmt.Person, error) {
@@ -79,6 +82,17 @@ func (f *fakePeople) FindByEmail(_ context.Context, email string) ([]auth0mgmt.P
 		return nil, f.findErr
 	}
 	return f.findByEmail[email], nil
+}
+
+func (f *fakePeople) UpdateName(_ context.Context, userID, name string) (auth0mgmt.Person, error) {
+	if f.updateNameErr != nil {
+		return auth0mgmt.Person{}, f.updateNameErr
+	}
+	if f.updatedName == nil {
+		f.updatedName = map[string]string{}
+	}
+	f.updatedName[userID] = name
+	return auth0mgmt.Person{UserID: userID, Name: name}, nil
 }
 
 type peopleHarness struct {

@@ -148,10 +148,30 @@ type Identity struct {
 	Email  string   `json:"email,omitempty"`
 	Groups []string `json:"groups,omitempty"`
 	Role   Role     `json:"role"`
+	// Sub is the OIDC subject claim, verbatim — for Auth0 this is the
+	// issuer's own user id ("auth0|64f2a1b2c3d4e5f6"), the only thing that
+	// unambiguously names one account when a rider might hold two identities
+	// for the same email (a Google sign-in and a database one are never
+	// linked on this tenant — see auth0mgmt's own FindByEmail doc comment).
+	// Only ever set under ModeOIDC; empty in every other mode, since there is
+	// no Management API account to point it at.
+	Sub string `json:"-"`
 }
 
 // Anonymous reports whether nobody is identified.
 func (i Identity) Anonymous() bool { return i.User == "" }
+
+// Provider is the connection type embedded in Sub's prefix — "auth0" for a
+// database (email+password) sign-in, "google-oauth2" for Google, and so on
+// for whatever other connections a tenant enables. Empty when Sub itself is
+// empty. Used to decide whether "change password" makes sense at all: a
+// Google-only identity has no password on this app's side to change.
+func (i Identity) Provider() string {
+	if idx := strings.Index(i.Sub, "|"); idx > 0 {
+		return i.Sub[:idx]
+	}
+	return ""
+}
 
 // DisplayName is the friendliest label available.
 func (i Identity) DisplayName() string {

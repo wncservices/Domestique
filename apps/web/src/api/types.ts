@@ -66,6 +66,15 @@ export interface Me {
    *  and always absent under authMode oidc, which signs out through
    *  api.logout() instead: the app holds that session and ends it itself. */
   logoutUrl?: string
+  /** Whether Settings' Profile card can rename this account through Auth0's
+   *  Management API — needs authMode oidc and a deployment with Management
+   *  API credentials configured. */
+  canEditName: boolean
+  /** Whether Settings' Profile card can send this account a password-reset
+   *  email — canEditName, and this identity is an Auth0 database
+   *  (email+password) connection rather than a social one like Google,
+   *  which has no password here to reset. */
+  canChangePassword: boolean
 }
 
 /** One rider's standing with a crew. */

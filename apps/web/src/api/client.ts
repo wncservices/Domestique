@@ -78,6 +78,14 @@ function encodeSlug(slug: string): string {
 export const api = {
   config: () => request<AppConfig>('/api/config'),
   me: () => request<Me>('/api/me'),
+  updateMe: (name: string) =>
+    request<{ name: string }>('/api/me', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    }),
+  sendPasswordReset: () =>
+    request<{ status: string }>('/api/me/password-reset', { method: 'POST' }),
   /** Ends an authMode oidc session. The app holds that session and ends it
    *  itself — POST rather than a link, since signing out is a state change,
    *  not a navigation. redirectTo is the issuer's own end-session URL when

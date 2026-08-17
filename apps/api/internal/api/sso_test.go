@@ -160,7 +160,12 @@ type ssoHarness struct {
 	issuer *fakeIssuer
 }
 
-func newSSOHarness(t *testing.T) *ssoHarness {
+// newSSOHarness builds a working ModeOIDC server against the fake issuer.
+// opts can set additional Server fields (People, for the self-service
+// profile tests) before the server starts serving — safe to apply either
+// side of httptest.NewServer, since Handler() reads srv's fields per
+// request off the same pointer, not a snapshot taken at construction.
+func newSSOHarness(t *testing.T, opts ...func(*api.Server)) *ssoHarness {
 	t.Helper()
 	issuer := newFakeIssuer(t)
 
@@ -205,6 +210,9 @@ func newSSOHarness(t *testing.T) *ssoHarness {
 	}
 
 	srv := &api.Server{Auth: authenticator, OIDC: flow, Sessions: sessionStore, Box: box}
+	for _, opt := range opts {
+		opt(srv)
+	}
 	server := httptest.NewServer(srv.Handler())
 	t.Cleanup(server.Close)
 
