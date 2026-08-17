@@ -185,6 +185,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/crews", s.handleCreateCrew)
 	mux.HandleFunc("GET /api/crews", s.handleListCrews)
 	mux.HandleFunc("DELETE /api/crews/{id}", s.handleDeleteCrew)
+	mux.HandleFunc("PATCH /api/crews/{id}", s.handleSetCrewAutoShare)
 	mux.HandleFunc("POST /api/crews/{id}/join", s.handleJoinCrew)
 	mux.HandleFunc("POST /api/crews/{id}/members", s.handleAddCrewMember)
 	mux.HandleFunc("PUT /api/crews/{id}/members/{rider}", s.handleApproveCrewMember)
@@ -994,6 +995,14 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
+	} else if auto := crews.AutoShareCrewsFor(uploader); len(auto) > 0 {
+		// Only fills in when the uploader made no target choice of their
+		// own — an explicit empty selection ("targets=" with nothing after
+		// it doesn't reach this branch at all, since it never sets
+		// req.Targets in the first place) still can't currently opt out of
+		// auto-share through this form field, but a rider who wants that
+		// can always retarget afterward from the route card.
+		req.Targets = &auto
 	}
 
 	route, err := s.Source.Create(r.Context(), req)

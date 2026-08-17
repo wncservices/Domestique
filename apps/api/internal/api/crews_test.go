@@ -75,6 +75,7 @@ type crewDTOOut struct {
 	Mine             bool   `json:"mine"`
 	MembershipStatus string `json:"membershipStatus"`
 	MemberCount      int    `json:"memberCount"`
+	AutoShare        bool   `json:"autoShare"`
 	Members          []struct {
 		Rider  string `json:"rider"`
 		Status string `json:"status"`
@@ -296,6 +297,43 @@ func TestDeleteCrewIsOwnerOrAdminOnly(t *testing.T) {
 	}
 }
 
+func TestOnlyOwnerOrAdminCanSetAutoShare(t *testing.T) {
+	h := newCrewHarness(t)
+	created := decodeCrew(t, h.as("wilant", "cyclists", http.MethodPost, "/api/crews", `{"name":"Family"}`))
+	if created.AutoShare {
+		t.Fatalf("autoShare = true on create, want false")
+	}
+
+	if resp := h.as("other", "cyclists", http.MethodPatch, "/api/crews/"+created.ID, `{"autoShare":true}`); resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("non-owner status = %d, want 403", resp.StatusCode)
+	}
+
+	resp := h.as("wilant", "cyclists", http.MethodPatch, "/api/crews/"+created.ID, `{"autoShare":true}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("owner status = %d, want 200", resp.StatusCode)
+	}
+	if updated := decodeCrew(t, resp); !updated.AutoShare {
+		t.Errorf("autoShare = false after enabling, want true")
+	}
+
+	// An admin may too, and can turn it back off.
+	adminResp := h.as("boss", "admins", http.MethodPatch, "/api/crews/"+created.ID, `{"autoShare":false}`)
+	if adminResp.StatusCode != http.StatusOK {
+		t.Fatalf("admin status = %d, want 200", adminResp.StatusCode)
+	}
+	if updated := decodeCrew(t, adminResp); updated.AutoShare {
+		t.Errorf("autoShare = true after admin disabled it, want false")
+	}
+}
+
+func TestSetAutoShareOnNonexistentCrewIs404(t *testing.T) {
+	h := newCrewHarness(t)
+	resp := h.as("wilant", "cyclists", http.MethodPatch, "/api/crews/crew:does-not-exist", `{"autoShare":true}`)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
 func TestJoinNonexistentCrewIs404(t *testing.T) {
 	h := newCrewHarness(t)
 	resp := h.as("wilant", "cyclists", http.MethodPost, "/api/crews/crew:does-not-exist/join", "")
@@ -314,6 +352,7 @@ func TestCrewEndpointsNeedRiderPermission(t *testing.T) {
 		{http.MethodGet, "/api/crews", ""},
 		{http.MethodPost, "/api/crews/" + created.ID + "/join", ""},
 		{http.MethodDelete, "/api/crews/" + created.ID, ""},
+		{http.MethodPatch, "/api/crews/" + created.ID, `{"autoShare":true}`},
 		{http.MethodPost, "/api/crews/" + created.ID + "/members", `{"rider":"other"}`},
 		{http.MethodPut, "/api/crews/" + created.ID + "/members/wilant", ""},
 	} {

@@ -1038,6 +1038,46 @@ func TestPathTraversalIsRefused(t *testing.T) {
 	}
 }
 
+// An upload with no explicit target choice defaults to whatever auto-share
+// crews the uploader currently belongs to, instead of reaching nobody but
+// their own accounts.
+func TestUploadDefaultsToAutoShareCrews(t *testing.T) {
+	h := newHarness(t)
+
+	h.expectStatus(h.do(http.MethodPatch, "/api/crews/crew:soloone",
+		strings.NewReader(`{"autoShare":true}`), "application/json"), http.StatusOK)
+
+	resp := h.upload(map[string]string{"name": "No Choice Made"}, exampleGPX(t), "no-choice.gpx")
+	h.expectStatus(resp, http.StatusCreated)
+
+	var created routeDTO
+	h.decode(resp, &created)
+	if len(created.Targets) != 1 || created.Targets[0] != "crew:soloone" {
+		t.Errorf("targets = %v, want only crew:soloone", created.Targets)
+	}
+}
+
+// Auto-share only fills in a default — it never overrides an explicit
+// choice the uploader actually made.
+func TestExplicitTargetsOverrideAutoShare(t *testing.T) {
+	h := newHarness(t)
+
+	h.expectStatus(h.do(http.MethodPatch, "/api/crews/crew:soloone",
+		strings.NewReader(`{"autoShare":true}`), "application/json"), http.StatusOK)
+
+	resp := h.upload(map[string]string{
+		"name":    "Deliberate Choice",
+		"targets": "crew:solotwo",
+	}, exampleGPX(t), "deliberate.gpx")
+	h.expectStatus(resp, http.StatusCreated)
+
+	var created routeDTO
+	h.decode(resp, &created)
+	if len(created.Targets) != 1 || created.Targets[0] != "crew:solotwo" {
+		t.Errorf("targets = %v, want only the explicitly chosen crew:solotwo", created.Targets)
+	}
+}
+
 // A route can no longer be created naming a target its owner does not
 // belong to — write-time validation rejects it outright now, rather than
 // accepting it and leaving it silently unsynced the way a typo'd raw

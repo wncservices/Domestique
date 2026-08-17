@@ -32,6 +32,12 @@ type crewDTO struct {
 	// and roster size are not sensitive, a rider needs them to discover a
 	// crew worth requesting to join.
 	MemberCount int `json:"memberCount"`
+	// AutoShare is whether a member uploading with no explicit target
+	// choice gets it shared here by default. Visible to everyone, not just
+	// Mine — it changes what *any* member's own uploads default to, not
+	// just the owner's, so any member deciding whether to trust this crew
+	// needs to see it. Only the owner or an admin may change it.
+	AutoShare bool `json:"autoShare"`
 	// Members is who is pending and who is approved, omitted unless Mine —
 	// nobody else has a reason to see who else asked to join.
 	Members []crewMemberDTO `json:"members,omitempty"`
@@ -45,6 +51,7 @@ func (s *Server) crewDTOFor(identity auth.Identity, c crew.Crew, members []crew.
 		ID: c.ID, Name: c.Name, Owner: c.Owner,
 		Mine:             identity.CanEditRoute(c.Owner),
 		MembershipStatus: "none",
+		AutoShare:        c.AutoShare,
 	}
 	for _, m := range members {
 		if m.Status == crew.StatusApproved {
@@ -174,6 +181,58 @@ func (s *Server) handleDeleteCrew(w http.ResponseWriter, r *http.Request) {
 
 	s.logger().Info("crew deleted", "id", id, "by", auth.FromContext(r.Context()).User)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// handleSetCrewAutoShare flips whether a member uploading with no explicit
+// target choice gets it shared here by default. Owner or admin only — the
+// same ownership rule as delete, since this changes what the crew *does*
+// for every member, not just the caller's own membership.
+func (s *Server) handleSetCrewAutoShare(w http.ResponseWriter, r *http.Request) {
+	if !s.require(w, r, auth.PermManageCrews) {
+		return
+	}
+	if !s.crewAvailable(w) {
+		return
+	}
+
+	id := r.PathValue("id")
+	c, err := s.Crew.Get(r.Context(), id)
+	if err != nil {
+		s.failCrewLookup(w, err)
+		return
+	}
+	identity := auth.FromContext(r.Context())
+	if !identity.CanEditRoute(c.Owner) {
+		s.forbidCrew(w, r)
+		return
+	}
+
+	var body struct {
+		AutoShare bool `json:"autoShare"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<10)).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+
+	if err := s.Crew.SetAutoShare(r.Context(), id, body.AutoShare); err != nil {
+		s.failCrewLookup(w, err)
+		return
+	}
+
+	c, err = s.Crew.Get(r.Context(), id)
+	if err != nil {
+		s.failCrewLookup(w, err)
+		return
+	}
+	members, err := s.Crew.Members(r.Context(), id)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+
+	s.logger().Info("crew auto-share set", "crew", id, "autoShare", body.AutoShare, "by", identity.User)
+	writeJSON(w, http.StatusOK, s.crewDTOFor(identity, c, members))
 }
 
 // handleJoinCrew records the caller's request to join. Self-service: no

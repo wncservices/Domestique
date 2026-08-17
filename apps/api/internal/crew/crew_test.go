@@ -277,6 +277,56 @@ func TestCrewEachEngine(t *testing.T) {
 				}
 			})
 
+			t.Run("auto-share defaults off, and AutoShareCrewsFor only counts approved members of an auto-share crew", func(t *testing.T) {
+				store := open(t)
+				ctx := t.Context()
+
+				c, err := store.Create(ctx, "Family", "wilant")
+				if err != nil {
+					t.Fatalf("create: %v", err)
+				}
+				if c.AutoShare {
+					t.Fatalf("auto_share = true, want false by default")
+				}
+
+				if _, err := store.AddMember(ctx, c.ID, "rider", "wilant"); err != nil {
+					t.Fatalf("add member: %v", err)
+				}
+
+				snap, err := store.Snapshot(ctx)
+				if err != nil {
+					t.Fatalf("snapshot: %v", err)
+				}
+				if got := snap.AutoShareCrewsFor("rider"); len(got) != 0 {
+					t.Fatalf("AutoShareCrewsFor before turning it on = %v, want none", got)
+				}
+
+				if err := store.SetAutoShare(ctx, c.ID, true); err != nil {
+					t.Fatalf("set auto-share: %v", err)
+				}
+				snap, err = store.Snapshot(ctx)
+				if err != nil {
+					t.Fatalf("snapshot after enabling: %v", err)
+				}
+				if got := snap.AutoShareCrewsFor("rider"); len(got) != 1 || got[0] != c.ID {
+					t.Fatalf("AutoShareCrewsFor(rider) = %v, want [%s]", got, c.ID)
+				}
+				// A rider who never joined never gets this crew as a default,
+				// auto-share or not.
+				if got := snap.AutoShareCrewsFor("stranger"); len(got) != 0 {
+					t.Fatalf("AutoShareCrewsFor(stranger) = %v, want none", got)
+				}
+			})
+
+			t.Run("set auto-share on a nonexistent crew is not found", func(t *testing.T) {
+				store := open(t)
+				ctx := t.Context()
+
+				if err := store.SetAutoShare(ctx, "crew:does-not-exist", true); !errors.Is(err, ErrNotFound) {
+					t.Fatalf("err = %v, want ErrNotFound", err)
+				}
+			})
+
 			t.Run("approving a rider with no request is not found", func(t *testing.T) {
 				store := open(t)
 				ctx := t.Context()
