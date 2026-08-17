@@ -80,14 +80,33 @@ type Member struct {
 type MemberSet map[string][]string
 
 // Has reports whether rider is a current, approved member of crewID.
+// Case-insensitive, matching auth.Identity.CanEditRoute's own EqualFold —
+// rider identity is compared the same way everywhere in this app, not
+// exact-match here and case-insensitive there. Found live: a route whose
+// owner and crew membership were both genuinely the same rider, entered
+// with different casing on two different paths (a typed --owner flag vs.
+// the OIDC token's own lowercased claim), silently resolved to "not a
+// member" — which is not just a wrong tooltip, config.TargetsFor calls
+// this too, so it silently drops the route from that rider's own push
+// targets.
 func (m MemberSet) Has(crewID, rider string) bool {
 	for _, r := range m[crewID] {
-		if r == rider {
+		if strings.EqualFold(r, rider) {
 			return true
 		}
 	}
 	return false
 }
+
+// normalizeRider is the one place a rider identifier gets its canonical
+// form before being stored — lowercased and trimmed, the same
+// transformation identityFromToken already applies to every OIDC claim
+// before it ever becomes an Identity.User. Every write here goes through
+// it, not just the ones fed by a signed-in session (RequestJoin, the
+// self-service path): AddMember and Create both accept a rider identifier
+// typed by someone else (the crew owner, an operator), which is exactly
+// the path that will not already be normalized on its own.
+func normalizeRider(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
 
 // Snapshot is every crew and its current approved membership, fetched
 // together because everywhere either is needed, both are — resolving a
@@ -146,7 +165,28 @@ func UseDB(db *sql.DB, dsn string) (*Store, error) {
 	if err := store.addAutoShareColumn(); err != nil {
 		return nil, fmt.Errorf("migrate crew tables: %w", err)
 	}
+	if err := store.normalizeExistingOwners(context.Background()); err != nil {
+		return nil, fmt.Errorf("normalize crew owners: %w", err)
+	}
 	return store, nil
+}
+
+// normalizeExistingOwners lowercases and trims crews.owner on every row not
+// already in that form — Create does this for anything written from here
+// on, but a crew created before that keeps whatever casing its owner was
+// given until this runs. Safe unconditionally: owner carries no uniqueness
+// constraint of its own (id is the table's key), so this can never collide.
+// crew_members.rider is deliberately not touched the same way — it is part
+// of a composite primary key, and two existing rows for the same real rider
+// under different casing (a genuine possibility this bug could have caused)
+// would collide on normalization instead of merging. MemberSet.Has being
+// case-insensitive is what covers that table instead, with no data rewrite
+// needed.
+func (s *Store) normalizeExistingOwners(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, s.dialect.Rebind(`
+        UPDATE crews SET owner = LOWER(TRIM(owner))
+        WHERE owner <> LOWER(TRIM(owner))`))
+	return err
 }
 
 // addAutoShareColumn adds auto_share to a crews table that predates the
@@ -193,7 +233,7 @@ func slugify(name string) string {
 // else.
 func (s *Store) Create(ctx context.Context, name, owner string) (Crew, error) {
 	name = strings.TrimSpace(name)
-	owner = strings.TrimSpace(owner)
+	owner = normalizeRider(owner)
 	if name == "" {
 		return Crew{}, errors.New("crew: name is required")
 	}
@@ -369,7 +409,7 @@ func (s *Store) Members(ctx context.Context, crewID string) ([]Member, error) {
 // error, not silent, if the rider already has a pending or approved row —
 // callers should not double-request over an existing one.
 func (s *Store) RequestJoin(ctx context.Context, crewID, rider string) (Member, error) {
-	rider = strings.TrimSpace(rider)
+	rider = normalizeRider(rider)
 	if rider == "" {
 		return Member{}, errors.New("crew: no rider — who is requesting to join?")
 	}
@@ -408,7 +448,7 @@ func (s *Store) RequestJoin(ctx context.Context, crewID, rider string) (Member, 
 // rather than erroring — that is what the two-step path already reduces
 // to, so there is no reason to make the owner deny-then-add instead.
 func (s *Store) AddMember(ctx context.Context, crewID, rider, addedBy string) (Member, error) {
-	rider = strings.TrimSpace(rider)
+	rider = normalizeRider(rider)
 	if rider == "" {
 		return Member{}, errors.New("crew: no rider — who is being added?")
 	}
@@ -444,6 +484,7 @@ func (s *Store) AddMember(ctx context.Context, crewID, rider, addedBy string) (M
 
 // Approve grants a pending request, recording who decided it and when.
 func (s *Store) Approve(ctx context.Context, crewID, rider, decidedBy string) error {
+	rider = normalizeRider(rider)
 	now := time.Now().UTC().Format(time.RFC3339)
 	result, err := s.db.ExecContext(ctx, s.dialect.Rebind(`
         UPDATE crew_members SET status = ?, decided_by = ?, decided_at = ?
@@ -473,6 +514,7 @@ func (s *Store) Remove(ctx context.Context, crewID, rider string) error {
 }
 
 func (s *Store) delete(ctx context.Context, crewID, rider, status string) error {
+	rider = normalizeRider(rider)
 	result, err := s.db.ExecContext(ctx, s.dialect.Rebind(`
         DELETE FROM crew_members WHERE crew_id = ? AND rider = ? AND status = ?`),
 		crewID, rider, status)
