@@ -44,6 +44,10 @@ type UpdateRequest struct {
 	Tags     *[]string
 	Targets  *[]string
 	Enabled  *bool
+	// Owner is set only for the narrow claim-an-orphan case (see the API
+	// package's handleUpdate) — Update itself does not decide who may claim
+	// what, it just writes the value it is given.
+	Owner *string
 	// GPX replaces the track when non-nil.
 	GPX []byte
 }

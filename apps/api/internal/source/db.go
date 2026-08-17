@@ -228,6 +228,9 @@ func (d *DB) Update(ctx context.Context, slug string, req UpdateRequest) (model.
 	if req.Enabled != nil {
 		current.Enabled = req.Enabled
 	}
+	if req.Owner != nil {
+		current.Owner = *req.Owner
+	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -241,12 +244,12 @@ func (d *DB) Update(ctx context.Context, slug string, req UpdateRequest) (model.
 		_, err = d.db.ExecContext(ctx, d.query(`
             UPDATE routes SET name=?, description=?, tags=?, targets=?, enabled=?, gpx=?,
                    distance_m=?, ascent_m=?, start_lat=?, start_lng=?, point_count=?,
-                   content_hash=?, updated_at=?
+                   content_hash=?, uploaded_by=?, updated_at=?
             WHERE slug=?`),
 			current.Name, current.Description, joinList(current.Tags),
 			nullableList(current.Targets), current.IsEnabled(), req.GPX,
 			stats.DistanceM, stats.AscentM, stats.StartLat, stats.StartLng, stats.PointCount,
-			current.ContentHash, now, slug)
+			current.ContentHash, current.Owner, now, slug)
 		if err != nil {
 			return model.Route{}, err
 		}
@@ -263,11 +266,11 @@ func (d *DB) Update(ctx context.Context, slug string, req UpdateRequest) (model.
 
 	_, err = d.db.ExecContext(ctx, d.query(`
         UPDATE routes SET name=?, description=?, tags=?, targets=?, enabled=?,
-               content_hash=?, updated_at=?
+               content_hash=?, uploaded_by=?, updated_at=?
         WHERE slug=?`),
 		current.Name, current.Description, joinList(current.Tags),
 		nullableList(current.Targets), current.IsEnabled(),
-		current.ContentHash, now, slug)
+		current.ContentHash, current.Owner, now, slug)
 	if err != nil {
 		return model.Route{}, err
 	}

@@ -249,6 +249,13 @@ const myRoutes = computed(() =>
 
 const shareOptions = computed(() => myRoutes.value.map((r) => ({ label: r.name, value: r.slug })))
 
+// Ownerless routes this rider could edit (and so could claim) but that
+// myRoutes excludes on purpose — surfaced here so "why isn't my route in
+// this list" has an answer instead of a silent gap.
+const claimableOrphanCount = computed(
+  () => routes.value.filter((r) => !r.owner && (can('routes:edit-any') || can('routes:edit-own'))).length,
+)
+
 // True once every offered route is selected — drives the "Select all" /
 // "Select none" toggle below without a separate ref to keep in sync.
 const allRoutesSelected = computed(
@@ -500,6 +507,11 @@ async function saveShare() {
           />
           <p v-else class="text-xs text-dimmed">
             You don't have any routes of your own to share yet.
+          </p>
+          <p v-if="claimableOrphanCount" class="text-xs text-dimmed">
+            {{ claimableOrphanCount }} route{{ claimableOrphanCount === 1 ? '' : 's' }} with no owner
+            {{ claimableOrphanCount === 1 ? "isn't" : "aren't" }} listed here — claim
+            {{ claimableOrphanCount === 1 ? 'it' : 'them' }} from the Library page first.
           </p>
         </div>
       </template>
