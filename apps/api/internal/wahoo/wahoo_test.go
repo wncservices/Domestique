@@ -369,26 +369,63 @@ func TestDownloadRouteFromTheAPIHostCarriesAuth(t *testing.T) {
 	}
 }
 
-// The CDN link Wahoo hands back is a different host from the API. Sending
-// this rider's bearer token there would leak it to whatever host happens to
-// show up in a response field — see DownloadRoute's own doc comment.
-func TestDownloadRouteNeverSendsTheTokenToAnotherHost(t *testing.T) {
-	var gotAuth string
-	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotAuth = r.Header.Get("Authorization")
+// GET /v1/routes' file.url comes straight out of Wahoo's own response body
+// (routeListItem), and a rider picks ids from that list to import — a
+// compromised or malicious upstream response could point it at an internal
+// address instead of the real CDN. DownloadRoute must refuse anything off
+// the allowlist outright, not just withhold the bearer token from it.
+func TestDownloadRouteRefusesAnUnrecognizedHost(t *testing.T) {
+	var reached bool
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached = true
 		_, _ = w.Write([]byte("fit-bytes"))
 	}))
-	t.Cleanup(cdn.Close)
+	t.Cleanup(elsewhere.Close)
 
 	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("should never reach the API host — the file lives on the CDN")
+		t.Fatal("should never reach the API host either — the URL is refused before any request is sent")
 	})
 
-	if _, err := c.DownloadRoute(t.Context(), "at", cdn.URL+"/route.fit"); err != nil {
-		t.Fatalf("DownloadRoute: %v", err)
+	if _, err := c.DownloadRoute(t.Context(), "at", elsewhere.URL+"/route.fit"); err == nil {
+		t.Fatal("expected an error for a file URL on an unrecognized host")
 	}
-	if gotAuth != "" {
-		t.Errorf("Authorization leaked to a different host: %q", gotAuth)
+	if reached {
+		t.Error("the unrecognized host was fetched despite not being on the allowlist")
+	}
+}
+
+// The two hosts this app actually expects a route file to come from: its
+// own API host (carries auth) and Wahoo's own CDN (does not — see
+// allowedFileHost's doc comment for why cdn.wahooligan.com specifically is
+// trusted rather than "whatever host the response happens to name").
+func TestAllowedFileHostAcceptsTheAPIHostAndTheCDNOnly(t *testing.T) {
+	c := New(Config{ClientID: "id", ClientSecret: "secret", RedirectURL: "https://app.example.test/callback"})
+	c.APIBase = "https://api.wahooligan.com"
+
+	for _, tc := range []struct {
+		url        string
+		wantAPI    bool
+		wantRefuse bool
+	}{
+		{url: "https://api.wahooligan.com/v1/routes/5/file", wantAPI: true},
+		{url: "https://cdn.wahooligan.com/wahoo-cloud/uploads/route/file/x/y.fit", wantAPI: false},
+		{url: "https://evil.example.test/route.fit", wantRefuse: true},
+		{url: "http://cdn.wahooligan.com/route.fit", wantRefuse: true}, // right host, wrong scheme
+	} {
+		onAPIHost, err := c.allowedFileHost(tc.url)
+		if tc.wantRefuse {
+			if err == nil {
+				t.Errorf("%s: expected refusal, got onAPIHost=%v", tc.url, onAPIHost)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("%s: unexpected refusal: %v", tc.url, err)
+			continue
+		}
+		if onAPIHost != tc.wantAPI {
+			t.Errorf("%s: onAPIHost = %v, want %v", tc.url, onAPIHost, tc.wantAPI)
+		}
 	}
 }
 
