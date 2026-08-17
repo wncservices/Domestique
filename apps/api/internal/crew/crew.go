@@ -6,13 +6,21 @@
 // stops a rider from naming another rider's account directly — there is no
 // consent or relationship check anywhere on that path. A crew is that
 // relationship: a rider creates one and becomes its owner, other riders
-// request to join and only the owner approves or denies, or the owner adds
-// someone directly without waiting on a request. A route may then
-// be shared to a crew the route's owner belongs to, which resolves — at
-// push time, not at share time — to every currently approved member's
-// accounts. Membership is deliberately not baked into a route when it is
-// shared: a member leaving or being removed takes effect on the next push
-// with nobody touching the route.
+// request to join and the owner approves or denies, or the owner starts it
+// from their own end by adding someone directly instead of waiting on a
+// request. Either direction still needs the other party's say-so before it
+// counts as membership — a self-request needs the owner's approval
+// (Approve), an owner's invite needs the invited rider's own confirmation
+// (Confirm), unless that rider already had a pending request in, in which
+// case the consent side is already satisfied and the owner's AddMember call
+// is itself the approval. Push
+// access is exactly what membership gates: a route may be shared to a crew
+// the route's owner belongs to, which resolves — at push time, not at share
+// time — to every currently approved member's accounts, so an invite that
+// stayed pending forever never reaches anyone's device. Membership is
+// deliberately not baked into a route when it is shared: a member leaving
+// or being removed takes effect on the next push with nobody touching the
+// route.
 //
 // "Crew" rather than "group" on purpose. This codebase already uses "group"
 // for Authelia/Auth0 role-mapping groups (see internal/auth), an unrelated
@@ -39,12 +47,39 @@ var ErrNotFound = errors.New("no such crew")
 // already belong to, or already have a pending request for.
 var ErrAlreadyMember = errors.New("already a member or already requested")
 
+// ErrConfirmationRequired is returned by Approve when the pending row it was
+// asked to grant is an invite (OriginInvite) rather than a self-request
+// (OriginSelf) — the owner cannot complete the other party's half of the
+// consent themselves. Only Confirm, called by the invited rider, may grant
+// that row.
+var ErrConfirmationRequired = errors.New("crew: this is an invite — only the invited rider can confirm it")
+
+// ErrNoInvite is returned by Confirm when the calling rider has no pending
+// invite to confirm — either nothing is there, it is already approved, or
+// it is a self-request (OriginSelf), which only the owner may grant.
+var ErrNoInvite = errors.New("crew: no pending invite for that rider")
+
 // MemberStatus is where a rider stands with a crew.
 type MemberStatus string
 
 const (
 	StatusPending  MemberStatus = "pending"
 	StatusApproved MemberStatus = "approved"
+)
+
+// MemberOrigin is which side of the relationship started a pending row —
+// it decides who may grant it: a self-request needs the owner's approval, an
+// invite needs the invited rider's own confirmation. It has no meaning once
+// a row is approved; both directions end up identical members.
+type MemberOrigin string
+
+const (
+	// OriginSelf is a rider's own request to join (RequestJoin) — the owner
+	// grants it (Approve).
+	OriginSelf MemberOrigin = "self"
+	// OriginInvite is the owner starting the relationship from their end
+	// (AddMember, first time) — the invited rider grants it (Confirm).
+	OriginInvite MemberOrigin = "invite"
 )
 
 // Crew is a set of riders who trust each other with their routes.
@@ -67,6 +102,7 @@ type Member struct {
 	CrewID      string
 	Rider       string
 	Status      MemberStatus
+	Origin      MemberOrigin
 	RequestedAt string
 	DecidedBy   string
 	DecidedAt   string
@@ -142,6 +178,7 @@ CREATE TABLE IF NOT EXISTS crew_members (
     crew_id      TEXT NOT NULL,
     rider        TEXT NOT NULL,
     status       TEXT NOT NULL,
+    origin       TEXT NOT NULL DEFAULT 'self',
     requested_at TEXT NOT NULL,
     decided_by   TEXT NOT NULL DEFAULT '',
     decided_at   TEXT NOT NULL DEFAULT '',
@@ -163,6 +200,9 @@ func UseDB(db *sql.DB, dsn string) (*Store, error) {
 		return nil, fmt.Errorf("migrate crew tables: %w", err)
 	}
 	if err := store.addAutoShareColumn(); err != nil {
+		return nil, fmt.Errorf("migrate crew tables: %w", err)
+	}
+	if err := store.addOriginColumn(); err != nil {
 		return nil, fmt.Errorf("migrate crew tables: %w", err)
 	}
 	if err := store.normalizeExistingOwners(context.Background()); err != nil {
@@ -199,6 +239,23 @@ func (s *Store) normalizeExistingOwners(ctx context.Context) error {
 func (s *Store) addAutoShareColumn() error {
 	_, err := s.db.Exec(fmt.Sprintf(
 		`ALTER TABLE crews ADD COLUMN auto_share %s NOT NULL DEFAULT FALSE`, s.dialect.Boolean))
+	if err == nil {
+		return nil
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "duplicate column") || strings.Contains(msg, "already exists") {
+		return nil
+	}
+	return err
+}
+
+// addOriginColumn adds origin to a crew_members table that predates the
+// column, the same way addAutoShareColumn does for crews.auto_share.
+// Defaulting to 'self' is the correct read of every pre-existing row: before
+// this migration AddMember always inserted approved directly, so any
+// pending row already in the table can only have come from RequestJoin.
+func (s *Store) addOriginColumn() error {
+	_, err := s.db.Exec(`ALTER TABLE crew_members ADD COLUMN origin TEXT NOT NULL DEFAULT 'self'`)
 	if err == nil {
 		return nil
 	}
@@ -255,9 +312,9 @@ func (s *Store) Create(ctx context.Context, name, owner string) (Crew, error) {
 	}
 
 	if _, err := s.db.ExecContext(ctx, s.dialect.Rebind(`
-        INSERT INTO crew_members (crew_id, rider, status, requested_at, decided_by, decided_at)
-        VALUES (?, ?, ?, ?, ?, ?)`),
-		id, owner, string(StatusApproved), now, owner, now); err != nil {
+        INSERT INTO crew_members (crew_id, rider, status, origin, requested_at, decided_by, decided_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)`),
+		id, owner, string(StatusApproved), string(OriginSelf), now, owner, now); err != nil {
 		return Crew{}, fmt.Errorf("enroll crew owner: %w", err)
 	}
 
@@ -385,7 +442,7 @@ func (s *Store) Snapshot(ctx context.Context) (Snapshot, error) {
 // approved together, which is what the owner's own view needs.
 func (s *Store) Members(ctx context.Context, crewID string) ([]Member, error) {
 	rows, err := s.db.QueryContext(ctx, s.dialect.Rebind(`
-        SELECT crew_id, rider, status, requested_at, decided_by, decided_at
+        SELECT crew_id, rider, status, origin, requested_at, decided_by, decided_at
         FROM crew_members WHERE crew_id = ? ORDER BY requested_at`), crewID)
 	if err != nil {
 		return nil, fmt.Errorf("read crew members: %w", err)
@@ -395,11 +452,12 @@ func (s *Store) Members(ctx context.Context, crewID string) ([]Member, error) {
 	var out []Member
 	for rows.Next() {
 		var m Member
-		var status string
-		if err := rows.Scan(&m.CrewID, &m.Rider, &status, &m.RequestedAt, &m.DecidedBy, &m.DecidedAt); err != nil {
+		var status, origin string
+		if err := rows.Scan(&m.CrewID, &m.Rider, &status, &origin, &m.RequestedAt, &m.DecidedBy, &m.DecidedAt); err != nil {
 			return nil, fmt.Errorf("read crew members: %w", err)
 		}
 		m.Status = MemberStatus(status)
+		m.Origin = MemberOrigin(origin)
 		out = append(out, m)
 	}
 	return out, rows.Err()
@@ -452,24 +510,26 @@ func (s *Store) RequestJoin(ctx context.Context, crewID, rider string) (Member, 
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	if _, err := s.db.ExecContext(ctx, s.dialect.Rebind(`
-        INSERT INTO crew_members (crew_id, rider, status, requested_at, decided_by, decided_at)
-        VALUES (?, ?, ?, ?, '', '')`),
-		crewID, rider, string(StatusPending), now); err != nil {
+        INSERT INTO crew_members (crew_id, rider, status, origin, requested_at, decided_by, decided_at)
+        VALUES (?, ?, ?, ?, ?, '', '')`),
+		crewID, rider, string(StatusPending), string(OriginSelf), now); err != nil {
 		return Member{}, fmt.Errorf("request to join crew: %w", err)
 	}
 
-	return Member{CrewID: crewID, Rider: rider, Status: StatusPending, RequestedAt: now}, nil
+	return Member{CrewID: crewID, Rider: rider, Status: StatusPending, Origin: OriginSelf, RequestedAt: now}, nil
 }
 
-// AddMember directly enrolls a rider as an approved member — the owner
-// vouching for someone is exactly as sufficient as a request-then-approve
-// round trip, in one step. This is the only way a crew gains a member
-// without that member ever having requested to join first: RequestJoin
-// still requires the joining rider's own session, but AddMember lets the
-// owner start from their end instead of waiting on the other rider to find
-// the crew and ask. A rider who already has a pending request is approved
-// rather than erroring — that is what the two-step path already reduces
-// to, so there is no reason to make the owner deny-then-add instead.
+// AddMember is the owner's other way to start a membership, from their own
+// end instead of waiting for the other rider to find the crew and ask. It
+// does not, on its own, grant anything: a fresh invite lands pending, the
+// same as RequestJoin's, until the invited rider confirms it themselves via
+// Confirm — see the package doc comment for why an owner's say-so is not
+// enough by itself. A rider who already has a pending self-request (they
+// asked first) is approved rather than left pending a second time — real
+// consent already exists there, the owner is just completing the round trip
+// the other way, and there is no reason to make them deny-then-add instead.
+// Calling this again while an invite is still unconfirmed is a harmless
+// no-op — it must not silently grant what only Confirm may.
 func (s *Store) AddMember(ctx context.Context, crewID, rider, addedBy string) (Member, error) {
 	rider = normalizeRider(rider)
 	if rider == "" {
@@ -479,24 +539,28 @@ func (s *Store) AddMember(ctx context.Context, crewID, rider, addedBy string) (M
 		return Member{}, err
 	}
 
-	var status string
+	var status, origin string
 	err := s.db.QueryRowContext(ctx, s.dialect.Rebind(`
-        SELECT status FROM crew_members WHERE crew_id = ? AND rider = ?`),
-		crewID, rider).Scan(&status)
+        SELECT status, origin FROM crew_members WHERE crew_id = ? AND rider = ?`),
+		crewID, rider).Scan(&status, &origin)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		now := time.Now().UTC().Format(time.RFC3339)
 		if _, err := s.db.ExecContext(ctx, s.dialect.Rebind(`
-            INSERT INTO crew_members (crew_id, rider, status, requested_at, decided_by, decided_at)
-            VALUES (?, ?, ?, ?, ?, ?)`),
-			crewID, rider, string(StatusApproved), now, addedBy, now); err != nil {
-			return Member{}, fmt.Errorf("add crew member: %w", err)
+            INSERT INTO crew_members (crew_id, rider, status, origin, requested_at, decided_by, decided_at)
+            VALUES (?, ?, ?, ?, ?, '', '')`),
+			crewID, rider, string(StatusPending), string(OriginInvite), now); err != nil {
+			return Member{}, fmt.Errorf("invite crew member: %w", err)
 		}
-		return Member{CrewID: crewID, Rider: rider, Status: StatusApproved, RequestedAt: now, DecidedBy: addedBy, DecidedAt: now}, nil
+		return Member{CrewID: crewID, Rider: rider, Status: StatusPending, Origin: OriginInvite, RequestedAt: now}, nil
 	case err != nil:
 		return Member{}, err
 	case status == string(StatusApproved):
 		return Member{}, ErrAlreadyMember
+	case origin == string(OriginInvite):
+		// Already invited, still unconfirmed — re-inviting changes nothing;
+		// only the invited rider's own Confirm may grant this row.
+		return Member{CrewID: crewID, Rider: rider, Status: StatusPending, Origin: OriginInvite}, nil
 	default:
 		if err := s.Approve(ctx, crewID, rider, addedBy); err != nil {
 			return Member{}, err
@@ -505,9 +569,26 @@ func (s *Store) AddMember(ctx context.Context, crewID, rider, addedBy string) (M
 	}
 }
 
-// Approve grants a pending request, recording who decided it and when.
+// Approve grants a pending self-request (OriginSelf), recording who decided
+// it and when — the owner's or an admin's call. It refuses an invite
+// (OriginInvite): that half of the consent belongs to the invited rider
+// alone, via Confirm, not to whoever is calling this.
 func (s *Store) Approve(ctx context.Context, crewID, rider, decidedBy string) error {
 	rider = normalizeRider(rider)
+
+	var origin string
+	err := s.db.QueryRowContext(ctx, s.dialect.Rebind(`
+        SELECT origin FROM crew_members WHERE crew_id = ? AND rider = ? AND status = ?`),
+		crewID, rider, string(StatusPending)).Scan(&origin)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return ErrNotFound
+	case err != nil:
+		return fmt.Errorf("approve crew member: %w", err)
+	case origin == string(OriginInvite):
+		return ErrConfirmationRequired
+	}
+
 	now := time.Now().UTC().Format(time.RFC3339)
 	result, err := s.db.ExecContext(ctx, s.dialect.Rebind(`
         UPDATE crew_members SET status = ?, decided_by = ?, decided_at = ?
@@ -518,6 +599,41 @@ func (s *Store) Approve(ctx context.Context, crewID, rider, decidedBy string) er
 	}
 	if affected, _ := result.RowsAffected(); affected == 0 {
 		return ErrNotFound
+	}
+	return nil
+}
+
+// Confirm grants an invited rider's own pending invite (OriginInvite) — the
+// invited rider's half of the consent an owner's AddMember alone cannot
+// supply. It refuses a self-request (OriginSelf): that row is already the
+// rider's own consent, waiting on the owner's Approve, not a second
+// confirmation from the same person who filed it.
+func (s *Store) Confirm(ctx context.Context, crewID, rider string) error {
+	rider = normalizeRider(rider)
+
+	var origin string
+	err := s.db.QueryRowContext(ctx, s.dialect.Rebind(`
+        SELECT origin FROM crew_members WHERE crew_id = ? AND rider = ? AND status = ?`),
+		crewID, rider, string(StatusPending)).Scan(&origin)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return ErrNoInvite
+	case err != nil:
+		return fmt.Errorf("confirm crew invite: %w", err)
+	case origin != string(OriginInvite):
+		return ErrNoInvite
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	result, err := s.db.ExecContext(ctx, s.dialect.Rebind(`
+        UPDATE crew_members SET status = ?, decided_by = ?, decided_at = ?
+        WHERE crew_id = ? AND rider = ?`),
+		string(StatusApproved), rider, now, crewID, rider)
+	if err != nil {
+		return fmt.Errorf("confirm crew invite: %w", err)
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return ErrNoInvite
 	}
 	return nil
 }

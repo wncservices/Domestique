@@ -216,7 +216,13 @@ func TestCrewEachEngine(t *testing.T) {
 				}
 			})
 
-			t.Run("add member enrolls a rider as approved with no request first", func(t *testing.T) {
+			// The security-critical case: an owner's say-so alone must not be
+			// enough to make someone else's head unit a push target. AddMember
+			// with no prior request lands pending, exactly like RequestJoin's
+			// own insert — it takes the invited rider's own confirmation
+			// (Confirm, called as themselves via the API layer) before
+			// ApprovedRiders, and therefore config.TargetsFor, ever sees them.
+			t.Run("add member with no request first lands pending, not approved", func(t *testing.T) {
 				store := open(t)
 				ctx := t.Context()
 
@@ -224,16 +230,41 @@ func TestCrewEachEngine(t *testing.T) {
 				if err != nil {
 					t.Fatalf("create: %v", err)
 				}
-				if _, err := store.AddMember(ctx, c.ID, "rider", "wilant"); err != nil {
+				m, err := store.AddMember(ctx, c.ID, "rider", "wilant")
+				if err != nil {
 					t.Fatalf("add member: %v", err)
+				}
+				if m.Status != StatusPending {
+					t.Fatalf("status = %q, want pending", m.Status)
 				}
 
 				snap, err := store.Snapshot(ctx)
 				if err != nil {
 					t.Fatalf("snapshot: %v", err)
 				}
-				if !snap.ApprovedRiders.Has(c.ID, "rider") {
-					t.Fatalf("added member missing from snapshot: %v", snap.ApprovedRiders)
+				if snap.ApprovedRiders.Has(c.ID, "rider") {
+					t.Fatal("an unconfirmed invite already counts as an approved member")
+				}
+
+				// Create seeds the owner as an approved member of their own
+				// crew, so the invited rider is not the only row here — find
+				// it by name rather than assuming position or count.
+				members, err := store.Members(ctx, c.ID)
+				if err != nil {
+					t.Fatalf("members: %v", err)
+				}
+				var found bool
+				for _, member := range members {
+					if member.Rider != "rider" {
+						continue
+					}
+					found = true
+					if member.Status != StatusPending {
+						t.Fatalf("invited member status = %q, want pending", member.Status)
+					}
+				}
+				if !found {
+					t.Fatalf("members = %+v, want a row for the invited rider", members)
 				}
 			})
 
@@ -261,6 +292,112 @@ func TestCrewEachEngine(t *testing.T) {
 				}
 			})
 
+			// The other half of the security property: an owner cannot grant
+			// their own invite by calling Approve on it — that would let the
+			// owner supply both sides of a consent that is supposed to need
+			// the invited rider's own say-so.
+			t.Run("approve refuses an invite — only Confirm may grant it", func(t *testing.T) {
+				store := open(t)
+				ctx := t.Context()
+
+				c, err := store.Create(ctx, "Family", "wilant")
+				if err != nil {
+					t.Fatalf("create: %v", err)
+				}
+				if _, err := store.AddMember(ctx, c.ID, "rider", "wilant"); err != nil {
+					t.Fatalf("invite: %v", err)
+				}
+				if err := store.Approve(ctx, c.ID, "rider", "wilant"); !errors.Is(err, ErrConfirmationRequired) {
+					t.Fatalf("approve an invite: err = %v, want ErrConfirmationRequired", err)
+				}
+
+				snap, err := store.Snapshot(ctx)
+				if err != nil {
+					t.Fatalf("snapshot: %v", err)
+				}
+				if snap.ApprovedRiders.Has(c.ID, "rider") {
+					t.Fatal("invite became approved via Approve, bypassing the invited rider's own confirmation")
+				}
+			})
+
+			// The mirror case: a rider cannot Confirm their own self-request —
+			// requesting to join is already that rider's own consent, waiting
+			// on the owner's Approve, not a second confirmation from the same
+			// person who filed it.
+			t.Run("confirm refuses a self-request — only the owner's approve may grant it", func(t *testing.T) {
+				store := open(t)
+				ctx := t.Context()
+
+				c, err := store.Create(ctx, "Family", "wilant")
+				if err != nil {
+					t.Fatalf("create: %v", err)
+				}
+				if _, err := store.RequestJoin(ctx, c.ID, "rider"); err != nil {
+					t.Fatalf("request join: %v", err)
+				}
+				if err := store.Confirm(ctx, c.ID, "rider"); !errors.Is(err, ErrNoInvite) {
+					t.Fatalf("confirm a self-request: err = %v, want ErrNoInvite", err)
+				}
+
+				snap, err := store.Snapshot(ctx)
+				if err != nil {
+					t.Fatalf("snapshot: %v", err)
+				}
+				if snap.ApprovedRiders.Has(c.ID, "rider") {
+					t.Fatal("self-request became approved via Confirm")
+				}
+			})
+
+			t.Run("confirm grants an invite, recording the invited rider as who decided it", func(t *testing.T) {
+				store := open(t)
+				ctx := t.Context()
+
+				c, err := store.Create(ctx, "Family", "wilant")
+				if err != nil {
+					t.Fatalf("create: %v", err)
+				}
+				if _, err := store.AddMember(ctx, c.ID, "rider", "wilant"); err != nil {
+					t.Fatalf("invite: %v", err)
+				}
+				if err := store.Confirm(ctx, c.ID, "rider"); err != nil {
+					t.Fatalf("confirm: %v", err)
+				}
+
+				members, err := store.Members(ctx, c.ID)
+				if err != nil {
+					t.Fatalf("members: %v", err)
+				}
+				var found bool
+				for _, m := range members {
+					if m.Rider != "rider" {
+						continue
+					}
+					found = true
+					if m.Status != StatusApproved {
+						t.Fatalf("status = %q, want approved", m.Status)
+					}
+					if m.DecidedBy != "rider" {
+						t.Fatalf("decidedBy = %q, want the invited rider themselves", m.DecidedBy)
+					}
+				}
+				if !found {
+					t.Fatal("confirmed rider missing from members")
+				}
+			})
+
+			t.Run("confirm on a nonexistent invite is not found", func(t *testing.T) {
+				store := open(t)
+				ctx := t.Context()
+
+				c, err := store.Create(ctx, "Family", "wilant")
+				if err != nil {
+					t.Fatalf("create: %v", err)
+				}
+				if err := store.Confirm(ctx, c.ID, "nobody"); !errors.Is(err, ErrNoInvite) {
+					t.Fatalf("confirm: err = %v, want ErrNoInvite", err)
+				}
+			})
+
 			t.Run("add member is an error for a rider already approved", func(t *testing.T) {
 				store := open(t)
 				ctx := t.Context()
@@ -270,7 +407,10 @@ func TestCrewEachEngine(t *testing.T) {
 					t.Fatalf("create: %v", err)
 				}
 				if _, err := store.AddMember(ctx, c.ID, "rider", "wilant"); err != nil {
-					t.Fatalf("first add: %v", err)
+					t.Fatalf("invite: %v", err)
+				}
+				if err := store.Confirm(ctx, c.ID, "rider"); err != nil {
+					t.Fatalf("confirm: %v", err)
 				}
 				if _, err := store.AddMember(ctx, c.ID, "rider", "wilant"); !errors.Is(err, ErrAlreadyMember) {
 					t.Fatalf("second add: err = %v, want ErrAlreadyMember", err)
@@ -290,7 +430,10 @@ func TestCrewEachEngine(t *testing.T) {
 				}
 
 				if _, err := store.AddMember(ctx, c.ID, "rider", "wilant"); err != nil {
-					t.Fatalf("add member: %v", err)
+					t.Fatalf("invite: %v", err)
+				}
+				if err := store.Confirm(ctx, c.ID, "rider"); err != nil {
+					t.Fatalf("confirm: %v", err)
 				}
 
 				snap, err := store.Snapshot(ctx)
@@ -361,7 +504,10 @@ func TestCrewEachEngine(t *testing.T) {
 					t.Fatalf("owner = %q, want normalized to wilant", c.Owner)
 				}
 				if _, err := store.AddMember(ctx, c.ID, "TIEBE", "wilant"); err != nil {
-					t.Fatalf("add member: %v", err)
+					t.Fatalf("invite: %v", err)
+				}
+				if err := store.Confirm(ctx, c.ID, "TIEBE"); err != nil {
+					t.Fatalf("confirm: %v", err)
 				}
 
 				snap, err := store.Snapshot(ctx)

@@ -93,6 +93,10 @@ export interface MfaEnrollment {
 export interface CrewMember {
   rider: string
   status: 'pending' | 'approved'
+  /** Which side started this pending row — 'self' (they asked to join,
+   *  waiting on the owner) or 'invite' (the owner added them, waiting on
+   *  them). Only present while status is 'pending'. */
+  origin?: 'self' | 'invite'
 }
 
 /** A set of riders who trust each other with their routes — the only way a
@@ -109,6 +113,11 @@ export interface Crew {
    *  crew that isn't theirs, so the UI knows whether to offer "Request to
    *  join" or show "Pending". */
   membershipStatus: 'none' | 'pending' | 'approved'
+  /** Which side started a 'pending' membershipStatus — 'self' (they asked
+   *  to join; the owner still has to approve) or 'invite' (the owner added
+   *  them directly; they still have to confirm). Only present while
+   *  membershipStatus is 'pending'. */
+  membershipOrigin?: 'self' | 'invite'
   /** The approved roster size. Always visible — a rider needs it to judge
    *  whether a crew is worth requesting to join. */
   memberCount: number

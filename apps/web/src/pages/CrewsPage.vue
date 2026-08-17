@@ -23,9 +23,10 @@ const knownRiders = computed(() => {
 
 // Riders worth suggesting for this particular crew: already-approved
 // members are pointless to re-suggest (adding one is a 409), but a rider
-// with a pending request stays in the list on purpose — picking them there
-// approves the request in the same step, cheaper than approve-from-the-
-// pending-row-below for a rider you already meant to add.
+// with a pending request stays in the list on purpose. Picking one who
+// already self-requested approves them in the same step, cheaper than
+// approve-from-the-pending-row-below; picking one already invited is a
+// harmless no-op — still awaiting their own confirmation either way.
 function suggestedRiders(crew: Crew): string[] {
   const approved = new Set(
     (crew.members ?? []).filter((m) => m.status === 'approved').map((m) => m.rider),
@@ -121,8 +122,17 @@ async function addMember(crew: Crew) {
   if (!rider) return
   addingMember.value = crew.id
   try {
-    await api.addCrewMember(crew.id, rider)
-    toast.add({ title: `${rider} added to ${crew.name}`, icon: 'i-lucide-user-plus', color: 'success' })
+    const updated = await api.addCrewMember(crew.id, rider)
+    // A fresh invite lands pending — the rider still has to confirm it. A
+    // rider who already had a request in gets approved in the same step.
+    // Distinguish the two so the toast doesn't claim membership that isn't
+    // there yet.
+    const status = updated.members?.find((m) => m.rider.toLowerCase() === rider.toLowerCase())?.status
+    toast.add(
+      status === 'pending'
+        ? { title: `Invited ${rider} to ${crew.name}`, description: 'Waiting for them to confirm.', icon: 'i-lucide-user-plus', color: 'success' }
+        : { title: `${rider} added to ${crew.name}`, icon: 'i-lucide-user-plus', color: 'success' },
+    )
     addMemberInput.value[crew.id] = ''
     await refresh()
   } catch (err) {
@@ -385,6 +395,29 @@ async function saveShare() {
             >
               Request to join
             </UButton>
+            <template v-else-if="crew.membershipStatus === 'pending' && crew.membershipOrigin === 'invite'">
+              <span class="text-xs text-dimmed">{{ crew.owner }} invited you</span>
+              <UButton
+                size="sm"
+                color="success"
+                variant="soft"
+                icon="i-lucide-check"
+                :loading="approving === `${crew.id}:${me?.user}`"
+                @click="approveMember(crew, me?.user ?? '')"
+              >
+                Accept
+              </UButton>
+              <UButton
+                size="sm"
+                color="neutral"
+                variant="ghost"
+                icon="i-lucide-x"
+                :loading="removing === `${crew.id}:${me?.user}`"
+                @click="removeMember(crew, me?.user ?? '')"
+              >
+                Decline
+              </UButton>
+            </template>
             <UBadge v-else-if="crew.membershipStatus === 'pending'" color="warning" variant="subtle" size="sm">
               {{ membershipLabel(crew) }}
             </UBadge>
@@ -574,8 +607,15 @@ async function saveShare() {
               class="flex items-center gap-2 text-sm"
             >
               <UIcon name="i-lucide-clock" class="size-4 text-dimmed" />
-              <span class="flex-1 text-toned">{{ member.rider }} wants to join</span>
+              <span class="flex-1 text-toned">
+                {{ member.rider }}
+                {{ member.origin === 'invite' ? 'invited — awaiting their confirmation' : 'wants to join' }}
+              </span>
+              <!-- An invite can only be granted by the invited rider
+                   themselves (the server refuses an owner's own approve on
+                   one) — cancelling it is the only action left here. -->
               <UButton
+                v-if="member.origin !== 'invite'"
                 size="xs"
                 icon="i-lucide-check"
                 :loading="approving === `${managingCrew.id}:${member.rider}`"
@@ -591,7 +631,7 @@ async function saveShare() {
                 :loading="removing === `${managingCrew.id}:${member.rider}`"
                 @click="removeMember(managingCrew!, member.rider)"
               >
-                Deny
+                {{ member.origin === 'invite' ? 'Cancel invite' : 'Deny' }}
               </UButton>
             </div>
 
