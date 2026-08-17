@@ -16,6 +16,7 @@ import (
 	"github.com/wncservices/domestique/apps/api/internal/auth"
 	"github.com/wncservices/domestique/apps/api/internal/garmin"
 	"github.com/wncservices/domestique/apps/api/internal/model"
+	"github.com/wncservices/domestique/apps/api/internal/ratelimit"
 	"github.com/wncservices/domestique/apps/api/internal/source"
 	"github.com/wncservices/domestique/apps/api/internal/targets"
 )
@@ -334,6 +335,34 @@ func TestGarminConnectIgnoresARiderInTheBody(t *testing.T) {
 	}
 	if _, err := h.links.Get("garmin", "someone-else"); err == nil {
 		t.Error("the body's rider was honoured")
+	}
+}
+
+// handleGarminConnect proxies a password straight to Garmin — without a
+// limit this server is an unlimited credential-stuffing proxy against
+// whichever Garmin account a rider points it at.
+func TestGarminConnectIsRateLimitedPerRider(t *testing.T) {
+	h := newConnectHarness(t, true, func(s *api.Server) {
+		s.ConnectLimiter = ratelimit.New(1, time.Hour)
+	})
+
+	first := h.as("wilant", "cyclists", http.MethodPost, "/api/garmin/connection",
+		`{"email":"r@example.com","password":"wrong"}`)
+	if first.StatusCode == http.StatusTooManyRequests {
+		t.Fatal("first attempt was already rate limited")
+	}
+	second := h.as("wilant", "cyclists", http.MethodPost, "/api/garmin/connection",
+		`{"email":"r@example.com","password":"wrong-again"}`)
+	if second.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("second attempt: status = %d, want 429", second.StatusCode)
+	}
+
+	// A different rider gets their own quota — this limits the caller, not
+	// the endpoint globally.
+	other := h.as("friend", "cyclists", http.MethodPost, "/api/garmin/connection",
+		`{"email":"r2@example.com","password":"pw"}`)
+	if other.StatusCode == http.StatusTooManyRequests {
+		t.Fatal("a different rider was rate limited by another rider's attempts")
 	}
 }
 
