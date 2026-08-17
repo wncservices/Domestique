@@ -77,6 +77,17 @@ export interface Me {
   canChangePassword: boolean
 }
 
+/** One MFA factor tied to the signed-in rider's own Auth0 account — gated
+ *  the same as canEditName, since managing it needs the same Auth0 account
+ *  to act on. Enrolling and confirming a new one both happen on Auth0's own
+ *  hosted page (see api.enrollMfa); this app only lists and removes. */
+export interface MfaEnrollment {
+  id: string
+  status: 'pending' | 'confirmed'
+  type: string
+  name?: string
+}
+
 /** One rider's standing with a crew. */
 export interface CrewMember {
   rider: string

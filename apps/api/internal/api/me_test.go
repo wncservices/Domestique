@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/wncservices/domestique/apps/api/internal/api"
+	"github.com/wncservices/domestique/apps/api/internal/auth0mgmt"
 )
 
 // patch is ssoHarness's own client/base/cookies, plus a body — the sso
@@ -18,6 +19,20 @@ func (h *ssoHarness) patch(path, body string) *http.Response {
 		h.t.Fatal(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	resp, err := h.client.Do(req)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	h.t.Cleanup(func() { resp.Body.Close() })
+	return resp
+}
+
+func (h *ssoHarness) delete(path string) *http.Response {
+	h.t.Helper()
+	req, err := http.NewRequest(http.MethodDelete, h.base+path, nil)
+	if err != nil {
+		h.t.Fatal(err)
+	}
 	resp, err := h.client.Do(req)
 	if err != nil {
 		h.t.Fatal(err)
@@ -174,5 +189,105 @@ func TestSelfPasswordResetRequiresAnAuthenticatedRider(t *testing.T) {
 	resp := h.post("/api/me/password-reset")
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("status = %d, want 401", resp.StatusCode)
+	}
+}
+
+func jsonArray(t *testing.T, resp *http.Response) []map[string]any {
+	t.Helper()
+	var out []map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func TestListMFAReturnsTheRidersOwnEnrollments(t *testing.T) {
+	fake := &fakePeople{enrollments: map[string][]auth0mgmt.Enrollment{
+		"auth0|64f2a1b2c3d4e5f6": {{ID: "totp|abc", Status: "confirmed", Type: "totp"}},
+	}}
+	h := newSSOHarness(t, func(s *api.Server) { s.People = fake })
+	h.loginWithUser([]string{"cyclists"}, map[string]any{
+		"preferred_username": "wilant", "email": "wilant@example.com",
+	})
+
+	out := jsonArray(t, h.get("/api/me/mfa"))
+	if len(out) != 1 || out[0]["id"] != "totp|abc" || out[0]["type"] != "totp" {
+		t.Errorf("enrollments = %v", out)
+	}
+}
+
+func TestEnrollMFAReturnsAGuardianTicketURL(t *testing.T) {
+	fake := &fakePeople{}
+	h := newSSOHarness(t, func(s *api.Server) { s.People = fake })
+	h.loginWithUser([]string{"cyclists"}, map[string]any{
+		"preferred_username": "wilant", "email": "wilant@example.com",
+	})
+
+	resp := h.post("/api/me/mfa/enroll")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	url, _ := jsonBody(t, resp)["ticketUrl"].(string)
+	if url == "" {
+		t.Error("no ticketUrl in the response")
+	}
+}
+
+func TestRemoveMFADeletesAnOwnedEnrollment(t *testing.T) {
+	fake := &fakePeople{enrollments: map[string][]auth0mgmt.Enrollment{
+		"auth0|64f2a1b2c3d4e5f6": {{ID: "totp|abc", Status: "confirmed", Type: "totp"}},
+	}}
+	h := newSSOHarness(t, func(s *api.Server) { s.People = fake })
+	h.loginWithUser([]string{"cyclists"}, map[string]any{
+		"preferred_username": "wilant", "email": "wilant@example.com",
+	})
+
+	resp := h.delete("/api/me/mfa/totp%7Cabc")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if len(fake.deletedEnrollments) != 1 || fake.deletedEnrollments[0] != "totp|abc" {
+		t.Errorf("DeleteEnrollment calls = %v, want [totp|abc]", fake.deletedEnrollments)
+	}
+}
+
+// The security-critical case: Guardian's own delete endpoint is keyed by
+// enrollment id alone with no user scoping, so the handler itself must
+// refuse to delete an enrollment it did not first confirm belongs to the
+// caller — otherwise any signed-in rider could strip a stranger's MFA by
+// guessing or having ever seen their enrollment id.
+func TestRemoveMFARefusesAnEnrollmentBelongingToSomeoneElse(t *testing.T) {
+	fake := &fakePeople{enrollments: map[string][]auth0mgmt.Enrollment{
+		"auth0|64f2a1b2c3d4e5f6": {{ID: "totp|mine", Status: "confirmed", Type: "totp"}},
+		// Someone else's enrollment, never returned by ListEnrollments for
+		// this rider's own sub — the handler must not just trust the id in
+		// the URL.
+	}}
+	h := newSSOHarness(t, func(s *api.Server) { s.People = fake })
+	h.loginWithUser([]string{"cyclists"}, map[string]any{
+		"preferred_username": "wilant", "email": "wilant@example.com",
+	})
+
+	resp := h.delete("/api/me/mfa/totp%7Csomeone-elses")
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", resp.StatusCode)
+	}
+	if len(fake.deletedEnrollments) != 0 {
+		t.Errorf("DeleteEnrollment should not have been called: %v", fake.deletedEnrollments)
+	}
+}
+
+func TestMFAEndpointsFailClosedWithoutPeopleConfigured(t *testing.T) {
+	h := newSSOHarness(t)
+	h.login([]string{"cyclists"})
+
+	if resp := h.get("/api/me/mfa"); resp.StatusCode != http.StatusPreconditionFailed {
+		t.Errorf("GET status = %d, want 412", resp.StatusCode)
+	}
+	if resp := h.post("/api/me/mfa/enroll"); resp.StatusCode != http.StatusPreconditionFailed {
+		t.Errorf("POST enroll status = %d, want 412", resp.StatusCode)
+	}
+	if resp := h.delete("/api/me/mfa/totp%7Cabc"); resp.StatusCode != http.StatusPreconditionFailed {
+		t.Errorf("DELETE status = %d, want 412", resp.StatusCode)
 	}
 }

@@ -2,7 +2,7 @@
 import { onMounted, ref, watch } from 'vue'
 import { useToast } from '@nuxt/ui/composables'
 import { api, ApiError } from '@/api/client'
-import type { GarminConnection, KomootConnection, WahooConnection } from '@/api/types'
+import type { GarminConnection, KomootConnection, MfaEnrollment, WahooConnection } from '@/api/types'
 import { useLibrary } from '@/composables/useLibrary'
 import AccountsPanel from '@/components/AccountsPanel.vue'
 import GarminSetup from '@/components/GarminSetup.vue'
@@ -73,6 +73,98 @@ async function sendPasswordReset() {
   }
 }
 
+// --- two-factor authentication: this app never renders a QR code itself —
+// enrolling and confirming a new factor both happen on Auth0's own hosted
+// Guardian page, reached through a one-time ticket URL. This app only lists
+// what's already enrolled and lets the rider remove a factor. ---
+
+const mfaEnrollments = ref<MfaEnrollment[]>([])
+const loadingMfa = ref(false)
+const enrolling = ref(false)
+const removingFactorId = ref('')
+const removeTarget = ref<MfaEnrollment | null>(null)
+const removingFactor = ref(false)
+
+const factorLabels: Record<string, string> = {
+  totp: 'Authenticator app',
+  sms: 'Text message',
+  email: 'Email',
+  'push-notification': 'Push notification',
+  'webauthn-roaming': 'Security key',
+  'webauthn-platform': 'Device passkey',
+  'recovery-code': 'Recovery codes',
+}
+
+function factorLabel(type: string): string {
+  return factorLabels[type] ?? type
+}
+
+async function loadMfa() {
+  if (!me.value?.canEditName) return
+  loadingMfa.value = true
+  try {
+    mfaEnrollments.value = await api.mfaEnrollments()
+  } catch (err) {
+    toast.add({
+      title: 'Could not load two-factor authentication',
+      description: err instanceof ApiError ? err.message : String(err),
+      icon: 'i-lucide-triangle-alert',
+      color: 'error',
+    })
+  } finally {
+    loadingMfa.value = false
+  }
+}
+
+// Opens Auth0's own hosted enrollment page in a new tab — nothing to embed,
+// and the rider is still on Settings in this tab when they're done, so a
+// manual refresh (rather than guessing when they've finished) picks it up.
+async function startMfaEnroll() {
+  enrolling.value = true
+  try {
+    const { ticketUrl } = await api.enrollMfa()
+    window.open(ticketUrl, '_blank', 'noopener')
+    toast.add({
+      title: 'Finish setup in the new tab',
+      description: 'Come back and refresh once you\'ve added it.',
+      icon: 'i-lucide-external-link',
+      color: 'info',
+    })
+  } catch (err) {
+    toast.add({
+      title: 'Could not start enrollment',
+      description: err instanceof ApiError ? err.message : String(err),
+      icon: 'i-lucide-triangle-alert',
+      color: 'error',
+    })
+  } finally {
+    enrolling.value = false
+  }
+}
+
+async function removeMfaFactor() {
+  const target = removeTarget.value
+  if (!target) return
+  removingFactor.value = true
+  removingFactorId.value = target.id
+  try {
+    await api.removeMfaEnrollment(target.id)
+    toast.add({ title: 'Removed', icon: 'i-lucide-check', color: 'success' })
+    removeTarget.value = null
+    await loadMfa()
+  } catch (err) {
+    toast.add({
+      title: 'Could not remove it',
+      description: err instanceof ApiError ? err.message : String(err),
+      icon: 'i-lucide-triangle-alert',
+      color: 'error',
+    })
+  } finally {
+    removingFactor.value = false
+    removingFactorId.value = ''
+  }
+}
+
 // Settings owns the Komoot connection now: this is the page where sign-ins
 // live, and the Add page only consumes the result.
 const connection = ref<KomootConnection>({ connected: false, shared: false, canConnect: false })
@@ -131,7 +223,7 @@ onMounted(async () => {
   // races the shell's first fetch — without this the card renders and then
   // reports "no encryption key" because it never got to ask.
   await refresh()
-  await Promise.all([loadConnection(), loadGarmin(), loadWahoo()])
+  await Promise.all([loadConnection(), loadGarmin(), loadWahoo(), loadMfa()])
 })
 </script>
 
@@ -178,6 +270,61 @@ onMounted(async () => {
           <p v-else class="text-xs text-dimmed">
             You sign in with an external provider — there's no password here to change.
           </p>
+        </div>
+
+        <div>
+          <div class="mb-1 flex items-center gap-2">
+            <p class="text-sm font-medium text-toned">Two-factor authentication</p>
+            <UButton
+              size="xs"
+              color="neutral"
+              variant="ghost"
+              icon="i-lucide-refresh-cw"
+              :loading="loadingMfa"
+              aria-label="Refresh"
+              @click="loadMfa"
+            />
+          </div>
+
+          <div v-if="mfaEnrollments.length" class="flex flex-col gap-2">
+            <div
+              v-for="factor in mfaEnrollments"
+              :key="factor.id"
+              class="flex items-center gap-2 text-sm"
+            >
+              <UIcon name="i-lucide-shield-check" class="size-4 text-dimmed" />
+              <span class="flex-1 text-toned">
+                {{ factorLabel(factor.type) }}<span v-if="factor.name"> · {{ factor.name }}</span>
+              </span>
+              <UBadge
+                :color="factor.status === 'confirmed' ? 'success' : 'warning'"
+                variant="subtle"
+                size="sm"
+              >
+                {{ factor.status === 'confirmed' ? 'Active' : 'Pending' }}
+              </UBadge>
+              <UButton
+                size="xs"
+                color="neutral"
+                variant="ghost"
+                icon="i-lucide-x"
+                :loading="removingFactor && removingFactorId === factor.id"
+                @click="removeTarget = factor"
+              />
+            </div>
+          </div>
+          <p v-else class="mb-2 text-xs text-dimmed">Nothing set up yet.</p>
+
+          <UButton
+            size="sm"
+            variant="soft"
+            icon="i-lucide-shield-plus"
+            class="mt-2"
+            :loading="enrolling"
+            @click="startMfaEnroll"
+          >
+            Add a factor
+          </UButton>
         </div>
       </div>
     </UCard>
@@ -282,5 +429,26 @@ onMounted(async () => {
         </div>
       </dl>
     </UCard>
+
+    <UModal
+      :open="!!removeTarget"
+      title="Remove this factor?"
+      @update:open="removeTarget = null"
+    >
+      <template #body>
+        <p class="text-sm text-toned">
+          “{{ removeTarget ? factorLabel(removeTarget.type) : '' }}” will no longer be asked for at
+          sign-in. Remove it only if you've lost access to it or no longer want it.
+        </p>
+      </template>
+      <template #footer>
+        <div class="flex justify-end gap-2">
+          <UButton color="neutral" variant="ghost" :disabled="removingFactor" @click="removeTarget = null">
+            Cancel
+          </UButton>
+          <UButton color="error" :loading="removingFactor" @click="removeMfaFactor">Remove</UButton>
+        </div>
+      </template>
+    </UModal>
   </div>
 </template>

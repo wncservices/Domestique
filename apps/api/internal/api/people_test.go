@@ -30,12 +30,18 @@ type fakePeople struct {
 
 	updatedName map[string]string // by user id, last call wins
 
+	enrollments        map[string][]auth0mgmt.Enrollment // by user id
+	deletedEnrollments []string                          // DeleteEnrollment's own calls, in order
+
 	listErr       error
 	inviteErr     error
 	emailErr      error
 	rolesErr      error
 	findErr       error
 	updateNameErr error
+	enrollListErr error
+	ticketErr     error
+	deleteErr     error
 }
 
 func (f *fakePeople) ListPeople(context.Context, string, ...string) ([]auth0mgmt.Person, error) {
@@ -93,6 +99,28 @@ func (f *fakePeople) UpdateName(_ context.Context, userID, name string) (auth0mg
 	}
 	f.updatedName[userID] = name
 	return auth0mgmt.Person{UserID: userID, Name: name}, nil
+}
+
+func (f *fakePeople) ListEnrollments(_ context.Context, userID string) ([]auth0mgmt.Enrollment, error) {
+	if f.enrollListErr != nil {
+		return nil, f.enrollListErr
+	}
+	return f.enrollments[userID], nil
+}
+
+func (f *fakePeople) CreateGuardianEnrollmentTicket(_ context.Context, userID string) (string, error) {
+	if f.ticketErr != nil {
+		return "", f.ticketErr
+	}
+	return "https://fake-issuer.example/guardian/ticket/" + userID, nil
+}
+
+func (f *fakePeople) DeleteEnrollment(_ context.Context, enrollmentID string) error {
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	f.deletedEnrollments = append(f.deletedEnrollments, enrollmentID)
+	return nil
 }
 
 type peopleHarness struct {

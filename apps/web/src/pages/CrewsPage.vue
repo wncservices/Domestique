@@ -232,16 +232,32 @@ const sharing = ref(false)
 // Only routes the viewer may actually retarget — mirrors RouteCard's own
 // canEdit rule (routes:edit-any, or routes:edit-own on a route they own).
 // Someone else's routes aren't offered here even if they're also a member;
-// the route's owner is the one who shares it.
+// the route's owner is the one who shares it. !!r.owner is required
+// regardless of which permission branch matched: the server's own
+// validateCrewTargets checks the route *owner's* crew membership, and an
+// ownerless route (an import with no --owner) belongs to nobody, so it can
+// never legally be shared to any crew — offering it here would just be a
+// picker item that always 400s on save.
 const myRoutes = computed(() =>
   routes.value.filter(
     (r) =>
-      can('routes:edit-any') ||
-      (can('routes:edit-own') && !!r.owner && r.owner.toLowerCase() === (me.value?.user ?? '').toLowerCase()),
+      !!r.owner &&
+      (can('routes:edit-any') ||
+        (can('routes:edit-own') && r.owner.toLowerCase() === (me.value?.user ?? '').toLowerCase())),
   ),
 )
 
 const shareOptions = computed(() => myRoutes.value.map((r) => ({ label: r.name, value: r.slug })))
+
+// True once every offered route is selected — drives the "Select all" /
+// "Select none" toggle below without a separate ref to keep in sync.
+const allRoutesSelected = computed(
+  () => shareOptions.value.length > 0 && shareSelections.value.length === shareOptions.value.length,
+)
+
+function toggleSelectAllRoutes() {
+  shareSelections.value = allRoutesSelected.value ? [] : shareOptions.value.map((o) => o.value)
+}
 
 function openShare(crew: Crew) {
   shareSelections.value = myRoutes.value.filter((r) => r.targets.includes(crew.id)).map((r) => r.slug)
@@ -462,9 +478,20 @@ async function saveShare() {
     >
       <template #body>
         <div class="flex flex-col gap-3">
-          <p class="text-sm text-toned">
-            Which of your own routes should reach {{ shareTarget?.name }}?
-          </p>
+          <div class="flex items-center justify-between gap-3">
+            <p class="text-sm text-toned">
+              Which of your own routes should reach {{ shareTarget?.name }}?
+            </p>
+            <UButton
+              v-if="shareOptions.length"
+              size="xs"
+              color="neutral"
+              variant="ghost"
+              @click="toggleSelectAllRoutes"
+            >
+              {{ allRoutesSelected ? 'Select none' : 'Select all' }}
+            </UButton>
+          </div>
           <UCheckboxGroup
             v-if="shareOptions.length"
             v-model="shareSelections"
