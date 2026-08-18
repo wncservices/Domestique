@@ -23,7 +23,7 @@ type fakeTenant struct {
 	roleMembers map[string][]string // role id -> user ids
 	users       map[string]struct{ email, name string }
 	userRoles   map[string][]string // user id -> role ids currently held
-	lastSeen    map[string]struct{ createdAt, lastLogin string }
+	lastSeen    map[string]struct{ createdAt, lastLogin, nickname string }
 
 	createdUsers   []map[string]any
 	invitedEmails  []string
@@ -39,7 +39,7 @@ func newFakeTenant(t *testing.T) *fakeTenant {
 		roleMembers:  map[string][]string{},
 		users:        map[string]struct{ email, name string }{},
 		userRoles:    map[string][]string{},
-		lastSeen:     map[string]struct{ createdAt, lastLogin string }{},
+		lastSeen:     map[string]struct{ createdAt, lastLogin, nickname string }{},
 		grantedRoles: map[string][]string{},
 		revokedRoles: map[string][]string{},
 	}
@@ -83,7 +83,9 @@ func newFakeTenant(t *testing.T) *fakeTenant {
 			if !ok {
 				continue
 			}
-			out = append(out, map[string]string{"user_id": uid, "created_at": seen.createdAt, "last_login": seen.lastLogin})
+			out = append(out, map[string]string{
+				"user_id": uid, "created_at": seen.createdAt, "last_login": seen.lastLogin, "nickname": seen.nickname,
+			})
 		}
 		_ = json.NewEncoder(w).Encode(out)
 	})
@@ -201,7 +203,7 @@ func TestListPeopleFillsInSignInHistoryFromTheSearchEndpoint(t *testing.T) {
 	f := newFakeTenant(t)
 	f.users["u1"] = struct{ email, name string }{"rider@example.com", "Rider Person"}
 	f.roleMembers["role-gate"] = []string{"u1"}
-	f.lastSeen["u1"] = struct{ createdAt, lastLogin string }{"2026-01-01T00:00:00.000Z", "2026-08-10T12:30:00.000Z"}
+	f.lastSeen["u1"] = struct{ createdAt, lastLogin, nickname string }{"2026-01-01T00:00:00.000Z", "2026-08-10T12:30:00.000Z", ""}
 
 	c := newTestClient(t, f)
 	people, err := c.ListPeople(t.Context(), "domestique-users")
@@ -216,6 +218,27 @@ func TestListPeopleFillsInSignInHistoryFromTheSearchEndpoint(t *testing.T) {
 	}
 	if people[0].CreatedAt.IsZero() {
 		t.Error("CreatedAt is zero, want it filled in from the search endpoint")
+	}
+}
+
+// Nickname rides the same search-endpoint lookup as created_at/last_login,
+// for the same reason: the role-members endpoint ListPeople otherwise uses
+// doesn't return it either. This is what internal/api/people.go's
+// likelyRider falls back to when Name doesn't satisfy accounts.RiderPattern
+// (a Google display name with a space in it, most concretely).
+func TestListPeopleFillsInNicknameFromTheSearchEndpoint(t *testing.T) {
+	f := newFakeTenant(t)
+	f.users["u1"] = struct{ email, name string }{"rider@example.com", "Rider Person"}
+	f.roleMembers["role-gate"] = []string{"u1"}
+	f.lastSeen["u1"] = struct{ createdAt, lastLogin, nickname string }{"2026-01-01T00:00:00.000Z", "2026-08-10T12:30:00.000Z", "rider.person"}
+
+	c := newTestClient(t, f)
+	people, err := c.ListPeople(t.Context(), "domestique-users")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(people) != 1 || people[0].Nickname != "rider.person" {
+		t.Fatalf("people = %+v, want one with Nickname = rider.person", people)
 	}
 }
 

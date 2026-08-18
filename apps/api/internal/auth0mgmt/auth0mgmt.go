@@ -60,9 +60,17 @@ type Config struct {
 // Person is one rider (or admin, or someone gated out of everything but
 // still holding the account) as the People page shows them.
 type Person struct {
-	UserID    string
-	Email     string
-	Name      string
+	UserID string
+	Email  string
+	Name   string
+	// Nickname is Auth0's own separate profile field — auto-populated to an
+	// email's local part or a Google given_name for social sign-ins, distinct
+	// from Name. Exists on Person only to feed the same name/nickname/sub
+	// priority identityFromToken uses on an OIDC token's claims, so the
+	// People page can offer a best-effort guess at a not-yet-logged-in
+	// person's eventual rider identity — see internal/api/people.go's
+	// likelyRider.
+	Nickname  string
 	Roles     []string
 	CreatedAt time.Time
 	LastLogin time.Time
@@ -281,6 +289,7 @@ type roleUser struct {
 	UserID    string `json:"user_id"`
 	Email     string `json:"email"`
 	Name      string `json:"name"`
+	Nickname  string `json:"nickname"`
 	CreatedAt string `json:"created_at"`
 	LastLogin string `json:"last_login"`
 }
@@ -290,15 +299,15 @@ func parseTime(s string) time.Time {
 	return t
 }
 
-// lastSeen batches a created_at/last_login lookup for a set of user ids
-// through the Users Search API, since the role-members endpoint that
-// ListPeople otherwise uses does not return either field (see roleUser's
-// own doc comment). One Lucene query ORing every id together — the
-// documented way to search a specific set of ids — stays a single request
-// regardless of how many people are on the tenant, the same N+1 avoidance
-// ListPeople's permission-role merge already relies on. search_engine=v3 is
-// required for the q parameter to be honored at all; fields/include_fields
-// keep the response to exactly what this needs.
+// lastSeen batches a created_at/last_login/nickname lookup for a set of
+// user ids through the Users Search API, since the role-members endpoint
+// that ListPeople otherwise uses does not return any of those three (see
+// roleUser's own doc comment). One Lucene query ORing every id together —
+// the documented way to search a specific set of ids — stays a single
+// request regardless of how many people are on the tenant, the same N+1
+// avoidance ListPeople's permission-role merge already relies on.
+// search_engine=v3 is required for the q parameter to be honored at all;
+// fields/include_fields keep the response to exactly what this needs.
 func (c *Client) lastSeen(ctx context.Context, userIDs []string) (map[string]roleUser, error) {
 	if len(userIDs) == 0 {
 		return nil, nil
@@ -310,7 +319,7 @@ func (c *Client) lastSeen(ctx context.Context, userIDs []string) (map[string]rol
 	q := url.Values{
 		"search_engine":  {"v3"},
 		"q":              {strings.Join(terms, " OR ")},
-		"fields":         {"user_id,created_at,last_login"},
+		"fields":         {"user_id,created_at,last_login,nickname"},
 		"include_fields": {"true"},
 	}
 
@@ -376,6 +385,7 @@ func (c *Client) ListPeople(ctx context.Context, gateRole string, permissionRole
 			UserID:    m.UserID,
 			Email:     m.Email,
 			Name:      m.Name,
+			Nickname:  s.Nickname,
 			Roles:     memberOf[m.UserID],
 			CreatedAt: parseTime(s.CreatedAt),
 			LastLogin: parseTime(s.LastLogin),
@@ -405,6 +415,7 @@ func (c *Client) FindByEmail(ctx context.Context, email string) ([]Person, error
 			UserID:    u.UserID,
 			Email:     u.Email,
 			Name:      u.Name,
+			Nickname:  u.Nickname,
 			CreatedAt: parseTime(u.CreatedAt),
 			LastLogin: parseTime(u.LastLogin),
 		})

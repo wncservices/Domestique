@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/wncservices/domestique/apps/api/internal/accounts"
 	"github.com/wncservices/domestique/apps/api/internal/auth"
 	"github.com/wncservices/domestique/apps/api/internal/auth0mgmt"
 )
@@ -39,6 +40,41 @@ type personDTO struct {
 	Role      string `json:"role"`
 	CreatedAt string `json:"createdAt,omitempty"`
 	LastLogin string `json:"lastLogin,omitempty"`
+	// LikelyRider is a best-effort guess at what identityFromToken will
+	// resolve this person's rider identity to once they actually sign in —
+	// see likelyRider's own doc comment. Empty when nothing legal could be
+	// derived; this is a hint for admin tooling (the crew add-member
+	// picker), never a source of truth for who someone is.
+	LikelyRider string `json:"likelyRider,omitempty"`
+}
+
+// likelyRider guesses what identityFromToken (sso.go) would resolve this
+// person's rider identity to, from data the Management API already exposes
+// — name, then nickname, then the Auth0 user id itself, the same priority
+// identityFromToken gives an OIDC token's name/nickname/sub claims (Auth0
+// never sends this app a preferred_username, for either connection this
+// tenant has, so that first-priority claim has nothing to mirror here).
+//
+// It exists to close one real gap: a rider who has been invited and signed
+// in (so they show up here, and can use the app) but has never uploaded a
+// route, linked a provider account, or created a crew leaves no trace
+// anywhere else the crew add-member picker's suggestions are built from
+// (CrewsPage.vue's knownRiders) — found live, an admin unable to find a
+// just-invited rider there at all. This is deliberately duplicated logic
+// rather than a shared helper with identityFromToken: that function reads
+// live OIDC token claims and is part of the sign-in path itself, worth
+// keeping minimal and independently verified; this reads Management API
+// profile data for a person who may not have signed in yet at all, and
+// getting it wrong only means a wrong suggestion in a picker that already
+// lets an admin type an exact rider identity by hand regardless.
+func likelyRider(name, nickname, userID string) string {
+	for _, candidate := range []string{name, nickname, userID} {
+		c := strings.ToLower(strings.TrimSpace(candidate))
+		if c != "" && accounts.RiderPattern.MatchString(c) {
+			return c
+		}
+	}
+	return ""
 }
 
 // peopleAvailable reports whether the deployment has Management API
@@ -102,7 +138,10 @@ func (s *Server) roleNamesFor(label string) ([]string, error) {
 
 func (s *Server) personDTO(p auth0mgmt.Person) personDTO {
 	role := s.Auth.ResolveRole(p.Roles)
-	dto := personDTO{ID: p.UserID, Email: p.Email, Name: p.Name, Role: roleLabel(role)}
+	dto := personDTO{
+		ID: p.UserID, Email: p.Email, Name: p.Name, Role: roleLabel(role),
+		LikelyRider: likelyRider(p.Name, p.Nickname, p.UserID),
+	}
 	if !p.CreatedAt.IsZero() {
 		dto.CreatedAt = formatTime(p.CreatedAt)
 	}

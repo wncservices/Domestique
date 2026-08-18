@@ -2,22 +2,42 @@
 import { computed, onMounted, ref } from 'vue'
 import { useToast } from '@nuxt/ui/composables'
 import { api } from '@/api/client'
-import type { Crew } from '@/api/types'
+import type { Crew, Person } from '@/api/types'
 import { useLibrary } from '@/composables/useLibrary'
 
 const { crews, accounts, routes, me, loading, error, refresh, can } = useLibrary()
 const toast = useToast()
 
+// People-page data, fetched separately (not part of useLibrary's own
+// state) purely to widen knownRiders below — every other use of this page
+// only needs crews/accounts/routes. Silently empty for a caller without
+// people:manage rather than surfacing its own error: the picker just falls
+// back to what it could already see without this.
+const people = ref<Person[]>([])
+onMounted(async () => {
+  if (!can('people:manage')) return
+  try {
+    people.value = await api.people()
+  } catch {
+    // best-effort only — see comment above
+  }
+})
+
 // Every rider identifier the app already knows about, from data already
-// fetched for this page — a linked account's owner, a route's owner, or a
-// crew's owner. Not a full directory (a rider who has never uploaded,
-// linked, or created anything won't appear), just enough to make adding
-// someone who already has is a pick instead of a guess at exact spelling.
+// fetched for this page — a linked account's owner, a route's owner, a
+// crew's owner, or (for an admin who can see the People page) a likely
+// guess at someone who has been granted access but has not yet uploaded,
+// linked, or created anything of their own. That last source is the one
+// that actually matters for a just-invited rider: found live, an admin
+// could see a newly signed-in person on the People page but had no way to
+// find them here to add to a crew — every other source needs the person to
+// have already done something besides sign in.
 const knownRiders = computed(() => {
   const set = new Set<string>()
   for (const a of accounts.value) if (a.rider) set.add(a.rider)
   for (const r of routes.value) if (r.owner) set.add(r.owner)
   for (const c of crews.value) if (c.owner) set.add(c.owner)
+  for (const p of people.value) if (p.likelyRider) set.add(p.likelyRider)
   return [...set].sort((a, b) => a.localeCompare(b))
 })
 
