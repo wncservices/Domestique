@@ -20,6 +20,7 @@ import (
 	"github.com/wncservices/domestique/apps/api/internal/garmin"
 	"github.com/wncservices/domestique/apps/api/internal/komoot"
 	"github.com/wncservices/domestique/apps/api/internal/providerlink"
+	"github.com/wncservices/domestique/apps/api/internal/ratelimit"
 	"github.com/wncservices/domestique/apps/api/internal/secrets"
 	"github.com/wncservices/domestique/apps/api/internal/settings"
 	"github.com/wncservices/domestique/apps/api/internal/source"
@@ -81,8 +82,11 @@ type connectHarness struct {
 }
 
 // newConnectHarness builds a server with Komoot enabled and no environment
-// account, which is the deployment this feature is for.
-func newConnectHarness(t *testing.T, withKey bool) *connectHarness {
+// account, which is the deployment this feature is for. opts can set
+// additional Server fields (ConnectLimiter, for the rate-limit tests)
+// before the server starts serving, the same shape newSSOHarness's opts
+// already use.
+func newConnectHarness(t *testing.T, withKey bool, opts ...func(*api.Server)) *connectHarness {
 	t.Helper()
 
 	db, err := source.OpenDB(filepath.Join(t.TempDir(), "routes.db"))
@@ -146,6 +150,9 @@ func newConnectHarness(t *testing.T, withKey bool) *connectHarness {
 		Settings:      appSettings,
 		KomootEnabled: true,
 		Config:        &config.Config{Komoot: config.KomootConfig{Enabled: true}},
+	}
+	for _, opt := range opts {
+		opt(srv)
 	}
 
 	server := httptest.NewServer(srv.Handler())
@@ -346,6 +353,26 @@ func TestFailedLoginStoresNothing(t *testing.T) {
 	}
 	if _, err := h.links.Get("komoot", "wilant"); err == nil {
 		t.Error("a connection was stored despite the failed login")
+	}
+}
+
+// handleKomootConnect proxies a password straight to Komoot — the same
+// credential-stuffing-proxy risk Garmin connect carries, see
+// TestGarminConnectIsRateLimitedPerRider.
+func TestKomootConnectIsRateLimitedPerRider(t *testing.T) {
+	h := newConnectHarness(t, true, func(s *api.Server) {
+		s.ConnectLimiter = ratelimit.New(1, time.Hour)
+	})
+
+	first := h.as("wilant", "cyclists", http.MethodPost, "/api/komoot/connection",
+		`{"email":"r@example.com","password":"wrong"}`)
+	if first.StatusCode == http.StatusTooManyRequests {
+		t.Fatal("first attempt was already rate limited")
+	}
+	second := h.as("wilant", "cyclists", http.MethodPost, "/api/komoot/connection",
+		`{"email":"r@example.com","password":"wrong-again"}`)
+	if second.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("second attempt: status = %d, want 429", second.StatusCode)
 	}
 }
 

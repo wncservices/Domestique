@@ -30,6 +30,7 @@ import (
 	"github.com/wncservices/domestique/apps/api/internal/model"
 	"github.com/wncservices/domestique/apps/api/internal/oidcflow"
 	"github.com/wncservices/domestique/apps/api/internal/providerlink"
+	"github.com/wncservices/domestique/apps/api/internal/ratelimit"
 	"github.com/wncservices/domestique/apps/api/internal/secrets"
 	"github.com/wncservices/domestique/apps/api/internal/sessions"
 	"github.com/wncservices/domestique/apps/api/internal/settings"
@@ -126,6 +127,22 @@ type Server struct {
 	// external credential, only the database every deployment already has,
 	// so it is wired unconditionally in runServe.
 	Crew *crew.Store
+
+	// ConnectLimiter throttles Garmin/Komoot connect by rider: both proxy a
+	// password straight to a third party, so without a limit this server is
+	// an unlimited, authenticated-only credential-stuffing proxy against
+	// whichever Garmin or Komoot account a rider points it at — something
+	// only the app can enforce, since it is the one thing here that knows
+	// which endpoint relays a credential to somebody else's service. Wired
+	// unconditionally in runServe, the same as Crew — pure in-memory state,
+	// no external credential to be missing.
+	//
+	// This app's own traffic (its own auth, its own API) is deliberately
+	// NOT rate limited here — Traefik and Cloudflare sit in front of every
+	// deployment already and are the right layer for that, since they see
+	// every request regardless of which app it hits and don't need
+	// redeploying to change a limit.
+	ConnectLimiter *ratelimit.Limiter
 
 	// pushMu serialises pushes: two concurrent reconciles against the same
 	// account would race on remote ids and on the state file.
@@ -1553,6 +1570,23 @@ func (s *Server) logger() *slog.Logger {
 		return s.Log
 	}
 	return slog.Default()
+}
+
+// rateLimitConnect enforces ConnectLimiter for a Garmin/Komoot connect
+// attempt, keyed by the caller's own rider identity — the abuse this stops
+// is one authenticated rider using this server as a laundered
+// credential-stuffing proxy against somebody else's Garmin or Komoot
+// account, not brute-forcing this app's own auth. Nil ConnectLimiter (a
+// test harness that never sets one) allows everything, matching every
+// other optional-dependency nil check in this file.
+func (s *Server) rateLimitConnect(w http.ResponseWriter, rider string) bool {
+	if s.ConnectLimiter == nil || s.ConnectLimiter.Allow(rider) {
+		return true
+	}
+	writeJSON(w, http.StatusTooManyRequests, map[string]string{
+		"error": "too many sign-in attempts — wait a few minutes and try again",
+	})
+	return false
 }
 
 func (s *Server) fail(w http.ResponseWriter, err error) {

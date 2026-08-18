@@ -116,6 +116,9 @@ func (s *Server) handleKomootConnect(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	if !s.rateLimitConnect(w, rider) {
+		return
+	}
 
 	_, session, err := s.Connector.Connect(r.Context(), body.Email, body.Password)
 	if err != nil {

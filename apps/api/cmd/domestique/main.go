@@ -37,6 +37,7 @@ import (
 	"github.com/wncservices/domestique/apps/api/internal/model"
 	"github.com/wncservices/domestique/apps/api/internal/oidcflow"
 	"github.com/wncservices/domestique/apps/api/internal/providerlink"
+	"github.com/wncservices/domestique/apps/api/internal/ratelimit"
 	"github.com/wncservices/domestique/apps/api/internal/secrets"
 	"github.com/wncservices/domestique/apps/api/internal/sessions"
 	"github.com/wncservices/domestique/apps/api/internal/settings"
@@ -686,6 +687,13 @@ func runServe(src *source.DB, cfg *config.Config, store state.Store, addr, webDi
 		Crew:     crewStore,
 		Auth:     authenticator,
 		Log:      log,
+		// Pure in-memory, no external credential to be missing — wired
+		// unconditionally, the same as Crew. 5 attempts per rider per 15
+		// minutes is enough for someone who mistypes a password twice; see
+		// ConnectLimiter's own doc comment for why this app's own traffic
+		// (its own auth, its own API) is deliberately not limited here too
+		// — that belongs to Traefik/Cloudflare in front of it, not this.
+		ConnectLimiter: ratelimit.New(5, 15*time.Minute),
 	}
 
 	srv.LandingHost = cfg.Web.LandingHost

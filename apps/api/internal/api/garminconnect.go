@@ -148,6 +148,9 @@ func (s *Server) handleGarminConnect(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	if !s.rateLimitConnect(w, rider) {
+		return
+	}
 
 	session, err := s.Garmin.Connect(r.Context(), consumer, body.Email, body.Password)
 	if err != nil {
