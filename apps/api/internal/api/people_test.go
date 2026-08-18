@@ -239,6 +239,52 @@ func TestPeopleListResolvesRoleFromAuth0RoleNames(t *testing.T) {
 	}
 }
 
+// likelyRider closes a real gap: a rider who has been invited and signed in
+// but never uploaded a route, linked a provider account, or created a crew
+// has no other way to show up in the crew add-member picker's suggestions
+// (CrewsPage.vue's knownRiders) — found live. This exercises the priority
+// order (name, then nickname, then the Auth0 user id) an admin actually
+// sees through the wire response, not just the unexported helper in
+// isolation, since this package's tests are external (package api_test)
+// and cannot call it directly.
+func TestPeopleListGuessesALikelyRiderIdentity(t *testing.T) {
+	fake := &fakePeople{people: []auth0mgmt.Person{
+		// A legal name is used as-is — the common case, an admin-typed
+		// invite name or a database-connection username.
+		{UserID: "auth0|1", Email: "a@example.com", Name: "pieter.hollevoet", Roles: []string{"domestique-users"}},
+		// A display name with a space fails RiderPattern (see
+		// accounts.RiderPattern), falling through to nickname — the Google
+		// sign-in case this was actually built for.
+		{UserID: "google-oauth2|2", Email: "b@example.com", Name: "Pieter Hollevoet", Nickname: "pieter.h", Roles: []string{"domestique-users"}},
+		// Neither name nor nickname is usable: falls all the way through
+		// to the Auth0 user id itself, which always satisfies the pattern.
+		{UserID: "google-oauth2|3", Email: "c@example.com", Name: "Pieter Hollevoet", Roles: []string{"domestique-users"}},
+	}}
+	h := newPeopleHarness(t, fake)
+
+	resp := h.as("wilant", "domestique-users,domestique-admins", http.MethodGet, "/api/people", "")
+	var out []struct {
+		Email       string `json:"email"`
+		LikelyRider string `json:"likelyRider"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	byEmail := map[string]string{}
+	for _, p := range out {
+		byEmail[p.Email] = p.LikelyRider
+	}
+	if byEmail["a@example.com"] != "pieter.hollevoet" {
+		t.Errorf("legal name: likelyRider = %q, want pieter.hollevoet", byEmail["a@example.com"])
+	}
+	if byEmail["b@example.com"] != "pieter.h" {
+		t.Errorf("illegal name, legal nickname: likelyRider = %q, want pieter.h", byEmail["b@example.com"])
+	}
+	if byEmail["c@example.com"] != "google-oauth2|3" {
+		t.Errorf("neither usable: likelyRider = %q, want the Auth0 user id", byEmail["c@example.com"])
+	}
+}
+
 func TestPeopleInviteGrantsGateAndPermissionRoleThenSendsEmail(t *testing.T) {
 	fake := &fakePeople{}
 	h := newPeopleHarness(t, fake)

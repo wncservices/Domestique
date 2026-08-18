@@ -205,6 +205,11 @@ export interface Person {
   role: AssignableRole
   createdAt?: string
   lastLogin?: string
+  /** Best-effort guess at this person's eventual rider identity, before
+   *  they've necessarily signed in even once — a hint for the crew
+   *  add-member picker (CrewsPage.vue's knownRiders), not a source of
+   *  truth. Absent when nothing legal could be derived. */
+  likelyRider?: string
 }
 
 export interface InvitePersonRequest {
