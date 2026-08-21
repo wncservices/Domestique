@@ -459,6 +459,65 @@ func TestSSOLoginReturnToIsHonouredAndValidated(t *testing.T) {
 	}
 }
 
+// The shape a rider actually reaches routinely: the tenant's own post-login
+// Action denies a login on purpose mid-provisioning (linking an identity,
+// granting a new signup its roles) and asks for a second attempt. This must
+// land back in the app as a toast, not a raw JSON blob — /sso/callback is a
+// top-level browser navigation, and nothing else ever renders its response.
+func TestSSOCallbackAccessDeniedRedirectsWithANotice(t *testing.T) {
+	h := newSSOHarness(t)
+	loginResp := h.get("/sso/login?return_to=/settings")
+	loc, err := loginResp.Location()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := loc.Query().Get("state")
+
+	const message = "Welcome to Domestique! Your account is ready — please sign in again."
+	resp := h.get("/sso/callback?error=access_denied&error_description=" +
+		url.QueryEscape(message) + "&state=" + state)
+
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("status = %d, want 302", resp.StatusCode)
+	}
+	redirect, err := resp.Location()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if redirect.Path != "/settings" {
+		t.Errorf("redirected to %v, want the validated return_to /settings", redirect)
+	}
+	if got := redirect.Query().Get("notice"); got != message {
+		t.Errorf("notice = %q, want the Action's own error_description", got)
+	}
+}
+
+// Everything that is not access_denied is a genuinely broken flow (a stale
+// state cookie, a misconfigured issuer) rather than something a rider
+// reaches by an ordinary sign-in — the plain JSON body is still the right
+// landing for those, unchanged from before access_denied got its own path.
+func TestSSOCallbackOtherIssuerErrorsStayJSON(t *testing.T) {
+	h := newSSOHarness(t)
+	loginResp := h.get("/sso/login")
+	loc, err := loginResp.Location()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := loc.Query().Get("state")
+
+	resp := h.get("/sso/callback?error=server_error&error_description=broken&state=" + state)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+	var body map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body["error"], "server_error") {
+		t.Errorf("error body = %v, want it to name server_error", body)
+	}
+}
+
 func TestSSOCallbackRejectsAMissingStateCookie(t *testing.T) {
 	h := newSSOHarness(t)
 	// No prior /sso/login on this client: no state cookie exists at all.

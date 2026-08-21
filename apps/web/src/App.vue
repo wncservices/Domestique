@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useToast } from '@nuxt/ui/composables'
 import { api } from '@/api/client'
 import ColorModeToggle from '@/components/ColorModeToggle.vue'
@@ -20,6 +20,7 @@ const {
   canManageCrews,
 } = useLibrary()
 const route = useRoute()
+const router = useRouter()
 const toast = useToast()
 
 // Carries the rider back to where they were before signing in. Validated
@@ -70,6 +71,30 @@ const links = computed(() =>
     canManagePeople.value ? { to: '/people', label: 'People', icon: 'i-lucide-users' } : null,
     { to: '/settings', label: 'Settings', icon: 'i-lucide-settings' },
   ].filter((link) => link !== null),
+)
+
+// /sso/callback redirects here with ?notice=... whenever the issuer denied
+// a login on purpose mid-provisioning (a linked identity, a brand-new
+// signup's roles just granted — see sso.go's own withNotice) rather than
+// rejecting it outright — a toast is the friendly landing for that; a raw
+// JSON blob is what showed up here before this existed. Stripped from the
+// URL right after so a refresh doesn't show it again.
+//
+// A watch with immediate: true, not a one-shot check in onMounted: the
+// router's own initial navigation is not guaranteed to have resolved by the
+// time App.vue — the root component, mounted directly rather than reached
+// through a route — first runs its mounted hook, so route.query can still
+// be empty at that exact moment. Watching reacts correctly whether the
+// query was already there or resolves a tick later.
+watch(
+  () => route.query.notice,
+  (notice) => {
+    if (typeof notice !== 'string' || !notice) return
+    toast.add({ title: notice, icon: 'i-lucide-info', color: 'info' })
+    const { notice: _drop, ...query } = route.query
+    router.replace({ path: route.path, query })
+  },
+  { immediate: true },
 )
 
 onMounted(refresh)

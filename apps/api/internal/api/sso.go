@@ -126,6 +126,34 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 	if errParam := r.URL.Query().Get("error"); errParam != "" {
 		desc := r.URL.Query().Get("error_description")
 		s.logger().Warn("oidc callback reported by issuer", "error", errParam, "description", desc)
+
+		// access_denied is the one shape a rider actually reaches routinely
+		// — the tenant's own post-login Action denies a login on purpose
+		// mid-provisioning (linking an identity, granting a new signup its
+		// roles) and asks for a second attempt, with the explanation in
+		// error_description. Every other error here is a genuinely broken
+		// flow (a stale state cookie, a misconfigured issuer) rare enough
+		// that the plain JSON body below is an acceptable landing.
+		//
+		// This is a top-level browser navigation, not a fetch — writeJSON
+		// here would render as a literal JSON blob on screen instead of the
+		// app, since nothing else ever paints this response. Redirecting
+		// back into the SPA with the explanation as a query param, the same
+		// safeReturnTo-validated destination a successful callback already
+		// uses, is what lets it show up as an ordinary toast instead.
+		if errParam == "access_denied" {
+			returnTo := st.ReturnTo
+			if returnTo == "" {
+				returnTo = "/"
+			}
+			notice := desc
+			if notice == "" {
+				notice = "Sign-in was not completed — please try again."
+			}
+			http.Redirect(w, r, withNotice(returnTo, notice), http.StatusFound)
+			return
+		}
+
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error": "sign-in was not completed: " + errParam,
 		})
@@ -417,6 +445,21 @@ func safeReturnTo(raw string) (string, error) {
 		return "", errors.New("return_to must be a path on this site")
 	}
 	return raw, nil
+}
+
+// withNotice appends (or replaces) a "notice" query param on path — App.vue
+// picks it up on mount, shows it as a toast, and strips it from the URL bar.
+// path is always already safeReturnTo-validated by the caller here, so this
+// only has to add a param, not re-validate the path itself.
+func withNotice(path, notice string) string {
+	u, err := url.Parse(path)
+	if err != nil {
+		return path
+	}
+	q := u.Query()
+	q.Set("notice", notice)
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 // requestIsHTTPS decides the cookie Secure attribute. Traefik terminates TLS
