@@ -13,7 +13,6 @@ import { useLibrary } from '@/composables/useLibrary'
 import AccountsPanel from '@/components/AccountsPanel.vue'
 import GarminSetup from '@/components/GarminSetup.vue'
 import KomootConnect from '@/components/KomootConnect.vue'
-import WahooConnect from '@/components/WahooConnect.vue'
 
 const {
   accounts,
@@ -460,8 +459,10 @@ onMounted(async () => {
       :me="me"
       :can-manage="canManageAccounts"
       :garmin="garmin"
+      :wahoo="wahoo"
       @changed="refresh"
       @garmin-changed="garminChanged"
+      @wahoo-changed="wahooChanged"
     />
 
     <UAlert
@@ -472,26 +473,13 @@ onMounted(async () => {
       :description="garminError"
     />
 
-    <UCard v-if="canManageAccounts" variant="outline">
-      <template #header>
-        <h2 class="flex items-center gap-2 font-medium text-highlighted">
-          <UIcon name="i-lucide-watch" />
-          Wahoo
-        </h2>
-        <p class="text-sm text-muted">Connect your own Wahoo account to push routes to it.</p>
-      </template>
-
-      <UAlert
-        v-if="wahooError"
-        color="error"
-        variant="subtle"
-        icon="i-lucide-triangle-alert"
-        :description="wahooError"
-        class="mb-4"
-      />
-
-      <WahooConnect :connection="wahoo" @changed="wahooChanged" />
-    </UCard>
+    <UAlert
+      v-if="wahooError"
+      color="error"
+      variant="subtle"
+      icon="i-lucide-triangle-alert"
+      :description="wahooError"
+    />
 
     <UCard v-if="canImportKomoot && komootEnabled" variant="outline">
       <template #header>

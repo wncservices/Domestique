@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { useToast } from '@nuxt/ui/composables'
 import { api } from '@/api/client'
-import type { Account, GarminConnection, GarminDevice, Me, Provider } from '@/api/types'
+import type { Account, GarminConnection, GarminDevice, Me, WahooConnection } from '@/api/types'
 import GarminSignIn from '@/components/GarminSignIn.vue'
 
 const props = defineProps<{
@@ -10,14 +11,26 @@ const props = defineProps<{
   me?: Me | null
   canManage: boolean
   garmin: GarminConnection
+  wahoo: WahooConnection
 }>()
-const emit = defineEmits<{ changed: []; garminChanged: [GarminConnection] }>()
+const emit = defineEmits<{
+  changed: []
+  garminChanged: [GarminConnection]
+  wahooChanged: [WahooConnection]
+}>()
 
-// Garmin is linked by signing in, so its button opens a dialog instead of
-// creating an account outright. Wahoo still links directly — there is no
-// sign-in behind it yet, which is what the "adapter not wired up" badge in
-// the list below is there to admit.
+// Garmin is linked by signing in, so its button opens a dialog. Wahoo is a
+// redirect to its own consent screen — see connectWahooHref below — the
+// one place either now happens: this used to also be linkable with a bare
+// POST that created an account with no OAuth session behind it at all,
+// duplicating (and, unlike this one, not actually authorizing) what
+// Settings' own Wahoo card already did.
 const signingIn = ref(false)
+
+const route = useRoute()
+const connectWahooHref = computed(
+  () => `/wahoo/connect?return_to=${encodeURIComponent(route.fullPath)}`,
+)
 
 const toast = useToast()
 
@@ -51,7 +64,6 @@ function lastSync(device: GarminDevice): string {
   return `last synced ${new Date(device.lastSync).toLocaleDateString()}`
 }
 
-const linking = ref<Provider | null>(null)
 const unlinking = ref('')
 const error = ref('')
 const unlinkTarget = ref<Account | null>(null)
@@ -70,20 +82,13 @@ async function toggleAutoPush(account: Account, enabled: boolean) {
   }
 }
 
-const providers: { id: Provider; name: string; icon: string }[] = [
-  { id: 'garmin', name: 'Garmin', icon: 'i-lucide-watch' },
-  { id: 'wahoo', name: 'Wahoo', icon: 'i-lucide-gauge' },
-]
-
 /** One account per rider per provider, so hide what is already linked. */
-const linkable = computed(() =>
-  providers.filter((p) => !props.accounts.some((a) => a.provider === p.id && isMine(a))),
+const linkableGarmin = computed(
+  () => !props.accounts.some((a) => a.provider === 'garmin' && isMine(a)),
 )
-
-/** Garmin needs a password before it is a push target; Wahoo does not yet. */
-function isSignIn(provider: Provider): boolean {
-  return provider === 'garmin'
-}
+const linkableWahoo = computed(
+  () => !props.accounts.some((a) => a.provider === 'wahoo' && isMine(a)),
+)
 
 function onGarminChanged(connection: GarminConnection) {
   emit('garminChanged', connection)
@@ -96,35 +101,23 @@ function isMine(account: Account): boolean {
   return account.rider.toLowerCase() === user.toLowerCase()
 }
 
-async function link(provider: Provider) {
-  linking.value = provider
-  error.value = ''
-  try {
-    const account = await api.linkAccount({ provider })
-    toast.add({
-      title: `${account.label} linked`,
-      description: 'Routes targeting it will be pushed on the next sync.',
-      icon: 'i-lucide-link',
-      color: 'success',
-    })
-    emit('changed')
-  } catch (err) {
-    error.value = err instanceof Error ? err.message : String(err)
-  } finally {
-    linking.value = null
-  }
-}
-
 async function unlink(account: Account) {
   unlinkTarget.value = null
   unlinking.value = account.id
   error.value = ''
   try {
-    // Unlinking a Garmin has to forget the sign-in behind it too, or the
-    // account comes back on the next sign-in attached to a session the rider
-    // thought they had removed. The endpoint does both.
+    // Unlinking a Garmin or Wahoo account has to forget the sign-in behind
+    // it too, or it comes back on the next sign-in attached to a session
+    // the rider thought they had removed. Each provider's own disconnect
+    // endpoint does both in one step.
     if (account.provider === 'garmin' && isMine(account)) {
       emit('garminChanged', await api.garminDisconnect())
+      toast.add({ title: `${account.label} unlinked`, icon: 'i-lucide-unlink', color: 'success' })
+      emit('changed')
+      return
+    }
+    if (account.provider === 'wahoo' && isMine(account)) {
+      emit('wahooChanged', await api.wahooDisconnect())
       toast.add({ title: `${account.label} unlinked`, icon: 'i-lucide-unlink', color: 'success' })
       emit('changed')
       return
@@ -152,15 +145,34 @@ async function unlink(account: Account) {
         </div>
         <div v-if="canManage" class="flex gap-2">
           <UButton
-            v-for="provider in linkable"
-            :key="provider.id"
-            :icon="provider.icon"
+            v-if="linkableGarmin"
+            icon="i-lucide-watch"
             color="neutral"
             variant="subtle"
-            :loading="linking === provider.id"
-            @click="isSignIn(provider.id) ? (signingIn = true) : link(provider.id)"
+            @click="signingIn = true"
           >
-            Link {{ provider.name }}
+            Link Garmin
+          </UButton>
+          <UTooltip
+            v-if="linkableWahoo && !wahoo.canConnect"
+            :text="
+              wahoo.unavailable ||
+              'This deployment has no encryption key, so a connection could not be kept safely.'
+            "
+          >
+            <UButton icon="i-lucide-gauge" color="neutral" variant="subtle" disabled>
+              Link Wahoo
+            </UButton>
+          </UTooltip>
+          <UButton
+            v-else-if="linkableWahoo"
+            :to="connectWahooHref"
+            external
+            icon="i-lucide-gauge"
+            color="neutral"
+            variant="subtle"
+          >
+            Link Wahoo
           </UButton>
         </div>
       </div>
