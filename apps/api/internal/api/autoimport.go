@@ -65,7 +65,7 @@ func (s *Server) AutoImportTick(ctx context.Context) {
 
 	// autoPushOnly: this is the unattended path, so it honors each
 	// account's own auto-push preference — see runPush's own doc comment.
-	if _, err := s.runPush(ctx, nil, true); err != nil {
+	if _, err := s.runPush(ctx, nil, true, nil); err != nil {
 		s.logger().Error("auto-import: push after import failed", "err", err)
 	}
 }

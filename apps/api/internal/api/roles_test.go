@@ -546,6 +546,95 @@ func TestAccountVisibility(t *testing.T) {
 	}
 }
 
+// The same visibility boundary applies to the pending-changes plan and to
+// push itself — not just the accounts list. Found live: an unrelated test
+// rider saw dozens of pending *deletes* queued against another rider's real
+// Garmin account, and nothing stopped a plain "Push to devices" (or a
+// request naming that account id directly in its selection) from actually
+// applying them.
+func TestPlanAndPushScopedToVisibleAccounts(t *testing.T) {
+	h := newAuthHarness(t, nil)
+	// seedRoleAccounts already links garmin:wilant.
+
+	if resp := h.as("friend", "cyclists", http.MethodPost, "/api/accounts",
+		`{"provider":"wahoo"}`); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("friend linking wahoo: status = %d", resp.StatusCode)
+	}
+
+	body, contentType := multipartUpload(t, map[string]string{"name": "Friend's Route"}, []byte(seedGPX), "route.gpx")
+	req, err := http.NewRequest(http.MethodPost, h.base+"/api/routes", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", contentType)
+	req.Header.Set(auth.HeaderUser, "friend")
+	req.Header.Set(auth.HeaderGroups, "cyclists")
+	uploadResp, err := h.client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer uploadResp.Body.Close()
+	var route struct {
+		Slug string `json:"slug"`
+	}
+	if err := json.NewDecoder(uploadResp.Body).Decode(&route); err != nil {
+		t.Fatal(err)
+	}
+
+	// A real push, as friend, so wahoo:friend has recorded sync state to
+	// go stale.
+	if resp := h.as("friend", "cyclists", http.MethodPost, "/api/push", ""); resp.StatusCode != http.StatusOK {
+		t.Fatalf("initial push: status = %d", resp.StatusCode)
+	}
+	// Removing it from the library leaves wahoo:friend's recorded state
+	// pointing at a route that no longer exists — exactly the "removed
+	// from the library or no longer targeted" pending delete reported live.
+	if resp := h.as("friend", "cyclists", http.MethodDelete, "/api/routes/"+route.Slug, ""); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete: status = %d", resp.StatusCode)
+	}
+
+	type planDTO struct {
+		Items []struct {
+			AccountID string `json:"accountId"`
+		} `json:"items"`
+	}
+	hasWahooFriend := func(user, groups string) bool {
+		resp := h.as(user, groups, http.MethodGet, "/api/plan", "")
+		var plan planDTO
+		if err := json.NewDecoder(resp.Body).Decode(&plan); err != nil {
+			t.Fatal(err)
+		}
+		for _, item := range plan.Items {
+			if item.AccountID == "wahoo:friend" {
+				return true
+			}
+		}
+		return false
+	}
+
+	if hasWahooFriend("wilant", "cyclists") {
+		t.Error("an unrelated rider's pending delete is visible in the plan")
+	}
+
+	// Neither a full push nor one whose selection names the account
+	// directly may touch it.
+	for _, pushBody := range []string{"", `{"items":[{"accountId":"wahoo:friend","slug":"` + route.Slug + `"}]}`} {
+		resp := h.as("wilant", "cyclists", http.MethodPost, "/api/push", pushBody)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("wilant push (body %q): status = %d", pushBody, resp.StatusCode)
+		}
+	}
+
+	// Proof nothing above actually reached it: the pending delete for
+	// wahoo:friend is exactly as it was.
+	if !hasWahooFriend("friend", "cyclists") {
+		t.Error("the pending delete for wahoo:friend disappeared — an unrelated rider's push applied it")
+	}
+	if !hasWahooFriend("boss", "domestique-admins") {
+		t.Error("admin's plan is missing wahoo:friend's pending delete")
+	}
+}
+
 // Ownership comes from the session, never the form — otherwise a rider could
 // upload as someone else and put the route beyond their own reach.
 func TestUploadOwnershipComesFromIdentity(t *testing.T) {
