@@ -1,0 +1,59 @@
+import { test, expect, type Page } from '@playwright/test'
+
+// Drives Auth0's real Universal Login — this is the whole point of running
+// as postPromotionAnalysis rather than pre-promotion: the OIDC redirect
+// always lands back on whichever Service is currently *active*
+// (auth.OIDCConfig.RedirectURL is fixed config, not request-derived), so a
+// full login can only be exercised meaningfully once promotion has already
+// happened and this pod is the one 'app.domestique.dev' now resolves to.
+//
+// Selectors target Auth0's documented New Universal Login field names
+// (input[name=username], input[name=password]) rather than visible label
+// text, which is copy that can change per Auth0 branding config. Not
+// verified against the live domestique.eu.auth0.com tenant from outside a
+// browser session — check these against the real login page on the first
+// real run and adjust if the tenant's actual DOM differs.
+async function signIn(page: Page, email: string, password: string) {
+  await page.goto('/sso/login')
+
+  await page.locator('input[name="username"]').fill(email)
+  await page.locator('button[type="submit"]').click()
+
+  // Identifier-first is Auth0's default: the password field lives on a
+  // second screen that only renders after the above submit. If this
+  // tenant is instead configured to show both fields at once, the field is
+  // already visible and this wait is a no-op.
+  const passwordField = page.locator('input[name="password"]')
+  await passwordField.waitFor({ state: 'visible' })
+  await passwordField.fill(password)
+  await page.locator('button[type="submit"]').click()
+
+  // Lands back on the app once the OIDC callback completes.
+  await page.waitForURL((url) => !url.hostname.includes('auth0.com'))
+}
+
+test('test-rider can sign in and see the library', async ({ page }) => {
+  const email = process.env.DOMESTIQUE_TEST_RIDER_EMAIL
+  const password = process.env.DOMESTIQUE_TEST_RIDER_PASSWORD
+  if (!email || !password) {
+    throw new Error('DOMESTIQUE_TEST_RIDER_EMAIL/PASSWORD must be set')
+  }
+
+  await signIn(page, email, password)
+
+  // The library page's own route count heading — see LibraryPage.vue.
+  await expect(page.getByText(/route(s)?$/i).first()).toBeVisible()
+})
+
+test('test-admin can sign in and reach the People page', async ({ page }) => {
+  const email = process.env.DOMESTIQUE_TEST_ADMIN_EMAIL
+  const password = process.env.DOMESTIQUE_TEST_ADMIN_PASSWORD
+  if (!email || !password) {
+    throw new Error('DOMESTIQUE_TEST_ADMIN_EMAIL/PASSWORD must be set')
+  }
+
+  await signIn(page, email, password)
+
+  await page.getByRole('link', { name: 'People' }).click()
+  await expect(page).toHaveURL(/\/people/)
+})
