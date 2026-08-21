@@ -2,9 +2,8 @@
 import { computed, ref } from 'vue'
 import { useToast } from '@nuxt/ui/composables'
 import { api } from '@/api/client'
-import type { Account, Sport } from '@/api/types'
+import type { Sport } from '@/api/types'
 
-const props = defineProps<{ accounts: Account[] }>()
 const emit = defineEmits<{ uploaded: [] }>()
 
 const toast = useToast()
@@ -14,7 +13,6 @@ const name = ref('')
 const description = ref('')
 const tags = ref('')
 const sport = ref<Sport>('cycling')
-const selectedTargets = ref<string[]>([])
 
 const sportOptions: { label: string; value: Sport }[] = [
   { label: 'Cycling', value: 'cycling' },
@@ -22,10 +20,6 @@ const sportOptions: { label: string; value: Sport }[] = [
 ]
 
 const busy = ref(false)
-
-const targetOptions = computed(() =>
-  props.accounts.map((a) => ({ label: a.label || a.id, value: a.id })),
-)
 
 const canSubmit = computed(() => !!file.value && !busy.value)
 
@@ -43,7 +37,6 @@ function reset() {
   description.value = ''
   tags.value = ''
   sport.value = 'cycling'
-  selectedTargets.value = []
 }
 
 async function submit() {
@@ -55,8 +48,12 @@ async function submit() {
       name: name.value.trim(),
       description: description.value.trim(),
       tags: tags.value.trim(),
-      // Empty means "use the library default targets".
-      targets: selectedTargets.value.join(','),
+      // No targets: the route gets the library's default targets, editable
+      // afterward from its own card — see RouteCard.vue's target picker,
+      // which chooses from the owner's crews rather than a raw account list
+      // the way this form used to. One picker for that decision, not two
+      // with different pools to choose from.
+      //
       // Ownership always comes from the session — the server ignores this
       // field when one exists, so there is nothing for the uploader to set.
       sport: sport.value,
@@ -113,14 +110,6 @@ async function submit() {
           <USelect v-model="sport" :items="sportOptions" class="w-full" />
         </UFormField>
       </div>
-
-      <UFormField
-        v-if="targetOptions.length"
-        label="Send to"
-        help="Leave all unticked to use the library's default targets."
-      >
-        <UCheckboxGroup v-model="selectedTargets" :items="targetOptions" orientation="horizontal" />
-      </UFormField>
     </div>
 
     <template #footer>

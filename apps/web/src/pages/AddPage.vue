@@ -8,21 +8,13 @@ import UploadPanel from '@/components/UploadPanel.vue'
 import WahooRoutesPanel from '@/components/WahooRoutesPanel.vue'
 import WahooDuplicatesPanel from '@/components/WahooDuplicatesPanel.vue'
 
-const {
-  accounts,
-  config,
-  canUpload,
-  canImportKomoot,
-  canSyncGarmin,
-  canSyncWahoo,
-  komootEnabled,
-  refresh,
-} = useLibrary()
+const { config, canUpload, canImportKomoot, canSyncGarmin, canSyncWahoo, komootEnabled, refresh } =
+  useLibrary()
 </script>
 
 <template>
   <div class="flex flex-col gap-6">
-    <UploadPanel v-if="canUpload" :accounts="accounts" @uploaded="refresh" />
+    <UploadPanel v-if="canUpload" @uploaded="refresh" />
 
     <UAlert
       v-else
