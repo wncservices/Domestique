@@ -59,10 +59,11 @@ jobs:
 
           {
             echo "images<<EOF"
-            # Hardcoded lowercase rather than ${{ github.repository }}: an image
-            # reference may not contain uppercase, and the repository is
-            # `wncservices/Domestique`. Deriving it would produce a name the
-            # registry rejects.
+            # Hardcoded rather than ${{ github.repository }}: the repo itself is
+            # lowercase now (wncservices/domestique), so deriving it would work
+            # today, but an image reference may not contain uppercase at all —
+            # this stays hardcoded so a future repo rename back to a capitalized
+            # name can't silently break the registry push again.
             echo "ghcr.io/wncservices/domestique"
             if [ -n "$hub_path" ]; then
               echo "docker.io/${hub_path}"
