@@ -4,6 +4,7 @@ import { useLibrary } from '@/composables/useLibrary'
 import LibraryDuplicatesPanel from '@/components/LibraryDuplicatesPanel.vue'
 import PlanPanel from '@/components/PlanPanel.vue'
 import RouteCard from '@/components/RouteCard.vue'
+import type { Sport } from '@/api/types'
 
 const {
   accounts,
@@ -21,17 +22,26 @@ const search = ref('')
 const pushing = ref(false)
 const failures = ref<string[]>([])
 
+const sportFilter = ref<Sport | 'all'>('all')
+const sportFilterOptions: { label: string; value: Sport | 'all'; icon: string }[] = [
+  { label: 'All sports', value: 'all', icon: 'i-lucide-list' },
+  { label: 'Cycling', value: 'cycling', icon: 'i-lucide-bike' },
+  { label: 'Running', value: 'running', icon: 'i-lucide-footprints' },
+]
+
 const visibleRoutes = computed(() => {
   const needle = search.value.trim().toLowerCase()
-  if (!needle) return routes.value
-  return routes.value.filter(
-    (route) =>
+  return routes.value.filter((route) => {
+    if (sportFilter.value !== 'all' && route.sport !== sportFilter.value) return false
+    if (!needle) return true
+    return (
       route.name.toLowerCase().includes(needle) ||
       route.slug.toLowerCase().includes(needle) ||
       route.description.toLowerCase().includes(needle) ||
       route.tags.some((tag) => tag.toLowerCase().includes(needle)) ||
-      (route.owner ?? '').toLowerCase().includes(needle),
-  )
+      (route.owner ?? '').toLowerCase().includes(needle)
+    )
+  })
 })
 
 // Client-side pagination over the already-fetched array: the library is one
@@ -50,7 +60,7 @@ watch(visibleRoutes, () => {
   const maxPage = Math.max(1, Math.ceil(visibleRoutes.value.length / pageSize))
   if (page.value > maxPage) page.value = maxPage
 })
-watch(search, () => {
+watch([search, sportFilter], () => {
   page.value = 1
 })
 
@@ -106,12 +116,21 @@ async function push(items: { accountId: string; slug: string }[]) {
         <h2 class="font-medium text-highlighted">
           {{ routes.length }} route{{ routes.length === 1 ? '' : 's' }}
         </h2>
-        <UInput
-          v-model="search"
-          icon="i-lucide-search"
-          placeholder="Filter by name, slug, tag, description or uploader"
-          class="w-full sm:w-72"
-        />
+        <div class="flex flex-wrap items-center gap-2">
+          <USelect
+            v-model="sportFilter"
+            :items="sportFilterOptions"
+            icon="i-lucide-filter"
+            aria-label="Filter by sport"
+            class="w-40"
+          />
+          <UInput
+            v-model="search"
+            icon="i-lucide-search"
+            placeholder="Filter by name, slug, tag, description or uploader"
+            class="w-full sm:w-72"
+          />
+        </div>
       </div>
 
       <div v-if="loading" class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -133,7 +152,11 @@ async function push(items: { accountId: string; slug: string }[]) {
         v-else-if="!visibleRoutes.length"
         icon="i-lucide-search-x"
         title="Nothing matches"
-        :description="`No route matches “${search}”.`"
+        :description="
+          search
+            ? `No route matches “${search}”.`
+            : `No ${sportFilter} routes.`
+        "
       />
 
       <template v-else>
