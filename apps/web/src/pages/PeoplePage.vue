@@ -4,10 +4,12 @@ import { useToast } from '@nuxt/ui/composables'
 import { api, ApiError } from '@/api/client'
 import type { AssignableRole, Person } from '@/api/types'
 import { roleColor } from '@/utils/role'
+import { usePagedList } from '@/composables/usePagedList'
 
 const toast = useToast()
 
 const people = ref<Person[]>([])
+const { page: peoplePage, paged: pagedPeople, pageSize: peoplePageSize } = usePagedList(people, 24)
 const loading = ref(true)
 const error = ref('')
 // null (never configured) is distinct from "" (a real, empty error) — the
@@ -181,29 +183,39 @@ function lastSeen(person: Person): string {
         description="An administrator can set DOMESTIQUE_AUTH0_MGMT_CLIENT_ID and DOMESTIQUE_AUTH0_MGMT_CLIENT_SECRET to enable this page."
       />
 
-      <div v-else-if="people.length" class="flex flex-col divide-y divide-default">
-        <div
-          v-for="person in people"
-          :key="person.id"
-          class="flex flex-wrap items-center gap-3 py-2 first:pt-0 last:pb-0"
-        >
-          <div class="min-w-0 flex-1">
-            <p class="truncate text-sm text-highlighted">{{ person.name || person.email }}</p>
-            <p class="truncate text-xs text-dimmed">{{ person.email }} · {{ lastSeen(person) }}</p>
+      <template v-else-if="people.length">
+        <div class="flex flex-col divide-y divide-default">
+          <div
+            v-for="person in pagedPeople"
+            :key="person.id"
+            class="flex flex-wrap items-center gap-3 py-2 first:pt-0 last:pb-0"
+          >
+            <div class="min-w-0 flex-1">
+              <p class="truncate text-sm text-highlighted">{{ person.name || person.email }}</p>
+              <p class="truncate text-xs text-dimmed">{{ person.email }} · {{ lastSeen(person) }}</p>
+            </div>
+            <UBadge :color="roleColor(person.role)" variant="subtle" size="sm">{{ person.role }}</UBadge>
+            <USelect
+              :model-value="person.role"
+              :items="roleOptions"
+              :loading="changingRole === person.id"
+              :disabled="changingRole === person.id"
+              size="sm"
+              class="w-28"
+              aria-label="Change role"
+              @update:model-value="(role: AssignableRole) => changeRole(person, role)"
+            />
           </div>
-          <UBadge :color="roleColor(person.role)" variant="subtle" size="sm">{{ person.role }}</UBadge>
-          <USelect
-            :model-value="person.role"
-            :items="roleOptions"
-            :loading="changingRole === person.id"
-            :disabled="changingRole === person.id"
-            size="sm"
-            class="w-28"
-            aria-label="Change role"
-            @update:model-value="(role: AssignableRole) => changeRole(person, role)"
-          />
         </div>
-      </div>
+
+        <UPagination
+          v-if="people.length > peoplePageSize"
+          v-model:page="peoplePage"
+          :total="people.length"
+          :items-per-page="peoplePageSize"
+          class="mt-4 justify-center"
+        />
+      </template>
 
       <UEmpty
         v-else-if="!loading"

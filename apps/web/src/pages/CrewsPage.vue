@@ -4,9 +4,12 @@ import { useToast } from '@nuxt/ui/composables'
 import { api } from '@/api/client'
 import type { Crew, Person } from '@/api/types'
 import { useLibrary } from '@/composables/useLibrary'
+import { usePagedList } from '@/composables/usePagedList'
 
 const { crews, accounts, routes, me, loading, error, refresh, can } = useLibrary()
 const toast = useToast()
+
+const { page: crewsPage, paged: pagedCrews, pageSize: crewsPageSize } = usePagedList(crews, 24)
 
 // People-page data, fetched separately (not part of useLibrary's own
 // state) purely to widen knownRiders below — every other use of this page
@@ -370,9 +373,10 @@ async function saveShare() {
         class="mb-4"
       />
 
-      <div v-if="crews.length" class="flex flex-col divide-y divide-default">
+      <template v-if="crews.length">
+        <div class="flex flex-col divide-y divide-default">
         <div
-          v-for="crew in crews"
+          v-for="crew in pagedCrews"
           :key="crew.id"
           class="flex flex-wrap items-center gap-3 py-3 first:pt-0 last:pb-0"
         >
@@ -477,6 +481,15 @@ async function saveShare() {
           </template>
         </div>
       </div>
+
+      <UPagination
+        v-if="crews.length > crewsPageSize"
+        v-model:page="crewsPage"
+        :total="crews.length"
+        :items-per-page="crewsPageSize"
+        class="mt-4 justify-center"
+      />
+      </template>
 
       <UEmpty
         v-else-if="!loading"
