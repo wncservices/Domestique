@@ -20,6 +20,7 @@ import (
 	"github.com/wncservices/domestique/apps/api/internal/api"
 	"github.com/wncservices/domestique/apps/api/internal/auth"
 	"github.com/wncservices/domestique/apps/api/internal/config"
+	"github.com/wncservices/domestique/apps/api/internal/crew"
 	"github.com/wncservices/domestique/apps/api/internal/komoot"
 	"github.com/wncservices/domestique/apps/api/internal/model"
 	"github.com/wncservices/domestique/apps/api/internal/providerlink"
@@ -40,6 +41,10 @@ type authHarness struct {
 	// harness needs one at all now that delete no longer falls back to the
 	// shared client the way listing and importing still do.
 	links *providerlink.Store
+	// crew lets a test seed crew membership directly — see
+	// seedApprovedCrew, the reason this harness needs one at all now that
+	// route visibility depends on it (TestRouteVisibility).
+	crew *crew.Store
 }
 
 func newAuthHarness(t *testing.T, komootClient api.KomootImporter) *authHarness {
@@ -68,6 +73,10 @@ func newAuthHarness(t *testing.T, komootClient api.KomootImporter) *authHarness 
 	if err != nil {
 		t.Fatal(err)
 	}
+	crewStore, err := crew.UseDB(db.Conn(), db.DSN())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	authenticator, err := auth.New(auth.Config{
 		Mode: auth.ModeProxy,
@@ -87,6 +96,7 @@ func newAuthHarness(t *testing.T, komootClient api.KomootImporter) *authHarness 
 		Auth:   authenticator,
 		Komoot: komootClient,
 		Links:  links,
+		Crew:   crewStore,
 		// Resume ignores the userID/token it is handed and always returns
 		// the same fake — this harness only ever needed one Komoot client
 		// to test against, whether reached via the shared fallback or (once
@@ -104,7 +114,28 @@ func newAuthHarness(t *testing.T, komootClient api.KomootImporter) *authHarness 
 	server := httptest.NewServer(srv.Handler())
 	t.Cleanup(server.Close)
 
-	return &authHarness{t: t, client: server.Client(), base: server.URL, src: db, links: links}
+	return &authHarness{t: t, client: server.Client(), base: server.URL, src: db, links: links, crew: crewStore}
+}
+
+// seedApprovedCrew creates a crew owned by owner and lands every member as
+// an approved rider directly in the store — bypassing the invite-then-
+// confirm HTTP round trip (see internal/crew's own package doc for why that
+// exists) since these tests are about route visibility, not consent itself.
+func (h *authHarness) seedApprovedCrew(t *testing.T, owner string, members ...string) string {
+	t.Helper()
+	c, err := h.crew.Create(context.Background(), "Crew", owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range members {
+		if _, err := h.crew.RequestJoin(context.Background(), c.ID, m); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.crew.Approve(context.Background(), c.ID, m, owner); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return c.ID
 }
 
 // seedRoleAccounts links one head unit, owned by "wilant".
@@ -166,6 +197,23 @@ func (h *authHarness) seedRoute(t *testing.T, name, owner string) model.Route {
 		Name:       name,
 		GPX:        []byte(seedGPX),
 		UploadedBy: owner,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return route
+}
+
+// seedRouteWithTargets is seedRoute plus an explicit sharing choice — for
+// TestRouteVisibility, which needs a route shared to a crew rather than
+// left at the owner-only default.
+func (h *authHarness) seedRouteWithTargets(t *testing.T, name, owner string, targets []string) model.Route {
+	t.Helper()
+	route, err := h.src.Create(t.Context(), source.CreateRequest{
+		Name:       name,
+		GPX:        []byte(seedGPX),
+		UploadedBy: owner,
+		Targets:    &targets,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -267,7 +315,11 @@ func TestMeReportsRoleAndPermissions(t *testing.T) {
 
 func TestViewerIsReadOnly(t *testing.T) {
 	h := newAuthHarness(t, nil)
-	route := h.seedRoute(t, "Someone's route", "wilant")
+	// Owned by the viewer themselves — reading their own route is the
+	// permission this test is actually about; a viewer's route-level
+	// visibility (own vs. an unrelated rider's) is TestRouteVisibility's
+	// own concern, not this one's.
+	route := h.seedRoute(t, "Guest's own route", "guest")
 
 	// Reading is allowed.
 	if resp := h.as("guest", "guests", http.MethodGet, "/api/routes", ""); resp.StatusCode != http.StatusOK {
@@ -324,6 +376,95 @@ func TestRouteOwnership(t *testing.T) {
 	resp = h.as("boss", "domestique-admins", http.MethodDelete, "/api/routes/"+theirs.Slug, "")
 	if resp.StatusCode != http.StatusNoContent {
 		t.Errorf("admin cannot delete another rider's route: status = %d", resp.StatusCode)
+	}
+}
+
+// The security-critical case this whole harness change exists for: a rider
+// with no crew membership and nothing shared to them must not see, list, or
+// download a route they have no relationship to — found live, an
+// authenticated rider with nothing connected could still see every route in
+// the deployment. Covers all four read surfaces (list, track, GPX, FIT) plus
+// the crew-sharing and admin-bypass cases config.VisibleTo itself doesn't
+// exercise end to end.
+func TestRouteVisibility(t *testing.T) {
+	h := newAuthHarness(t, nil)
+	mine := h.seedRoute(t, "My route", "wilant")
+	unrelated := h.seedRoute(t, "Stranger's route", "friend")
+	crewID := h.seedApprovedCrew(t, "friend", "wilant")
+	shared := h.seedRouteWithTargets(t, "Shared with the crew", "friend", []string{crewID})
+
+	list := func(user, groups string) map[string]bool {
+		resp := h.as(user, groups, http.MethodGet, "/api/routes", "")
+		var body struct {
+			Routes []struct {
+				Slug string `json:"slug"`
+			} `json:"routes"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		slugs := map[string]bool{}
+		for _, r := range body.Routes {
+			slugs[r.Slug] = true
+		}
+		return slugs
+	}
+
+	seen := list("wilant", "cyclists")
+	if !seen[mine.Slug] {
+		t.Error("own route missing from the list")
+	}
+	if seen[unrelated.Slug] {
+		t.Error("an unrelated rider's route is visible in the list")
+	}
+	if !seen[shared.Slug] {
+		t.Error("a route shared to a crew wilant belongs to is missing from the list")
+	}
+
+	// Hiding it from the list is not enough on its own — a rider who
+	// already knows (or guesses) the slug must not be able to reach it any
+	// other way either.
+	for _, path := range []string{
+		"/api/tracks/" + unrelated.Slug,
+		"/api/gpx/" + unrelated.Slug,
+		"/api/fit/" + unrelated.Slug,
+	} {
+		resp := h.as("wilant", "cyclists", http.MethodGet, path, "")
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("GET %s for an unrelated route: status = %d, want 404", path, resp.StatusCode)
+		}
+	}
+	// The identical 404 an actually-nonexistent slug gets — existence
+	// itself is what this is scoped to hide, so the two must not be
+	// distinguishable.
+	unknownResp := h.as("wilant", "cyclists", http.MethodGet, "/api/gpx/does-not-exist", "")
+	unrelatedResp := h.as("wilant", "cyclists", http.MethodGet, "/api/gpx/"+unrelated.Slug, "")
+	var unknownBody, unrelatedBody map[string]string
+	_ = json.NewDecoder(unknownResp.Body).Decode(&unknownBody)
+	_ = json.NewDecoder(unrelatedResp.Body).Decode(&unrelatedBody)
+	if unknownBody["error"] != unrelatedBody["error"] {
+		t.Errorf("bodies differ: unknown slug = %v, unrelated route = %v — existence is leaking", unknownBody, unrelatedBody)
+	}
+
+	// The crew-shared route is reachable the same way the owner's own is.
+	for _, path := range []string{
+		"/api/tracks/" + shared.Slug,
+		"/api/gpx/" + shared.Slug,
+		"/api/fit/" + shared.Slug,
+	} {
+		resp := h.as("wilant", "cyclists", http.MethodGet, path, "")
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("GET %s for a crew-shared route: status = %d, want 200", path, resp.StatusCode)
+		}
+	}
+
+	// An admin's own list and single-route reads are never filtered.
+	adminSeen := list("boss", "domestique-admins")
+	if !adminSeen[unrelated.Slug] {
+		t.Error("admin's list is missing an unrelated rider's route")
+	}
+	if resp := h.as("boss", "domestique-admins", http.MethodGet, "/api/gpx/"+unrelated.Slug, ""); resp.StatusCode != http.StatusOK {
+		t.Errorf("admin GET of an unrelated route: status = %d, want 200", resp.StatusCode)
 	}
 }
 
