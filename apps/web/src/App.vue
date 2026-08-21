@@ -50,6 +50,17 @@ async function signOut() {
   }
 }
 
+// accounts is every device this rider can see — their own and a crew
+// fellow's (see server.go's listableAccounts) — but this tile is answering
+// "how many head units do I have," not "how many can I see." Same
+// own-account check AccountsPanel.vue's isMine already uses, so the two
+// never quietly disagree on what "mine" means.
+const myAccountCount = computed(() => {
+  const user = me.value?.user?.toLowerCase()
+  if (!user) return 0
+  return accounts.value.filter((a) => a.rider.toLowerCase() === user).length
+})
+
 const stats = computed(() => [
   { label: 'Routes', value: String(routes.value.length), icon: 'i-lucide-route' },
   { label: 'Distance', value: `${totalDistance.value.toFixed(0)} km`, icon: 'i-lucide-ruler' },
@@ -58,7 +69,7 @@ const stats = computed(() => [
     value: `${Math.round(totalAscent.value).toLocaleString()} m`,
     icon: 'i-lucide-mountain',
   },
-  { label: 'Head units', value: String(accounts.value.length), icon: 'i-lucide-watch' },
+  { label: 'Head units', value: String(myAccountCount.value), icon: 'i-lucide-watch' },
 ])
 
 // Add is hidden rather than disabled for a viewer: the page would be an empty
