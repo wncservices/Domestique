@@ -8,7 +8,10 @@ import type { Account, AppConfig, Crew, Me, Permission, PlanResponse, Route } fr
  * Module-level rather than per-component: three pages want the same route
  * list, the same identity and the same set of head units, and fetching them
  * again on every navigation would make moving between tabs feel like a page
- * load. `refresh()` is what any page calls after changing something.
+ * load. `refresh()` is what any page calls after changing something —
+ * `refresh({ background: true })` from a page that is already showing the
+ * data being refreshed, so a small edit does not blank it back to a
+ * loading skeleton on the way to showing the same thing updated.
  */
 const config = ref<AppConfig | null>(null)
 const me = ref<Me | null>(null)
@@ -24,14 +27,22 @@ const error = ref('')
 /** Guards a second fetch while the first is still in flight. */
 let inFlight: Promise<void> | null = null
 
-async function load(): Promise<void> {
+async function load(background: boolean): Promise<void> {
   // Every page's onMounted calls refresh() again, so this reruns on each
   // navigation, not just the first. Without resetting loading here, only
   // the very first call ever showed a loading state — every later fetch
   // ran invisibly, and a page whose own slice of data hadn't arrived yet
   // (e.g. the first visit to a page this session) rendered its empty state
   // before quietly swapping in real data a moment later.
-  loading.value = true
+  //
+  // background skips exactly that reset, for the other kind of caller:
+  // Library and Crews gate their whole grid behind `loading`
+  // (`v-if="loading"` swaps in a skeleton), and both fire refresh() after
+  // every small edit on that same page — toggling a route's sport, sharing
+  // a route, approving a crew join. Resetting loading for those blanked the
+  // grid the visitor was already looking at, indistinguishable from a full
+  // page reload for something that changed one field.
+  if (!background) loading.value = true
   error.value = ''
   try {
     // config() and me() answer for anonymous visitors too (both exempted
@@ -81,9 +92,9 @@ async function load(): Promise<void> {
   }
 }
 
-function refresh(): Promise<void> {
+function refresh(options: { background?: boolean } = {}): Promise<void> {
   if (!inFlight) {
-    inFlight = load().finally(() => {
+    inFlight = load(options.background ?? false).finally(() => {
       inFlight = null
     })
   }

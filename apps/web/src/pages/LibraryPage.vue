@@ -69,6 +69,14 @@ const pagedRoutes = computed(() => {
   return visibleRoutes.value.slice(start, start + pageSize)
 })
 
+// This page is always already showing the routes/plan being refreshed —
+// every call below fires after an edit made right here, not on arriving at
+// the page — so none of them should blank the grid back to its loading
+// skeleton on the way to showing the same data updated.
+function backgroundRefresh() {
+  return refresh({ background: true })
+}
+
 async function push(items: { accountId: string; slug: string }[]) {
   pushing.value = true
   failures.value = []
@@ -76,7 +84,7 @@ async function push(items: { accountId: string; slug: string }[]) {
     const { api } = await import('@/api/client')
     const result = await api.push(items)
     failures.value = result.failures
-    await refresh()
+    await backgroundRefresh()
   } catch (err) {
     failures.value = [err instanceof Error ? err.message : String(err)]
   } finally {
@@ -103,13 +111,13 @@ async function push(items: { accountId: string; slug: string }[]) {
       :failures="failures"
       :can-push="canPush"
       @push="push"
-      @refresh="refresh"
+      @refresh="backgroundRefresh"
     />
 
     <!-- Cross-rider by nature (the same route can turn up uploaded by two
          different identities) — the same reason the endpoint behind this
          is admin-scoped rather than "my own routes". -->
-    <LibraryDuplicatesPanel v-if="me?.role === 'admin'" @changed="refresh" />
+    <LibraryDuplicatesPanel v-if="me?.role === 'admin'" @changed="backgroundRefresh" />
 
     <section>
       <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
@@ -168,8 +176,8 @@ async function push(items: { accountId: string; slug: string }[]) {
             :accounts="accounts"
             :writable="canUpload"
             :me="me"
-            @deleted="refresh"
-            @updated="refresh"
+            @deleted="backgroundRefresh"
+            @updated="backgroundRefresh"
           />
         </div>
 
