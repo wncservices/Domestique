@@ -232,6 +232,12 @@ export interface AppConfig {
   komoot: 'disabled' | 'unconfigured' | 'ready'
 }
 
+/** What kind of activity a route is for — changes how it reaches a device,
+ *  not just how it's labelled: a FIT course's own sport field decides
+ *  whether a head unit shows pace or speed, and Wahoo's Cloud API takes a
+ *  separate, explicit classification per route that has to agree with it. */
+export type Sport = 'cycling' | 'running'
+
 export interface Route {
   slug: string
   /** Who uploaded it. Riders may only edit their own. */
@@ -247,6 +253,9 @@ export interface Route {
   contentHash: string
   origin: string
   updatedAt: string
+  /** Always resolved, never absent — defaults to 'cycling' for any route
+   *  from before this field existed. */
+  sport: Sport
   /** Crew ids this route is shared to — own devices are implicit and never
    *  listed here. Empty/absent means the owner's own accounts only. */
   targets: string[]
@@ -268,6 +277,8 @@ export interface UploadRequest {
   tags?: string
   targets?: string
   uploadedBy?: string
+  /** Omitted means 'cycling' — see Route.sport. */
+  sport?: Sport
 }
 
 export interface LibraryResponse {

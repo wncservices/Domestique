@@ -45,6 +45,20 @@ import (
 // device might act on.
 const manufacturerDevelopment = typedef.ManufacturerDevelopment
 
+// SportFromString maps model.Sport's plain-string values to the FIT
+// library's own type — a string rather than model.Sport itself so this
+// package (a leaf: no dependency on anything above internal/gpx) does not
+// have to import internal/model just for one enum. Unknown or empty maps to
+// cycling, the same default model.RouteMeta.EffectiveSport already applies
+// — this library was cycling-only before Sport existed, so nothing here
+// should ever produce anything else for a route that predates the field.
+func SportFromString(sport string) typedef.Sport {
+	if sport == "running" {
+		return typedef.SportRunning
+	}
+	return typedef.SportCycling
+}
+
 // Options tunes the generated course.
 type Options struct {
 	// Name shown in the device's course list. Devices truncate this; keep it

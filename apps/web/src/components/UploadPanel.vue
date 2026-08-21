@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue'
 import { useToast } from '@nuxt/ui/composables'
 import { api } from '@/api/client'
-import type { Account } from '@/api/types'
+import type { Account, Sport } from '@/api/types'
 
 const props = defineProps<{ accounts: Account[] }>()
 const emit = defineEmits<{ uploaded: [] }>()
@@ -13,7 +13,13 @@ const file = ref<File | null>(null)
 const name = ref('')
 const description = ref('')
 const tags = ref('')
+const sport = ref<Sport>('cycling')
 const selectedTargets = ref<string[]>([])
+
+const sportOptions: { label: string; value: Sport }[] = [
+  { label: 'Cycling', value: 'cycling' },
+  { label: 'Running', value: 'running' },
+]
 
 const busy = ref(false)
 
@@ -36,6 +42,7 @@ function reset() {
   name.value = ''
   description.value = ''
   tags.value = ''
+  sport.value = 'cycling'
   selectedTargets.value = []
 }
 
@@ -52,6 +59,7 @@ async function submit() {
       targets: selectedTargets.value.join(','),
       // Ownership always comes from the session — the server ignores this
       // field when one exists, so there is nothing for the uploader to set.
+      sport: sport.value,
     })
     toast.add({
       title: 'Route added',
@@ -100,6 +108,9 @@ async function submit() {
         </UFormField>
         <UFormField label="Tags" hint="comma separated">
           <UInput v-model="tags" placeholder="gravel, hills" class="w-full" />
+        </UFormField>
+        <UFormField label="Sport">
+          <USelect v-model="sport" :items="sportOptions" class="w-full" />
         </UFormField>
       </div>
 

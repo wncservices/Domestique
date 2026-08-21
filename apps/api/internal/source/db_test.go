@@ -1,10 +1,13 @@
 package source
 
 import (
+	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/wncservices/domestique/apps/api/internal/model"
 )
 
 // openTestDB opens a SQLite database. Most tests use this; TestEachEngine runs
@@ -287,6 +290,128 @@ func TestDBRoundTripsTargets(t *testing.T) {
 		t.Errorf("targets = %v, want [garmin:wilant]", got)
 	}
 	_ = route
+}
+
+// A routes table that predates the sport column (an existing deployment's
+// database, most concretely) must still open cleanly, with every existing
+// row landing on cycling — the same idempotent-ALTER pattern
+// internal/crew's addAutoShareColumn/addOriginColumn already use, tested
+// the same way: build the old-shape table by hand, then open it through the
+// real OpenDB and confirm the migration ran instead of erroring.
+func TestOpenDBAddsTheSportColumnToAnExistingDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.db")
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`
+        CREATE TABLE routes (
+            slug TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
+            tags TEXT NOT NULL DEFAULT '', targets TEXT, enabled INTEGER NOT NULL DEFAULT 1,
+            gpx BLOB NOT NULL, distance_m REAL NOT NULL, ascent_m REAL NOT NULL,
+            start_lat REAL NOT NULL, start_lng REAL NOT NULL, point_count INTEGER NOT NULL,
+            content_hash TEXT NOT NULL, uploaded_by TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        )`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`
+        INSERT INTO routes (slug, name, gpx, distance_m, ascent_m, start_lat, start_lng,
+                            point_count, content_hash, created_at, updated_at)
+        VALUES ('old-route', 'Old Route', x'00', 1, 1, 1, 1, 1, 'hash', 'now', 'now')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := OpenDB(path)
+	if err != nil {
+		t.Fatalf("OpenDB on a pre-sport-column database: %v", err)
+	}
+	defer db.Close()
+
+	routes, _, err := db.List(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != 1 || routes[0].Sport != model.SportCycling {
+		t.Fatalf("routes = %+v, want the pre-existing row defaulted to cycling", routes)
+	}
+}
+
+// A route created with no Sport at all defaults to cycling — this library
+// was cycling-only before the column existed, so every pre-existing route
+// (and every caller that never mentions Sport) keeps behaving exactly as it
+// did.
+func TestDBCreateDefaultsSportToCycling(t *testing.T) {
+	db := openTestDB(t)
+
+	route, err := db.Create(t.Context(), CreateRequest{Name: "No sport set", GPX: exampleGPX(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if route.Sport != model.SportCycling {
+		t.Errorf("Sport = %q, want cycling", route.Sport)
+	}
+
+	routes, _, err := db.List(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != 1 || routes[0].Sport != model.SportCycling {
+		t.Fatalf("listed sport = %v, want [cycling]", routes)
+	}
+}
+
+func TestDBRoundTripsSport(t *testing.T) {
+	db := openTestDB(t)
+
+	route, err := db.Create(t.Context(), CreateRequest{Name: "A run", GPX: exampleGPX(t), Sport: model.SportRunning})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if route.Sport != model.SportRunning {
+		t.Fatalf("Create: Sport = %q, want running", route.Sport)
+	}
+
+	routes, _, err := db.List(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != 1 || routes[0].Sport != model.SportRunning {
+		t.Fatalf("List: sport = %v, want [running]", routes)
+	}
+
+	cycling := model.SportCycling
+	updated, err := db.Update(t.Context(), route.Slug, UpdateRequest{Sport: &cycling})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Sport != model.SportCycling {
+		t.Errorf("after update: Sport = %q, want cycling", updated.Sport)
+	}
+}
+
+// A metadata-only edit that never mentions Sport must not silently reset it
+// — UpdateRequest.Sport being nil means "leave it alone", the same rule
+// every other pointer field on UpdateRequest already follows.
+func TestDBUpdateWithoutSportLeavesItAlone(t *testing.T) {
+	db := openTestDB(t)
+
+	route, err := db.Create(t.Context(), CreateRequest{Name: "A run", GPX: exampleGPX(t), Sport: model.SportRunning})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	newName := "A run, renamed"
+	updated, err := db.Update(t.Context(), route.Slug, UpdateRequest{Name: &newName})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Sport != model.SportRunning {
+		t.Errorf("Sport = %q after an unrelated edit, want it left as running", updated.Sport)
+	}
 }
 
 // ---------- both engines ----------

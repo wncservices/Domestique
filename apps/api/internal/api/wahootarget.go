@@ -125,5 +125,6 @@ func toWahooRouteRequest(route targets.WahooRoute) wahoo.RouteRequest {
 		StartLng:    route.StartLng,
 		Filename:    route.Filename,
 		FIT:         route.FIT,
+		Sport:       route.Sport,
 	}
 }

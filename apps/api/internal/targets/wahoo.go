@@ -29,6 +29,9 @@ type WahooRoute struct {
 	StartLng    float64
 	Filename    string
 	FIT         []byte
+	// Sport is model.Sport's plain-string value — see wahoo.RouteRequest's
+	// own field of the same name for what it decides on Wahoo's side.
+	Sport string
 }
 
 // WahooRoutes is the slice of a Wahoo client a push needs.
@@ -114,7 +117,10 @@ func (w *Wahoo) prepare(ctx context.Context, route model.Route) (WahooRoutes, Wa
 		return nil, WahooRoute{}, fmt.Errorf("reading the track for %s: %w", route.Slug, err)
 	}
 
-	fit, err := fitcourse.Encode(points, fitcourse.Options{Name: route.Name})
+	fit, err := fitcourse.Encode(points, fitcourse.Options{
+		Name:  route.Name,
+		Sport: fitcourse.SportFromString(string(route.EffectiveSport())),
+	})
 	if err != nil {
 		return nil, WahooRoute{}, fmt.Errorf("building a course file for %s: %w", route.Slug, err)
 	}
@@ -142,6 +148,7 @@ func (w *Wahoo) prepare(ctx context.Context, route model.Route) (WahooRoutes, Wa
 		StartLng:    route.Stats.StartLng,
 		Filename:    wahooFilename(route),
 		FIT:         fit,
+		Sport:       string(route.EffectiveSport()),
 	}, nil
 }
 

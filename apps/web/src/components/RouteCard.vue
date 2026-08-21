@@ -33,6 +33,28 @@ const visibleTags = computed(() =>
 const confirming = ref(false)
 const deleting = ref(false)
 
+// Cycling/running is a two-way toggle, not a picker — one click flips it,
+// the same reasoning a checkbox gets over a dropdown for a binary choice.
+const togglingSport = ref(false)
+
+async function toggleSport() {
+  const next = props.route.sport === 'cycling' ? 'running' : 'cycling'
+  togglingSport.value = true
+  try {
+    await api.updateSport(props.route.slug, next)
+    emit('updated')
+  } catch (err) {
+    toast.add({
+      title: 'Could not change sport',
+      description: err instanceof Error ? err.message : String(err),
+      icon: 'i-lucide-triangle-alert',
+      color: 'error',
+    })
+  } finally {
+    togglingSport.value = false
+  }
+}
+
 /**
  * Mirrors the server's rule: riders may only edit what they uploaded, admins
  * anything. Delete and target editing share the same rule server-side
@@ -172,7 +194,31 @@ async function remove() {
       </div>
     </dl>
 
-    <div v-if="visibleTags.length" class="flex flex-wrap gap-1.5">
+    <div class="flex flex-wrap gap-1.5">
+      <UTooltip v-if="canEdit" text="Click to switch between cycling and running">
+        <UBadge
+          as="button"
+          :color="route.sport === 'running' ? 'warning' : 'primary'"
+          variant="subtle"
+          size="sm"
+          :icon="route.sport === 'running' ? 'i-lucide-footprints' : 'i-lucide-bike'"
+          class="cursor-pointer"
+          :class="{ 'opacity-50': togglingSport }"
+          :disabled="togglingSport"
+          @click="toggleSport"
+        >
+          {{ route.sport }}
+        </UBadge>
+      </UTooltip>
+      <UBadge
+        v-else
+        :color="route.sport === 'running' ? 'warning' : 'primary'"
+        variant="subtle"
+        size="sm"
+        :icon="route.sport === 'running' ? 'i-lucide-footprints' : 'i-lucide-bike'"
+      >
+        {{ route.sport }}
+      </UBadge>
       <UBadge v-for="tag in visibleTags" :key="tag" color="neutral" variant="soft" size="sm">
         {{ tag }}
       </UBadge>
