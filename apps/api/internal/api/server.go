@@ -982,6 +982,7 @@ func (s *Server) handleRoutes(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	routes = visibleRoutes(routes, auth.FromContext(r.Context()), crews)
 
 	writeJSON(w, http.StatusOK, libraryResponse{
 		Routes:   s.toRouteDTOs(r.Context(), routes, linked, crews),
@@ -997,6 +998,9 @@ func (s *Server) handleTrack(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slug := cleanSlug(r.PathValue("slug"))
+	if !s.mayView(w, r, slug) {
+		return
+	}
 	points, err := s.Source.Track(r.Context(), slug)
 	if err != nil {
 		s.failLookup(w, err)
@@ -1016,6 +1020,9 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slug := cleanSlug(r.PathValue("slug"))
+	if !s.mayView(w, r, slug) {
+		return
+	}
 	raw, err := s.Source.GPX(r.Context(), slug)
 	if err != nil {
 		s.failLookup(w, err)
@@ -1048,6 +1055,9 @@ func (s *Server) handleDownloadFIT(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slug := cleanSlug(r.PathValue("slug"))
+	if !s.mayView(w, r, slug) {
+		return
+	}
 	raw, err := s.Source.GPX(r.Context(), slug)
 	if err != nil {
 		s.failLookup(w, err)
@@ -1109,6 +1119,7 @@ func (s *Server) handlePlan(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	routes = visibleRoutes(routes, auth.FromContext(r.Context()), crews)
 
 	plan, err := syncer.BuildPlan(r.Context(), routes, linked, s.Store, crews)
 	if err != nil {
@@ -1725,6 +1736,67 @@ func (s *Server) mayEdit(w http.ResponseWriter, r *http.Request, slug string) bo
 	// Unknown slug: let the source produce the 404 rather than leaking
 	// whether it exists through the permission check.
 	return true
+}
+
+// mayView is mayEdit's read-side counterpart, for the single-route handlers
+// keyed by slug (handleTrack, handleDownload, handleDownloadFIT) — without
+// it, hiding a route from handleRoutes' list would do nothing to stop a
+// caller who already knows (or guesses) its slug from downloading the full
+// track anyway.
+//
+// Unlike mayEdit, a route that exists but is not visible to this caller
+// writes the identical 404 a genuinely nonexistent slug does ("no such
+// route", the same source.ErrNotFound text failLookup already renders) —
+// existence is exactly what visibility is scoped to hide here, so a 403
+// confirming "that one is real, just not yours to see" would leak the one
+// thing this exists to protect. mayEdit can afford a 403 because the whole
+// library is listed either way; this cannot.
+func (s *Server) mayView(w http.ResponseWriter, r *http.Request, slug string) bool {
+	id := auth.FromContext(r.Context())
+	if id.Role.Can(auth.PermEditAny) {
+		return true
+	}
+
+	routes, _, err := s.Source.List(r.Context())
+	if err != nil {
+		s.fail(w, err)
+		return false
+	}
+	crews, ok := s.crewSnapshot(w, r)
+	if !ok {
+		return false
+	}
+
+	for _, route := range routes {
+		if route.Slug != slug {
+			continue
+		}
+		if config.VisibleTo(route, id.User, crews) {
+			return true
+		}
+		break
+	}
+	writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such route"})
+	return false
+}
+
+// visibleRoutes narrows routes down to what identity may see (config.
+// VisibleTo), for the handlers that list or plan across the whole library
+// rather than looking up one slug — handleRoutes and handlePlan share this
+// rather than each filtering separately, so the two can never drift apart
+// on what "visible" means. An admin (PermEditAny) sees everything
+// unfiltered, the same bypass mayEdit and mayView already give them.
+func visibleRoutes(routes []model.Route, identity auth.Identity, crews crew.Snapshot) []model.Route {
+	if identity.Role.Can(auth.PermEditAny) {
+		return routes
+	}
+	out := make([]model.Route, 0, len(routes))
+	for _, rt := range routes {
+		if config.VisibleTo(rt, identity.User, crews) {
+			out = append(out, rt)
+		}
+	}
+	return out
 }
 
 func formatTime(t time.Time) string {

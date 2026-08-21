@@ -177,6 +177,36 @@ func TargetsFor(r model.Route, linked []model.Account, crews crew.Snapshot) []st
 	return sortedSetKeys(set)
 }
 
+// VisibleTo reports whether rider may see r in their own library — their
+// own route, or one shared to a crew both the owner and rider currently,
+// approvedly, belong to. The same relationship TargetsFor resolves a push
+// through, applied to reading instead of pushing: a route that would never
+// reach this rider's own devices should not show up in their library
+// either. Found live: a rider with no crew membership and nothing shared
+// could still see every route in the deployment, owned by riders they had
+// no relationship with at all — reading had no analogue of the consent
+// crews already require for a push.
+//
+// An admin is not handled here — every caller checks auth.PermEditAny
+// first and skips this entirely for one, the same bypass CanEditRoute
+// gives them for writes.
+func VisibleTo(r model.Route, rider string, crews crew.Snapshot) bool {
+	if strings.EqualFold(r.Owner, rider) {
+		return true
+	}
+	if r.Targets == nil {
+		// No explicit sharing choice reaches only the owner's own accounts
+		// (see TargetsFor) — reading follows the same default.
+		return false
+	}
+	for _, t := range *r.Targets {
+		if crews.ApprovedRiders.Has(t, r.Owner) && crews.ApprovedRiders.Has(t, rider) {
+			return true
+		}
+	}
+	return false
+}
+
 // UnknownTargets reports targets naming a crew the route's owner does not
 // currently, approvedly, belong to — a crew since deleted, one the owner
 // left, or (from before crews existed) a raw account id — so the UI can
