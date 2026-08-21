@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, useTemplateRef, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, useTemplateRef, watch } from 'vue'
 import { useColorMode } from '@/color-mode'
 import type { Map as MapLibreMap, StyleSpecification } from 'maplibre-gl'
 
@@ -34,6 +34,19 @@ function ensureProtocol(maplibregl: typeof import('maplibre-gl')) {
     })
   }
   return protocolReady
+}
+
+// Cached rather than re-imported on every use: init() awaits this once, and
+// everything after (addRouteLayers, the watchers) can assume it's already
+// resolved — a dynamic import() of an already-loaded module is cheap either
+// way, but this avoids every call site needing to be async just to get it.
+let maplibregl: typeof import('maplibre-gl') | null = null
+async function loadMaplibre() {
+  if (!maplibregl) {
+    maplibregl = await import('maplibre-gl')
+    await import('maplibre-gl/dist/maplibre-gl.css')
+  }
+  return maplibregl
 }
 
 /**
@@ -79,8 +92,8 @@ function toFeatureCollection(routes: typeof props.routes) {
   }
 }
 
-function fitToRoutes(maplibregl: typeof import('maplibre-gl')) {
-  if (!map || !props.routes.some((r) => r.points.length)) return
+function fitToRoutes() {
+  if (!map || !maplibregl || !props.routes.some((r) => r.points.length)) return
   const bounds = new maplibregl.LngLatBounds()
   for (const route of props.routes) {
     for (const [lat, lon] of route.points) bounds.extend([lon, lat])
@@ -92,6 +105,14 @@ function fitToRoutes(maplibregl: typeof import('maplibre-gl')) {
  * setStyle (used on a light/dark toggle, below) tears down every custom
  * source/layer along with the base style, so this runs again on every
  * 'style.load' — not just the first one — to put the route data back.
+ *
+ * Always reads props.routes fresh (not a snapshot from whenever the style
+ * swap started), and always re-fits bounds at the end: a routes change that
+ * lands mid-swap has nowhere to apply itself (the old source is already
+ * gone, the new one doesn't exist until this runs) — rather than trying to
+ * queue that update, this just always renders whatever is current by the
+ * time the style actually finishes loading, so nothing is lost, only
+ * possibly deferred a moment.
  */
 function addRouteLayers() {
   if (!map) return
@@ -125,20 +146,21 @@ function addRouteLayers() {
   map.on('mouseleave', LINE_LAYER_ID, () => {
     if (map) map.getCanvas().style.cursor = ''
   })
+
+  fitToRoutes()
 }
 
 async function init() {
   if (!container.value) return
-  const maplibregl = await import('maplibre-gl')
-  await import('maplibre-gl/dist/maplibre-gl.css')
-  await ensureProtocol(maplibregl)
+  const gl = await loadMaplibre()
+  await ensureProtocol(gl)
 
   const theme = resolved.value === 'dark' ? 'dark' : 'light'
   // A local const, not the outer `map` variable, for the calls below: other
   // closures in this file (onBeforeUnmount, the watchers) can reassign the
   // outer `map` asynchronously, so TypeScript can't narrow it past null
   // through them — this instance is exactly what was just constructed.
-  const instance = new maplibregl.Map({
+  const instance = new gl.Map({
     container: container.value,
     style: await buildStyle(theme),
     center: [4.35, 50.85],
@@ -146,12 +168,9 @@ async function init() {
     attributionControl: { compact: true },
   })
   map = instance
-  instance.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right')
+  instance.addControl(new gl.NavigationControl({ showCompass: false }), 'top-right')
 
-  instance.on('load', () => {
-    addRouteLayers()
-    fitToRoutes(maplibregl)
-  })
+  instance.on('load', addRouteLayers)
 }
 
 onMounted(init)
@@ -161,18 +180,30 @@ onBeforeUnmount(() => {
   map = null
 })
 
-watch(
-  () => props.routes,
-  async () => {
-    if (!map) return
-    const source = map.getSource(SOURCE_ID) as import('maplibre-gl').GeoJSONSource | undefined
-    if (!source) return
-    source.setData(toFeatureCollection(props.routes))
-    const maplibregl = await import('maplibre-gl')
-    fitToRoutes(maplibregl)
-  },
-  { deep: true },
+// A signature, not a deep watch on the array itself: props.routes can hold
+// every visible route's full point array — deep-watching that has Vue
+// instrument reactivity down to every coordinate pair, cost that grows with
+// total point count across the whole library, not just route count. This
+// changes exactly when a shallow "did anything meaningful change" check
+// needs it to: slug (routes added/removed) and point count (a route's own
+// track loaded or changed) are the only things toFeatureCollection actually
+// draws differently — route content itself is immutable per slug in this
+// app (a re-import creates a new route, it doesn't edit one in place), so
+// point count is enough without hashing coordinates.
+const routesSignature = computed(() =>
+  props.routes.map((r) => `${r.slug}:${r.points.length}`).join('|'),
 )
+
+watch(routesSignature, () => {
+  if (!map) return
+  const source = map.getSource(SOURCE_ID) as import('maplibre-gl').GeoJSONSource | undefined
+  // No source yet means a style swap (the theme watcher, below) is
+  // mid-flight — addRouteLayers reads props.routes fresh once that
+  // finishes, so this update isn't lost, just picked up there instead.
+  if (!source) return
+  source.setData(toFeatureCollection(props.routes))
+  fitToRoutes()
+})
 
 watch(
   () => props.selectedSlug,

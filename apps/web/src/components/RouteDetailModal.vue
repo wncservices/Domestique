@@ -61,11 +61,17 @@ const syncRows = computed(() =>
 // TrackPreview gets from its own IntersectionObserver for the card grid.
 const points = ref<[number, number][]>([])
 const loadingTrack = ref(false)
+// Same failure signal TrackPreview.vue already shows ("track unavailable")
+// for the identical fetch on the card grid — this popup was silently
+// rendering an empty map on a failed fetch instead, which looked like
+// nothing happened rather than like an error.
+const trackFailed = ref(false)
 
 watch(
   () => (props.open ? props.route?.slug : null),
   async (slug) => {
     points.value = []
+    trackFailed.value = false
     if (!slug) return
     loadingTrack.value = true
     try {
@@ -73,6 +79,7 @@ watch(
       points.value = track.points
     } catch {
       points.value = []
+      trackFailed.value = true
     } finally {
       loadingTrack.value = false
     }
@@ -96,6 +103,9 @@ const mapRoutes = computed(() =>
       <div v-if="route" class="flex flex-col gap-4">
         <div class="h-64 overflow-hidden rounded-lg bg-elevated/50 sm:h-80">
           <USkeleton v-if="loadingTrack" class="size-full" />
+          <div v-else-if="trackFailed" class="grid size-full place-items-center">
+            <p class="text-sm text-muted">track unavailable</p>
+          </div>
           <RouteMap v-else :routes="mapRoutes" />
         </div>
 

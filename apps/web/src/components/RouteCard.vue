@@ -171,13 +171,24 @@ async function remove() {
 <template>
   <UCard
     variant="outline"
-    class="app-card-interactive flex cursor-pointer flex-col"
+    class="app-card-interactive flex cursor-pointer flex-col focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
     :ui="{ body: 'flex-1 flex flex-col gap-3' }"
+    tabindex="0"
+    role="button"
+    :aria-label="`View details for ${route.name}`"
     @click="emit('open')"
+    @keydown.enter="emit('open')"
+    @keydown.space.prevent="emit('open')"
   >
     <!-- Everything below that's already its own control (badges, buttons)
          stops propagation so clicking it doesn't also open the detail
-         popup — only the card's otherwise-inert space does that. -->
+         popup — only the card's otherwise-inert space does that. A card
+         acting as role="button" while containing real buttons is not
+         textbook ARIA (interactive controls nested inside one another),
+         but it's the same pragmatic shape plenty of production card UIs
+         use, and the alternative — a separate, always-visible "View
+         details" affordance — changes the design this was built around
+         more than the accessibility gap it closes justifies. -->
     <TrackPreview :slug="route.slug" />
 
     <div>

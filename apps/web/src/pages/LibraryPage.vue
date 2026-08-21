@@ -113,6 +113,15 @@ const mapRoutes = computed(() =>
 const selectedSlug = ref<string | null>(null)
 const selectedRoute = computed(() => routes.value.find((r) => r.slug === selectedSlug.value) ?? null)
 
+// A route can vanish out from under an open detail popup — someone else
+// deletes it, or a refresh just drops it — without the click that opened
+// it ever firing again to notice. Left alone, the modal stayed open
+// showing an empty shell (every v-if="route" in RouteDetailModal hidden,
+// an undefined title) instead of just closing.
+watch(selectedRoute, (route) => {
+  if (selectedSlug.value && !route) selectedSlug.value = null
+})
+
 // This page is always already showing the routes/plan being refreshed —
 // every call below fires after an edit made right here, not on arriving at
 // the page — so none of them should blank the grid back to its loading
