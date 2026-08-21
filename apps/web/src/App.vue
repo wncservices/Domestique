@@ -244,7 +244,7 @@ onMounted(refresh)
            forget. -->
       <footer class="mt-2 border-t border-default pt-4 text-xs text-dimmed">
         <a
-          href="https://github.com/wncservices/Domestique"
+          href="https://github.com/wncservices/domestique"
           target="_blank"
           rel="noopener noreferrer"
           class="hover:text-default"
