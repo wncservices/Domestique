@@ -800,10 +800,22 @@ func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	crews, ok := s.crewSnapshot(w, r)
+	if !ok {
+		return
+	}
 
 	identity := auth.FromContext(r.Context())
+	canSeeAll := identity.Role.Can(auth.PermEditAny)
 	out := make([]accountDTO, 0, len(linked))
 	for _, a := range linked {
+		// Own account, a crew fellow's, or an admin — never a stranger's.
+		// See config.AccountVisibleTo's own doc comment for why: this used
+		// to list every account in the deployment to anyone who could read
+		// routes at all, the lowest permission tier there is.
+		if !canSeeAll && !config.AccountVisibleTo(a, identity.User, crews) {
+			continue
+		}
 		out = append(out, accountDTO{
 			ID:                  a.ID,
 			Provider:            string(a.Provider),
