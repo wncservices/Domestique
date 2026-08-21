@@ -5,11 +5,13 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wncservices/domestique/apps/api/internal/accounts"
 	"github.com/wncservices/domestique/apps/api/internal/api"
 	"github.com/wncservices/domestique/apps/api/internal/auth0mgmt"
 	"github.com/wncservices/domestique/apps/api/internal/model"
+	"github.com/wncservices/domestique/apps/api/internal/ratelimit"
 	"github.com/wncservices/domestique/apps/api/internal/source"
 )
 
@@ -245,6 +247,36 @@ func TestSelfPasswordResetRequiresAnAuthenticatedRider(t *testing.T) {
 	resp := h.post("/api/me/password-reset")
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("status = %d, want 401", resp.StatusCode)
+	}
+}
+
+// Both password-reset and MFA enrollment relay to Auth0 on the rider's own
+// behalf — without a limit, this app is an unlimited, authenticated-only
+// proxy for spamming a rider's own inbox or burning Auth0's send quota.
+// They share one AuthActionLimiter budget per rider, not one each, so a
+// rider hitting the limit on one cannot dodge it by switching to the other.
+func TestAuthActionsAreRateLimitedPerRider(t *testing.T) {
+	fake := &fakePeople{}
+	h := newSSOHarness(t, func(s *api.Server) {
+		s.People = fake
+		s.AuthActionLimiter = ratelimit.New(1, time.Hour)
+	})
+	h.loginWithUser([]string{"cyclists"}, map[string]any{
+		"preferred_username": "wilant", "email": "wilant@example.com",
+	})
+
+	if resp := h.post("/api/me/password-reset"); resp.StatusCode != http.StatusOK {
+		t.Fatalf("first password-reset: status = %d, want 200", resp.StatusCode)
+	}
+
+	// The budget is already spent — MFA enrollment must be refused too,
+	// not just a second password-reset.
+	resp := h.post("/api/me/mfa/enroll")
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Errorf("mfa enroll after the password-reset budget was spent: status = %d, want 429", resp.StatusCode)
+	}
+	if len(fake.invitedEmail) != 1 {
+		t.Errorf("SendInviteEmail calls = %v, want exactly the first one", fake.invitedEmail)
 	}
 }
 

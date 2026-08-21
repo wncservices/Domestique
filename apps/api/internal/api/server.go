@@ -144,6 +144,18 @@ type Server struct {
 	// redeploying to change a limit.
 	ConnectLimiter *ratelimit.Limiter
 
+	// AuthActionLimiter throttles a rider's own self-service Auth0
+	// Management API actions — a password-reset email
+	// (handleSelfPasswordReset) and an MFA enrollment ticket
+	// (handleEnrollMFA) — by rider. Same shape and same reasoning as
+	// ConnectLimiter, a different third party: without a limit, this app
+	// is an unlimited, authenticated-only proxy for spamming a rider's own
+	// inbox or burning Auth0's send quota. A separate instance from
+	// ConnectLimiter on purpose — failing a Garmin sign-in five times
+	// should not also lock a rider out of resetting their password, an
+	// unrelated action that happens to share the same rider key.
+	AuthActionLimiter *ratelimit.Limiter
+
 	// pushMu serialises pushes: two concurrent reconciles against the same
 	// account would race on remote ids and on the state file.
 	pushMu sync.Mutex
@@ -688,6 +700,9 @@ func (s *Server) handleSelfPasswordReset(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusPreconditionFailed, map[string]string{"error": "no email on file for this account"})
 		return
 	}
+	if !s.rateLimitAuthAction(w, id.User) {
+		return
+	}
 
 	if err := s.People.SendInviteEmail(r.Context(), id.Email); err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
@@ -748,6 +763,12 @@ func (s *Server) handleListMFA(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleEnrollMFA(w http.ResponseWriter, r *http.Request) {
 	sub, ok := s.meAuth0Sub(w, r)
 	if !ok {
+		return
+	}
+	// Keyed by rider, not sub — the same key space handleSelfPasswordReset
+	// uses, so the two share one AuthActionLimiter budget per person
+	// rather than each getting its own on a technicality.
+	if !s.rateLimitAuthAction(w, auth.FromContext(r.Context()).User) {
 		return
 	}
 	ticketURL, err := s.People.CreateGuardianEnrollmentTicket(r.Context(), sub)
@@ -1516,7 +1537,11 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		// enforce the one thing that check doesn't: the route must
 		// actually still be ownerless when this request lands, or two
 		// riders racing to claim the same orphan could otherwise silently
-		// steal it from each other.
+		// steal it from each other. The read below catches that for the
+		// common case with a friendly, immediate 409; source.UpdateRequest's
+		// own ClaimOwner is what actually closes the race, atomically, at
+		// write time — see its doc comment for why the read alone is not
+		// enough.
 		ClaimOwner bool `json:"claimOwner,omitempty"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil {
@@ -1573,14 +1598,25 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	route, err := s.Source.Update(r.Context(), slug, source.UpdateRequest{
-		Name:     body.Name,
-		Descript: body.Description,
-		Tags:     body.Tags,
-		Targets:  body.Targets,
-		Enabled:  body.Enabled,
-		Owner:    newOwner,
-		Sport:    sport,
+		Name:       body.Name,
+		Descript:   body.Description,
+		Tags:       body.Tags,
+		Targets:    body.Targets,
+		Enabled:    body.Enabled,
+		Owner:      newOwner,
+		Sport:      sport,
+		ClaimOwner: body.ClaimOwner,
 	})
+	if errors.Is(err, source.ErrAlreadyOwned) {
+		// The pre-check above already caught the common case; landing here
+		// means another claim won the race in the gap between that read and
+		// this write — same response either way, since from the caller's
+		// side both mean exactly the same thing: somebody else got there.
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": "this route already has an owner",
+		})
+		return
+	}
 	if err != nil {
 		s.failLookup(w, err)
 		return
@@ -1762,12 +1798,24 @@ func (s *Server) logger() *slog.Logger {
 // test harness that never sets one) allows everything, matching every
 // other optional-dependency nil check in this file.
 func (s *Server) rateLimitConnect(w http.ResponseWriter, rider string) bool {
-	if s.ConnectLimiter == nil || s.ConnectLimiter.Allow(rider) {
+	return rateLimit(w, s.ConnectLimiter, rider, "too many sign-in attempts — wait a few minutes and try again")
+}
+
+// rateLimitAuthAction enforces AuthActionLimiter for a rider triggering
+// their own Auth0-relayed self-service action — see that field's own doc
+// comment for why this is a separate budget from rateLimitConnect's.
+func (s *Server) rateLimitAuthAction(w http.ResponseWriter, rider string) bool {
+	return rateLimit(w, s.AuthActionLimiter, rider, "too many requests — wait a few minutes and try again")
+}
+
+// rateLimit is rateLimitConnect and rateLimitAuthAction's shared check: nil
+// limiter or an allowed key proceeds, anything else writes 429. A package
+// function, not a method — neither caller needs anything else off Server.
+func rateLimit(w http.ResponseWriter, limiter *ratelimit.Limiter, key, message string) bool {
+	if limiter == nil || limiter.Allow(key) {
 		return true
 	}
-	writeJSON(w, http.StatusTooManyRequests, map[string]string{
-		"error": "too many sign-in attempts — wait a few minutes and try again",
-	})
+	writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": message})
 	return false
 }
 

@@ -23,6 +23,11 @@ import (
 // ErrNotFound is returned for a slug the library does not hold.
 var ErrNotFound = errors.New("no such route")
 
+// ErrAlreadyOwned is returned for an UpdateRequest with ClaimOwner set
+// against a route that no longer has an empty owner by the time the write
+// actually lands — see UpdateRequest.ClaimOwner's own doc comment.
+var ErrAlreadyOwned = errors.New("route already has an owner")
+
 // CreateRequest is an upload.
 type CreateRequest struct {
 	// Filename is the uploaded file's name, used to derive a slug and a
@@ -51,6 +56,17 @@ type UpdateRequest struct {
 	// package's handleUpdate) — Update itself does not decide who may claim
 	// what, it just writes the value it is given.
 	Owner *string
+	// ClaimOwner, when true, makes the write conditional: it only takes
+	// effect if the route's owner is still empty at the moment the UPDATE
+	// actually runs, returning ErrAlreadyOwned otherwise. The API layer's
+	// own pre-check (routeOwner, in handleUpdate) reads and rejects early
+	// for the common case, but that read is not tied to the write that
+	// follows it — two riders racing to claim the same orphaned route
+	// could otherwise both pass that check and the second UPDATE would
+	// silently overwrite the first rider's claim. This is the guard that
+	// actually closes it, at the one layer that can make read-then-write
+	// atomic.
+	ClaimOwner bool
 	// GPX replaces the track when non-nil.
 	GPX []byte
 	// Sport, non-nil to change it.

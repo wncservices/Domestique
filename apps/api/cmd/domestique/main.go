@@ -694,6 +694,9 @@ func runServe(src *source.DB, cfg *config.Config, store state.Store, addr, webDi
 		// (its own auth, its own API) is deliberately not limited here too
 		// — that belongs to Traefik/Cloudflare in front of it, not this.
 		ConnectLimiter: ratelimit.New(5, 15*time.Minute),
+		// A separate instance from ConnectLimiter — see AuthActionLimiter's
+		// own doc comment for why the two must not share one budget.
+		AuthActionLimiter: ratelimit.New(5, 15*time.Minute),
 	}
 
 	srv.LandingHost = cfg.Web.LandingHost

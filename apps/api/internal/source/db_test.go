@@ -3,8 +3,10 @@ package source
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/wncservices/domestique/apps/api/internal/model"
@@ -411,6 +413,61 @@ func TestDBUpdateWithoutSportLeavesItAlone(t *testing.T) {
 	}
 	if updated.Sport != model.SportRunning {
 		t.Errorf("Sport = %q after an unrelated edit, want it left as running", updated.Sport)
+	}
+}
+
+// ClaimOwner's write must be atomic — a plain read-then-write would let
+// several concurrent claims all pass their own "still ownerless" read, and
+// whichever write landed last would silently overwrite every earlier
+// rider's claim rather than being refused. Run with -race: it also catches
+// any data race in the claim path itself, not just the logical outcome.
+func TestDBClaimOwnerIsExclusiveUnderConcurrency(t *testing.T) {
+	db := openTestDB(t)
+
+	route, err := db.Create(t.Context(), CreateRequest{Name: "Orphan", GPX: exampleGPX(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const claimants = 8
+	var wg sync.WaitGroup
+	results := make(chan error, claimants)
+	for i := range claimants {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			rider := fmt.Sprintf("rider-%d", i)
+			_, err := db.Update(t.Context(), route.Slug, UpdateRequest{Owner: &rider, ClaimOwner: true})
+			results <- err
+		}(i)
+	}
+	wg.Wait()
+	close(results)
+
+	successes, conflicts := 0, 0
+	for err := range results {
+		switch {
+		case err == nil:
+			successes++
+		case errors.Is(err, ErrAlreadyOwned):
+			conflicts++
+		default:
+			t.Errorf("unexpected error from a claim: %v", err)
+		}
+	}
+	if successes != 1 {
+		t.Errorf("successful claims = %d, want exactly 1", successes)
+	}
+	if conflicts != claimants-1 {
+		t.Errorf("refused claims = %d, want %d", conflicts, claimants-1)
+	}
+
+	routes, _, err := db.List(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != 1 || routes[0].Owner == "" {
+		t.Fatalf("routes = %+v, want the one route with a real owner", routes)
 	}
 }
 
