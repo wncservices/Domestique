@@ -101,6 +101,15 @@ function isMine(account: Account): boolean {
   return account.rider.toLowerCase() === user.toLowerCase()
 }
 
+// accounts (the prop) is every device this rider can see — their own and a
+// crew fellow's, per server.go's listableAccounts — because PlanPanel and
+// RouteCard's SyncBadge both need the wider set to show push targets and
+// sync status across a crew. Settings is a different question: "what have
+// I linked," not "what can I see." A crew-wide view of who links what
+// belongs on a crew page of its own, not folded into everyone's personal
+// Settings — this just narrows what this one panel renders.
+const myAccounts = computed(() => props.accounts.filter(isMine))
+
 async function unlink(account: Account) {
   unlinkTarget.value = null
   unlinking.value = account.id
@@ -140,7 +149,7 @@ async function unlink(account: Account) {
         <div>
           <h2 class="font-medium text-highlighted">Head units</h2>
           <p class="text-sm text-muted">
-            {{ accounts.length }} linked · routes are pushed to these
+            {{ myAccounts.length }} linked · routes are pushed to these
           </p>
         </div>
         <div v-if="canManage" class="flex gap-2">
@@ -198,9 +207,9 @@ async function unlink(account: Account) {
       class="mb-4"
     />
 
-    <div v-if="accounts.length" class="flex flex-col divide-y divide-default">
+    <div v-if="myAccounts.length" class="flex flex-col divide-y divide-default">
       <div
-        v-for="account in accounts"
+        v-for="account in myAccounts"
         :key="account.id"
         class="flex flex-wrap items-center gap-3 py-2 first:pt-0 last:pb-0"
       >
