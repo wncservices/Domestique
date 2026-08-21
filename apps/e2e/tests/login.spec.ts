@@ -13,7 +13,7 @@ import { test, expect, type Page } from '@playwright/test'
 // verified against the live domestique.eu.auth0.com tenant from outside a
 // browser session — check these against the real login page on the first
 // real run and adjust if the tenant's actual DOM differs.
-async function signIn(page: Page, email: string, password: string) {
+async function submitCredentials(page: Page, email: string, password: string) {
   await page.goto('/sso/login')
 
   await page.locator('input[name="username"]').fill(email)
@@ -27,7 +27,10 @@ async function signIn(page: Page, email: string, password: string) {
   await passwordField.waitFor({ state: 'visible' })
   await passwordField.fill(password)
   await page.locator('button[type="submit"]').click()
+}
 
+async function signIn(page: Page, email: string, password: string) {
+  await submitCredentials(page, email, password)
   // Lands back on the app once the OIDC callback completes.
   await page.waitForURL((url) => !url.hostname.includes('auth0.com'))
 }
@@ -56,4 +59,33 @@ test('test-admin can sign in and reach the People page', async ({ page }) => {
 
   await page.getByRole('link', { name: 'People' }).click()
   await expect(page).toHaveURL(/\/people/)
+})
+
+// This gate's own job is "does a known-good login still work" — it isn't
+// meant to be a general test of Auth0's own login-form validation. This one
+// negative case earns its place anyway: it's the cheapest possible check
+// that a bug on *our* side (mode: oidc accepting a token it shouldn't, or a
+// broken redirect that happens to land on an authenticated-looking page
+// regardless of what Auth0 actually decided) would still get caught here,
+// not just "does a correct login work."
+//
+// Only ever submits an obviously-fake password (never the real one) — this
+// test needs no password env var at all. Asserted by absence, not by any
+// particular error message: Auth0's own error copy is tenant branding that
+// can change, but "the OIDC redirect back to the app never completes" is
+// true regardless of that copy.
+test('a wrong password is rejected, not silently accepted', async ({ page }) => {
+  const email = process.env.DOMESTIQUE_TEST_RIDER_EMAIL
+  if (!email) {
+    throw new Error('DOMESTIQUE_TEST_RIDER_EMAIL must be set')
+  }
+
+  await submitCredentials(page, email, `not-the-real-password-${Date.now()}`)
+
+  const redirectedToApp = await page
+    .waitForURL((url) => !url.hostname.includes('auth0.com'), { timeout: 5_000 })
+    .then(() => true)
+    .catch(() => false)
+
+  expect(redirectedToApp, 'a wrong password must not complete the OIDC login redirect').toBe(false)
 })

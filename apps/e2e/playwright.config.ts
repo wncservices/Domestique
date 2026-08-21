@@ -13,8 +13,23 @@ export default defineConfig({
   // One retry-free attempt: this is a promotion gate reacting to something
   // that either works or does not, not a flaky test suite to smooth over —
   // a real failure here should abort/roll back, not quietly pass on attempt
-  // two.
-  fullyParallel: false,
+  // two. Parallel workers are a different thing than retries, though — every
+  // test here is fully independent (separate accounts or no account at all,
+  // and Playwright gives each test its own isolated browser context by
+  // default regardless of worker count), so running them at once only
+  // shortens the wall-clock time the postPromotionAnalysis Job spends
+  // waiting, it doesn't change what any test does or how many times it gets
+  // to do it.
+  fullyParallel: true,
+  // One worker per test (there are 3, see tests/login.spec.ts) — small
+  // enough to run all of them in a single batch instead of queueing, fixed
+  // rather than left to Playwright's own CPU-count auto-detection, which
+  // would just guess based on whatever this container happens to be
+  // scheduled onto. Bump this (and the Job's own resources/dev-shm sizing
+  // in domestique-infra's analysistemplate-post-promotion.yaml, sized and
+  // tested for exactly 3 concurrent Chromium instances) if a test gets
+  // added.
+  workers: 3,
   reporter: [['list']],
   // Every request this suite makes to a container the pod itself never
   // persists anywhere (a one-shot Job with no artifact export wired up),
