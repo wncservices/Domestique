@@ -811,16 +811,8 @@ func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request) {
 	}
 
 	identity := auth.FromContext(r.Context())
-	canSeeAll := identity.Role.Can(auth.PermEditAny)
 	out := make([]accountDTO, 0, len(linked))
-	for _, a := range linked {
-		// Own account, a crew fellow's, or an admin — never a stranger's.
-		// See config.AccountVisibleTo's own doc comment for why: this used
-		// to list every account in the deployment to anyone who could read
-		// routes at all, the lowest permission tier there is.
-		if !canSeeAll && !config.AccountVisibleTo(a, identity.User, crews) {
-			continue
-		}
+	for _, a := range visibleAccounts(identity, linked, crews) {
 		out = append(out, accountDTO{
 			ID:                  a.ID,
 			Provider:            string(a.Provider),
@@ -1197,7 +1189,9 @@ func (s *Server) handlePlan(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	routes = visibleRoutes(routes, auth.FromContext(r.Context()), crews)
+	identity := auth.FromContext(r.Context())
+	routes = visibleRoutes(routes, identity, crews)
+	linked = visibleAccounts(identity, linked, crews)
 
 	plan, err := syncer.BuildPlan(r.Context(), routes, linked, s.Store, crews)
 	if err != nil {
@@ -1228,7 +1222,13 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 	// auto-push preference — that preference only governs the unattended
 	// path (autoSyncIfEnabled, the auto-import poller's own push), never a
 	// push a human triggered on purpose.
-	resp, err := s.runPush(r.Context(), selected, false)
+	//
+	// identity is not nil: an HTTP-triggered push is always scoped to what
+	// the caller may act on (their own accounts, a crew fellow's, or
+	// everything for an admin) — see runPush's own doc comment for why
+	// that matters here specifically, more than for reading.
+	identity := auth.FromContext(r.Context())
+	resp, err := s.runPush(r.Context(), selected, false, &identity)
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -1247,7 +1247,17 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 // true for every unattended caller (autoSyncIfEnabled, the auto-import
 // poller), false for a rider's own "Push to devices" click, which always
 // honors whatever they picked regardless of that per-account preference.
-func (s *Server) runPush(ctx context.Context, selected map[model.PlanKey]bool, autoPushOnly bool) (pushResponse, error) {
+//
+// caller, when non-nil, restricts the whole push (including which pending
+// deletes ever get considered, not just which get applied) to accounts
+// caller may see — see visibleAccounts. nil is the unattended path's own
+// identity: the poller and auto-sync are not any one rider acting, they
+// are the deployment's own settings taking effect, so they need the full
+// account list the same way BuildPlan always has. handlePush always passes
+// the real caller — an HTTP request is a specific rider acting, and
+// selected alone was not enough of a guard: nothing stopped that map from
+// naming another rider's account id, plan or no plan naming it back.
+func (s *Server) runPush(ctx context.Context, selected map[model.PlanKey]bool, autoPushOnly bool, caller *auth.Identity) (pushResponse, error) {
 	s.pushMu.Lock()
 	defer s.pushMu.Unlock()
 
@@ -1260,15 +1270,18 @@ func (s *Server) runPush(ctx context.Context, selected map[model.PlanKey]bool, a
 	if err != nil {
 		return pushResponse{}, err
 	}
-	if autoPushOnly {
-		linked = autoPushAccounts(linked)
-	}
 	var crews crew.Snapshot
 	if s.Crew != nil {
 		crews, err = s.Crew.Snapshot(ctx)
 		if err != nil {
 			return pushResponse{}, err
 		}
+	}
+	if caller != nil {
+		linked = visibleAccounts(*caller, linked, crews)
+	}
+	if autoPushOnly {
+		linked = autoPushAccounts(linked)
 	}
 
 	build := s.TargetFactory
@@ -1935,6 +1948,26 @@ func visibleRoutes(routes []model.Route, identity auth.Identity, crews crew.Snap
 	for _, rt := range routes {
 		if config.VisibleTo(rt, identity.User, crews) {
 			out = append(out, rt)
+		}
+	}
+	return out
+}
+
+// visibleAccounts narrows linked to the ones identity may see or act on —
+// their own, a crew fellow's, or everything for an admin. The one
+// definition of that boundary, shared by handleAccounts (what a rider may
+// see listed), handlePlan (what pending changes they may see) and
+// runPush/handlePush (what they may actually push to, including delete) —
+// all three used to trust every caller with PermReadRoutes or PermPush,
+// the lowest tiers there are, with every account in the deployment.
+func visibleAccounts(identity auth.Identity, linked []model.Account, crews crew.Snapshot) []model.Account {
+	if identity.Role.Can(auth.PermEditAny) {
+		return linked
+	}
+	out := make([]model.Account, 0, len(linked))
+	for _, a := range linked {
+		if config.AccountVisibleTo(a, identity.User, crews) {
+			out = append(out, a)
 		}
 	}
 	return out

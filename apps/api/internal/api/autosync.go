@@ -112,7 +112,7 @@ func (s *Server) autoSyncIfEnabled(rider string) {
 	}
 
 	go func() {
-		resp, err := s.runPush(context.Background(), nil, true)
+		resp, err := s.runPush(context.Background(), nil, true, nil)
 		if err != nil {
 			s.logger().Error("auto-sync push failed", "triggered_by", rider, "err", err)
 			return
