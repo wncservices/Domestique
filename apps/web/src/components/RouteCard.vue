@@ -12,7 +12,7 @@ const props = defineProps<{
   writable: boolean
   me?: Me | null
 }>()
-const emit = defineEmits<{ deleted: []; updated: [] }>()
+const emit = defineEmits<{ deleted: []; updated: []; open: [] }>()
 
 const toast = useToast()
 
@@ -169,7 +169,15 @@ async function remove() {
 </script>
 
 <template>
-  <UCard variant="outline" class="app-card-interactive flex flex-col" :ui="{ body: 'flex-1 flex flex-col gap-3' }">
+  <UCard
+    variant="outline"
+    class="app-card-interactive flex cursor-pointer flex-col"
+    :ui="{ body: 'flex-1 flex flex-col gap-3' }"
+    @click="emit('open')"
+  >
+    <!-- Everything below that's already its own control (badges, buttons)
+         stops propagation so clicking it doesn't also open the detail
+         popup — only the card's otherwise-inert space does that. -->
     <TrackPreview :slug="route.slug" />
 
     <div>
@@ -202,7 +210,7 @@ async function remove() {
           class="cursor-pointer"
           :class="{ 'opacity-50': togglingSport }"
           :disabled="togglingSport"
-          @click="toggleSport"
+          @click.stop="toggleSport"
         >
           {{ route.sport }}
         </UBadge>
@@ -264,7 +272,7 @@ async function remove() {
           variant="outline"
           icon="i-lucide-user-plus"
           :loading="claiming"
-          @click="claim"
+          @click.stop="claim"
         >
           Claim
         </UButton>
@@ -278,6 +286,7 @@ async function remove() {
         variant="ghost"
         size="xs"
         aria-label="Download GPX"
+        @click.stop
       />
       <UTooltip
         v-if="canEdit && !targetOptions.length"
@@ -303,7 +312,7 @@ async function remove() {
         variant="ghost"
         size="xs"
         aria-label="Choose target devices"
-        @click="openTargets"
+        @click.stop="openTargets"
       />
       <UButton
         v-if="canEdit"
@@ -312,7 +321,7 @@ async function remove() {
         variant="ghost"
         size="xs"
         aria-label="Delete route"
-        @click="confirming = true"
+        @click.stop="confirming = true"
       />
     </div>
 

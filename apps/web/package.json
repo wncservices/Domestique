@@ -13,6 +13,9 @@
   "dependencies": {
     "@iconify-json/lucide": "^1.2.123",
     "@nuxt/ui": "^4.10.0",
+    "maplibre-gl": "^6.5.0",
+    "pmtiles": "^4.5.0",
+    "protomaps-themes-base": "^4.5.0",
     "tailwindcss": "^4.3.3",
     "vue": "^3.5.13",
     "vue-router": "^5.2.0"
