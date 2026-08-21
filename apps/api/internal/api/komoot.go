@@ -243,24 +243,40 @@ func (s *Server) handleKomootImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tours, err := client.Tours(r.Context(), s.Config.Komoot.IncludeRecorded)
+	identity := auth.FromContext(r.Context())
+	result, err := s.importKomootTours(r.Context(), identity.User, client, body.TourIDs)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
+	}
+
+	s.logger().Info("komoot import finished",
+		"user", identity.User, "imported", len(result.Imported), "skipped", len(result.Skipped))
+	writeJSON(w, http.StatusOK, result)
+}
+
+// importKomootTours pulls the given Komoot tour ids into the library,
+// attributing the created routes to uploader (the caller, for a manual
+// import; the connected rider, for the unattended one autoImportKomoot
+// runs). Split out of handleKomootImport so both paths run exactly the same
+// create sequence rather than a second, drifting copy of it.
+func (s *Server) importKomootTours(ctx context.Context, uploader string, client KomootImporter, tourIDs []string) (komootImportResult, error) {
+	tours, err := client.Tours(ctx, s.Config.Komoot.IncludeRecorded)
+	if err != nil {
+		return komootImportResult{}, err
 	}
 	byID := map[string]komoot.Tour{}
 	for _, t := range tours {
 		byID[t.ID] = t
 	}
 
-	identity := auth.FromContext(r.Context())
-	existing := s.komootTagIndex(r.Context())
+	existing := s.komootTagIndex(ctx)
 	result := komootImportResult{Imported: []string{}, Skipped: map[string]string{}}
 
 	// Decide what to fetch before fetching anything, so the slow part is a
 	// single pass with nothing else interleaved.
-	wanted := make([]string, 0, len(body.TourIDs))
-	for _, id := range body.TourIDs {
+	wanted := make([]string, 0, len(tourIDs))
+	for _, id := range tourIDs {
 		switch {
 		case !contains(byID, id):
 			result.Skipped[id] = "not in this Komoot account"
@@ -281,7 +297,7 @@ func (s *Server) handleKomootImport(w http.ResponseWriter, r *http.Request) {
 	// Small on purpose — this is somebody's personal account on an
 	// undocumented API, not a service to saturate.
 	const parallel = 4
-	downloads := fetchTours(r.Context(), client, wanted, parallel)
+	downloads := fetchTours(ctx, client, wanted, parallel)
 
 	for _, id := range wanted {
 		got := downloads[id]
@@ -293,14 +309,14 @@ func (s *Server) handleKomootImport(w http.ResponseWriter, r *http.Request) {
 		tour := byID[id]
 		raw := got.gpx
 
-		if _, err := s.Source.Create(r.Context(), source.CreateRequest{
+		if _, err := s.Source.Create(ctx, source.CreateRequest{
 			Filename: tour.Name + ".gpx",
 			Name:     tour.Name,
 			// No Descript: the "komoot" tag below already says where this
 			// came from — a redundant "Imported from Komoot (tour ...)"
 			// sentence in the description field just crowds the card.
 			Tags:       []string{"komoot", komootTag(id)},
-			UploadedBy: identity.User,
+			UploadedBy: uploader,
 			GPX:        raw,
 		}); err != nil {
 			result.Skipped[id] = err.Error()
@@ -309,9 +325,7 @@ func (s *Server) handleKomootImport(w http.ResponseWriter, r *http.Request) {
 		result.Imported = append(result.Imported, id)
 	}
 
-	s.logger().Info("komoot import finished",
-		"user", identity.User, "imported", len(result.Imported), "skipped", len(result.Skipped))
-	writeJSON(w, http.StatusOK, result)
+	return result, nil
 }
 
 func contains(byID map[string]komoot.Tour, id string) bool {

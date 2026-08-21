@@ -297,6 +297,31 @@ func (s *Store) Secret(provider, rider string) (externalID, secret string, err e
 	return externalID, secret, nil
 }
 
+// ListRiders returns every rider currently connected to the given provider,
+// in a stable order — who the auto-import poller has to ask, since there is
+// no other index of "who has signed in to Komoot" the way accounts.Store
+// tracks push targets for Garmin and Wahoo (Komoot has no accounts.Store
+// row at all: it is never a push target, only ever a source to pull from).
+func (s *Store) ListRiders(provider string) ([]string, error) {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	rows, err := s.db.Query(s.dialect.Rebind(`
+        SELECT rider FROM provider_links WHERE provider = ? ORDER BY rider`), provider)
+	if err != nil {
+		return nil, fmt.Errorf("list %s riders: %w", provider, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []string
+	for rows.Next() {
+		var rider string
+		if err := rows.Scan(&rider); err != nil {
+			return nil, fmt.Errorf("list %s riders: %w", provider, err)
+		}
+		out = append(out, rider)
+	}
+	return out, rows.Err()
+}
+
 // Delete removes a rider's connection. Deleting one that is not there is not
 // an error: the caller wanted it gone, and it is.
 func (s *Store) Delete(provider, rider string) error {

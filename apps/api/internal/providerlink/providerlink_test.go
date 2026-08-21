@@ -105,6 +105,39 @@ func TestProvidersAreSeparateForTheSameRider(t *testing.T) {
 	}
 }
 
+// ListRiders is what the auto-import poller uses to find who to ask —
+// scoped to the one provider given, in a stable order, and untouched by a
+// rider's connection to some other provider.
+func TestListRiders(t *testing.T) {
+	store, _ := newStore(t, newBox(t))
+
+	if _, err := store.Save("komoot", "wilant", conn("w@example.com", "", "", "tok-1")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Save("komoot", "friend", conn("f@example.com", "", "", "tok-2")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Save("garmin", "wilant", conn("w@example.com", "", "", "session-1")); err != nil {
+		t.Fatal(err)
+	}
+
+	riders, err := store.ListRiders("komoot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(riders) != 2 || riders[0] != "friend" || riders[1] != "wilant" {
+		t.Errorf("komoot riders = %v, want [friend wilant]", riders)
+	}
+
+	riders, err = store.ListRiders("wahoo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(riders) != 0 {
+		t.Errorf("wahoo riders = %v, want none — nobody connected it", riders)
+	}
+}
+
 // The point of the package. A session in the database has to be unreadable
 // without the key, or encrypting it achieved nothing.
 func TestSecretIsNotStoredInClear(t *testing.T) {

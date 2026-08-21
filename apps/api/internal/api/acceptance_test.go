@@ -700,6 +700,58 @@ func TestPatchAutoSyncsWhenEnabled(t *testing.T) {
 	h.waitForInSync(2)
 }
 
+// A rider can opt one of their own accounts out of the unattended push
+// without turning auto-sync off for everyone else — auto-sync then leaves
+// that one account's changes pending, exactly like it was never turned on
+// for that account, while the other still syncs itself. A manual push still
+// reaches every account regardless, since that preference only governs the
+// unattended path.
+func TestAutoSyncSkipsAnAccountWithAutoPushOff(t *testing.T) {
+	h := newHarness(t)
+
+	resp := h.do(http.MethodPut, "/api/accounts/wahoo:two/auto-push",
+		strings.NewReader(`{"enabled":false}`), "application/json")
+	h.expectStatus(resp, http.StatusOK)
+	var account struct {
+		AutoPush bool `json:"autoPush"`
+	}
+	h.decode(resp, &account)
+	if account.AutoPush {
+		t.Fatal("auto-push is still reported on after turning it off")
+	}
+
+	resp = h.do(http.MethodPut, "/api/settings/auto-sync",
+		strings.NewReader(`{"enabled":true}`), "application/json")
+	h.expectStatus(resp, http.StatusOK)
+
+	h.uploadExample("Only one account auto-pushes")
+
+	// garmin:one still auto-pushes, so the plan settles at one in sync and
+	// one still pending — never both, and never zero, within the same
+	// window waitForInSync already uses.
+	deadline := time.Now().Add(2 * time.Second)
+	var plan planDTO
+	for time.Now().Before(deadline) {
+		h.decode(h.get("/api/plan"), &plan)
+		if plan.InSync == 1 && len(plan.Items) == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if plan.InSync != 1 || len(plan.Items) != 1 {
+		t.Fatalf("plan = %+v, want garmin:one synced and wahoo:two still pending", plan)
+	}
+	if plan.Items[0].AccountID != "wahoo:two" {
+		t.Errorf("the pending item is %+v, want wahoo:two", plan.Items[0])
+	}
+
+	// A manual push still reaches wahoo:two — the preference only governs
+	// the unattended path, never a push the rider triggered themselves.
+	resp = h.do(http.MethodPost, "/api/push", nil, "")
+	h.expectStatus(resp, http.StatusOK)
+	h.waitForInSync(2)
+}
+
 func TestPlanThenPushThenPlanIsEmpty(t *testing.T) {
 	h, _ := syncHarness(t)
 

@@ -892,6 +892,11 @@ func runServe(src *source.DB, cfg *config.Config, store state.Store, addr, webDi
 		}
 	}()
 
+	// Polls every connected rider's Wahoo/Komoot/Garmin for new routes and,
+	// if auto-sync is on, imports and pushes them out — the unattended half
+	// of auto-sync, same shutdown signal as the HTTP server above.
+	go srv.RunAutoImportLoop(ctx)
+
 	log.Info("listening", "addr", addr, "library", src.Describe(),
 		"auth", authenticator.Mode())
 	if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

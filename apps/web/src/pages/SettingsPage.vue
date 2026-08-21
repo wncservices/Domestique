@@ -423,6 +423,38 @@ onMounted(async () => {
       </div>
     </UCard>
 
+    <!-- Deployment plumbing, and only an admin gets it: the same pattern
+         the Garmin setup / "This deployment" cards further down follow.
+         Placed near the top rather than with those other admin-only cards
+         — this is the one riders actually want to check or flip day to
+         day, not something set once and forgotten. -->
+    <UCard v-if="autoSync?.canManage" variant="outline">
+      <template #header>
+        <h2 class="flex items-center gap-2 font-medium text-highlighted">
+          <UIcon name="i-lucide-refresh-cw" />
+          Auto-sync
+        </h2>
+        <p class="text-sm text-muted">
+          Whether this deployment pulls in new routes from a rider's connected Wahoo, Komoot or
+          Garmin on its own, then pushes what changed out to devices — for every rider, without
+          anyone clicking "Push to devices". Which of a rider's own devices actually get pushed
+          to is set per device, below.
+        </p>
+      </template>
+
+      <label class="flex w-fit items-center gap-2 text-sm text-toned">
+        <USwitch
+          :model-value="autoSync.enabled"
+          :loading="togglingAutoSync"
+          @update:model-value="toggleAutoSync"
+        />
+        {{ autoSync.enabled ? 'On' : 'Off' }}
+      </label>
+      <p v-if="autoSync.updatedBy" class="mt-2 text-xs text-dimmed">
+        Last changed by {{ autoSync.updatedBy }}.
+      </p>
+    </UCard>
+
     <AccountsPanel
       :accounts="accounts"
       :me="me"
@@ -522,33 +554,6 @@ onMounted(async () => {
           <dd class="font-mono text-xs break-all text-highlighted">{{ config.source }}</dd>
         </div>
       </dl>
-    </UCard>
-
-    <!-- Deployment plumbing, and only an admin gets it: the same pattern
-         the Garmin setup / "This deployment" cards above follow. -->
-    <UCard v-if="autoSync?.canManage" variant="outline">
-      <template #header>
-        <h2 class="flex items-center gap-2 font-medium text-highlighted">
-          <UIcon name="i-lucide-refresh-cw" />
-          Auto-sync
-        </h2>
-        <p class="text-sm text-muted">
-          Whether an upload or edit pushes to devices on its own, for every rider, without
-          anyone clicking "Push to devices".
-        </p>
-      </template>
-
-      <label class="flex w-fit items-center gap-2 text-sm text-toned">
-        <USwitch
-          :model-value="autoSync.enabled"
-          :loading="togglingAutoSync"
-          @update:model-value="toggleAutoSync"
-        />
-        {{ autoSync.enabled ? 'On' : 'Off' }}
-      </label>
-      <p v-if="autoSync.updatedBy" class="mt-2 text-xs text-dimmed">
-        Last changed by {{ autoSync.updatedBy }}.
-      </p>
     </UCard>
 
     <UModal

@@ -216,7 +216,7 @@ func VisibleTo(r model.Route, rider string, crews crew.Snapshot) bool {
 // already reveal. A rider outside every one of the owner's crews learns
 // nothing about it at all — see handleAccounts, the bug this closed: every
 // account in the deployment was listed to anyone with routes:read, the
-// lowest permission tier there is.
+// lowest permission tier, regardless of any relationship to its owner.
 func AccountVisibleTo(account model.Account, rider string, crews crew.Snapshot) bool {
 	if strings.EqualFold(account.Rider, rider) {
 		return true

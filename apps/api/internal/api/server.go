@@ -164,6 +164,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/accounts", s.handleAccounts)
 	mux.HandleFunc("POST /api/accounts", s.handleLinkAccount)
 	mux.HandleFunc("DELETE /api/accounts/{id}", s.handleUnlinkAccount)
+	mux.HandleFunc("PUT /api/accounts/{id}/auto-push", s.handleSetAccountAutoPush)
 	mux.HandleFunc("GET /api/routes", s.handleRoutes)
 	mux.HandleFunc("GET /api/routes/duplicates", s.handleRouteDuplicates)
 	mux.HandleFunc("GET /api/plan", s.handlePlan)
@@ -371,6 +372,10 @@ type accountDTO struct {
 	Implemented bool `json:"implemented"`
 	// Mine tells the UI whether the viewer may unlink this one.
 	Mine bool `json:"mine"`
+	// AutoPush is whether auto-sync's background push includes this account
+	// — see accounts.Store.SetAutoPush's own doc comment. Editable by the
+	// same "mine" rule as unlinking.
+	AutoPush bool `json:"autoPush"`
 	// PossibleDuplicateOf names every other rider with an account for the
 	// same provider carrying the same label. A hint, not a certainty — see
 	// duplicateRiders — but usually means the same real device account,
@@ -823,6 +828,7 @@ func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request) {
 			Label:               a.Label,
 			Implemented:         targets.Implemented(a.Provider),
 			Mine:                identity.CanEditRoute(a.Rider),
+			AutoPush:            a.AutoPush,
 			PossibleDuplicateOf: duplicateRiders(linked, a),
 		})
 	}
@@ -907,6 +913,56 @@ func (s *Server) handleLinkAccount(w http.ResponseWriter, r *http.Request) {
 		Label:       account.Label,
 		Implemented: targets.Implemented(account.Provider),
 		Mine:        true,
+		AutoPush:    account.AutoPush,
+	})
+}
+
+// handleSetAccountAutoPush flips whether auto-sync's background push
+// includes one account — the same ownership rule as unlinking it: the
+// rider who linked it, or an admin.
+func (s *Server) handleSetAccountAutoPush(w http.ResponseWriter, r *http.Request) {
+	if !s.require(w, r, auth.PermManageAccounts) {
+		return
+	}
+
+	id := cleanSlug(r.PathValue("id"))
+	account, err := s.Accounts.Get(id)
+	if err != nil {
+		s.failAccount(w, err)
+		return
+	}
+
+	identity := auth.FromContext(r.Context())
+	if !identity.CanEditRoute(account.Rider) {
+		writeJSON(w, http.StatusForbidden, map[string]string{
+			"error": "that account belongs to " + account.Rider + "; only they or an admin can change it",
+		})
+		return
+	}
+
+	var body struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<10)).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+
+	if err := s.Accounts.SetAutoPush(id, body.Enabled); err != nil {
+		s.failAccount(w, err)
+		return
+	}
+	account.AutoPush = body.Enabled
+
+	s.logger().Info("account auto-push changed", "id", id, "enabled", body.Enabled, "by", identity.User)
+	writeJSON(w, http.StatusOK, accountDTO{
+		ID:          account.ID,
+		Provider:    string(account.Provider),
+		Rider:       account.Rider,
+		Label:       account.Label,
+		Implemented: targets.Implemented(account.Provider),
+		Mine:        true,
+		AutoPush:    account.AutoPush,
 	})
 }
 
@@ -1167,7 +1223,12 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := s.runPush(r.Context(), selected)
+	// autoPushOnly is false: a rider clicking "Push to devices" themselves
+	// pushes to whatever they picked, regardless of any account's own
+	// auto-push preference — that preference only governs the unattended
+	// path (autoSyncIfEnabled, the auto-import poller's own push), never a
+	// push a human triggered on purpose.
+	resp, err := s.runPush(r.Context(), selected, false)
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -1181,7 +1242,12 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 // rather than a second, drifting copy of it. selected nil means "everything
 // out of sync", the same meaning readPushSelection already gives a request
 // with no body.
-func (s *Server) runPush(ctx context.Context, selected map[model.PlanKey]bool) (pushResponse, error) {
+//
+// autoPushOnly restricts the whole push to accounts with AutoPush set —
+// true for every unattended caller (autoSyncIfEnabled, the auto-import
+// poller), false for a rider's own "Push to devices" click, which always
+// honors whatever they picked regardless of that per-account preference.
+func (s *Server) runPush(ctx context.Context, selected map[model.PlanKey]bool, autoPushOnly bool) (pushResponse, error) {
 	s.pushMu.Lock()
 	defer s.pushMu.Unlock()
 
@@ -1193,6 +1259,9 @@ func (s *Server) runPush(ctx context.Context, selected map[model.PlanKey]bool) (
 	linked, err := s.Accounts.List()
 	if err != nil {
 		return pushResponse{}, err
+	}
+	if autoPushOnly {
+		linked = autoPushAccounts(linked)
 	}
 	var crews crew.Snapshot
 	if s.Crew != nil {
@@ -1253,6 +1322,18 @@ func (s *Server) runPush(ctx context.Context, selected map[model.PlanKey]bool) (
 		Failures: messages,
 		Items:    toPlanDTOs(changes),
 	}, nil
+}
+
+// autoPushAccounts narrows a linked-account list to only the ones opted in
+// to auto-push — see runPush's own doc comment for when this applies.
+func autoPushAccounts(linked []model.Account) []model.Account {
+	out := make([]model.Account, 0, len(linked))
+	for _, a := range linked {
+		if a.AutoPush {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 // readPushSelection reads the optional {"items": [{"accountId","slug"}, ...]}

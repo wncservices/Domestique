@@ -314,15 +314,29 @@ func (s *Server) handleWahooRouteImport(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Re-listed rather than trusting names from the request body: the
+	result, err := s.importWahooRoutes(r.Context(), identity.User, rider, token, body.RouteIDs)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+
+	s.logger().Info("wahoo route sync-back finished",
+		"user", identity.User, "rider", rider, "imported", len(result.Imported), "skipped", len(result.Skipped))
+	writeJSON(w, http.StatusOK, result)
+}
+
+// importWahooRoutes pulls the given Wahoo route ids into the library for
+// rider, attributing the created routes to uploader (the caller, for a
+// manual import; rider itself, for the unattended one autoImportWahoo
+// runs). Split out of handleWahooRouteImport so both paths run exactly the
+// same create-and-record sequence rather than a second, drifting copy of it.
+func (s *Server) importWahooRoutes(ctx context.Context, uploader, rider, token string, routeIDs []string) (wahooRouteImportResult, error) {
+	// Re-listed rather than trusting names the caller already had: the
 	// routes' own metadata is authoritative, the same reason
 	// handleGarminCourseImport and handleKomootImport re-fetch too.
-	routes, err := s.Wahoo.ListRoutes(r.Context(), token)
+	routes, err := s.Wahoo.ListRoutes(ctx, token)
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{
-			"error": "Wahoo would not list the routes on this account just now.",
-		})
-		return
+		return wahooRouteImportResult{}, fmt.Errorf("wahoo would not list the routes on this account just now: %w", err)
 	}
 	byID := map[string]wahoo.Route{}
 	for _, rt := range routes {
@@ -331,8 +345,8 @@ func (s *Server) handleWahooRouteImport(w http.ResponseWriter, r *http.Request) 
 
 	result := wahooRouteImportResult{Imported: []string{}, Skipped: map[string]string{}}
 
-	wanted := make([]string, 0, len(body.RouteIDs))
-	for _, id := range body.RouteIDs {
+	wanted := make([]string, 0, len(routeIDs))
+	for _, id := range routeIDs {
 		if _, ok := byID[id]; !ok {
 			result.Skipped[id] = "not on this Wahoo account"
 			continue
@@ -344,7 +358,7 @@ func (s *Server) handleWahooRouteImport(w http.ResponseWriter, r *http.Request) 
 	// route that ended up missing its "wahoo" tag gets healed, the same
 	// idea as ensureGarminTags. Split out up front so the download step
 	// below only fetches FIT files for routes actually going to be created.
-	tracked, err := s.Store.ForAccount(r.Context(), accounts.ID(model.ProviderWahoo, rider))
+	tracked, err := s.Store.ForAccount(ctx, accounts.ID(model.ProviderWahoo, rider))
 	if err != nil {
 		s.logger().Warn("could not read wahoo sync state for healing", "rider", rider, "err", err)
 	}
@@ -354,10 +368,9 @@ func (s *Server) handleWahooRouteImport(w http.ResponseWriter, r *http.Request) 
 			trackedByRemoteID[e.RemoteID] = e
 		}
 	}
-	libraryRoutes, _, err := s.Source.List(r.Context())
+	libraryRoutes, _, err := s.Source.List(ctx)
 	if err != nil {
-		s.fail(w, err)
-		return
+		return wahooRouteImportResult{}, err
 	}
 	routesBySlug := map[string]model.Route{}
 	for _, rt := range libraryRoutes {
@@ -374,7 +387,7 @@ func (s *Server) handleWahooRouteImport(w http.ResponseWriter, r *http.Request) 
 	// Downloaded a few at a time, same reasoning and the same bound as
 	// Garmin's and Komoot's own imports.
 	const parallel = 4
-	downloads := fetchWahooRoutes(r.Context(), s.Wahoo, token, byID, toDownload, parallel)
+	downloads := fetchWahooRoutes(ctx, s.Wahoo, token, byID, toDownload, parallel)
 
 	for _, id := range wanted {
 		route := byID[id]
@@ -385,7 +398,7 @@ func (s *Server) handleWahooRouteImport(w http.ResponseWriter, r *http.Request) 
 				result.Skipped[id] = "already tracked, but the route it points to no longer exists"
 				continue
 			}
-			if err := s.ensureWahooTags(r.Context(), libraryRoute, id); err != nil {
+			if err := s.ensureWahooTags(ctx, libraryRoute, id); err != nil {
 				result.Skipped[id] = err.Error()
 				continue
 			}
@@ -399,13 +412,13 @@ func (s *Server) handleWahooRouteImport(w http.ResponseWriter, r *http.Request) 
 			continue
 		}
 
-		created, err := s.Source.Create(r.Context(), source.CreateRequest{
+		created, err := s.Source.Create(ctx, source.CreateRequest{
 			Filename: route.Name + ".gpx",
 			Name:     route.Name,
 			// No Descript: the "wahoo" tag below already says where this
 			// came from, the same call garmincourses.go and komoot.go make.
 			Tags:       []string{"wahoo", wahooTag(id)},
-			UploadedBy: identity.User,
+			UploadedBy: uploader,
 			GPX:        got.gpx,
 		})
 		if err != nil {
@@ -419,7 +432,7 @@ func (s *Server) handleWahooRouteImport(w http.ResponseWriter, r *http.Request) 
 		// just pulled down. RemoteID is the route id it came from, so a
 		// later push recognises it as already there instead of creating a
 		// second copy.
-		if err := s.Store.Record(r.Context(), state.Entry{
+		if err := s.Store.Record(ctx, state.Entry{
 			AccountID:   accounts.ID(model.ProviderWahoo, rider),
 			Slug:        created.Slug,
 			RemoteID:    id,
@@ -437,9 +450,7 @@ func (s *Server) handleWahooRouteImport(w http.ResponseWriter, r *http.Request) 
 		result.Imported = append(result.Imported, id)
 	}
 
-	s.logger().Info("wahoo route sync-back finished",
-		"user", identity.User, "rider", rider, "imported", len(result.Imported), "skipped", len(result.Skipped))
-	writeJSON(w, http.StatusOK, result)
+	return result, nil
 }
 
 // ensureWahooTags backfills the "wahoo"/"wahoo:<id>" tags onto a route that

@@ -79,6 +79,10 @@ type connectHarness struct {
 	accounts  *accounts.Store
 	db        *source.DB
 	store     state.Store
+	// srv is the server itself, not just its HTTP handler — for a test
+	// that needs to call an exported method directly (AutoImportTick,
+	// notably) rather than going through a request.
+	srv *api.Server
 }
 
 // newConnectHarness builds a server with Komoot enabled and no environment
@@ -160,7 +164,7 @@ func newConnectHarness(t *testing.T, withKey bool, opts ...func(*api.Server)) *c
 
 	return &connectHarness{t: t, client: server.Client(), base: server.URL,
 		links: links, connector: connector, garmin: garminConnector,
-		settings: appSettings, accounts: accountStore, db: db, store: store}
+		settings: appSettings, accounts: accountStore, db: db, store: store, srv: srv}
 }
 
 func (h *connectHarness) as(user, groups, method, path, body string) *http.Response {

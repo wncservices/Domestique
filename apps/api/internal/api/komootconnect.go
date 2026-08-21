@@ -214,11 +214,14 @@ func (s *Server) komootFor(r *http.Request) KomootImporter {
 // otherwise let any rider who never authenticated against the shared
 // account still remove tours from it.
 func (s *Server) komootOwnConnectionFor(r *http.Request) KomootImporter {
-	if s.Links == nil || s.Connector == nil {
-		return nil
-	}
-	rider := auth.FromContext(r.Context()).User
-	if rider == "" {
+	return s.komootClientForRider(auth.FromContext(r.Context()).User)
+}
+
+// komootClientForRider is komootOwnConnectionFor without an *http.Request
+// behind it — the auto-import poller has no request, just a rider name it
+// read from providerlink.Store.ListRiders.
+func (s *Server) komootClientForRider(rider string) KomootImporter {
+	if s.Links == nil || s.Connector == nil || rider == "" {
 		return nil
 	}
 	userID, token, err := s.Links.Secret(komootProvider, rider)
