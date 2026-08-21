@@ -59,6 +59,15 @@ function suggestedRiders(crew: Crew): string[] {
 
 onMounted(refresh)
 
+// Every call below fires after an edit made right here, on a page already
+// showing the crew list being refreshed — never on arriving at the page,
+// that's onMounted(refresh) above — so none of them should blank the list
+// back to its loading skeleton on the way to showing the same thing
+// updated. See useLibrary.ts's own doc comment on refresh().
+function backgroundRefresh() {
+  return refresh({ background: true })
+}
+
 function membershipLabel(crew: Crew): string {
   switch (crew.membershipStatus) {
     case 'approved':
@@ -86,7 +95,7 @@ async function createCrew() {
     toast.add({ title: `Created ${createName.value.trim()}`, icon: 'i-lucide-users-round', color: 'success' })
     createOpen.value = false
     createName.value = ''
-    await refresh()
+    await backgroundRefresh()
   } catch (err) {
     createError.value = err instanceof Error ? err.message : String(err)
   } finally {
@@ -103,7 +112,7 @@ async function join(crew: Crew) {
   try {
     await api.joinCrew(crew.id)
     toast.add({ title: `Requested to join ${crew.name}`, icon: 'i-lucide-hand', color: 'success' })
-    await refresh()
+    await backgroundRefresh()
   } catch (err) {
     toast.add({
       title: 'Could not request to join',
@@ -122,7 +131,7 @@ async function removeMember(crew: Crew, rider: string) {
   removing.value = `${crew.id}:${rider}`
   try {
     await api.removeCrewMember(crew.id, rider)
-    await refresh()
+    await backgroundRefresh()
   } catch (err) {
     toast.add({
       title: `Could not remove ${rider}`,
@@ -157,7 +166,7 @@ async function addMember(crew: Crew) {
         : { title: `${rider} added to ${crew.name}`, icon: 'i-lucide-user-plus', color: 'success' },
     )
     addMemberInput.value[crew.id] = ''
-    await refresh()
+    await backgroundRefresh()
   } catch (err) {
     toast.add({
       title: `Could not add ${rider}`,
@@ -177,7 +186,7 @@ async function approveMember(crew: Crew, rider: string) {
   try {
     await api.approveCrewMember(crew.id, rider)
     toast.add({ title: `${rider} approved`, icon: 'i-lucide-check', color: 'success' })
-    await refresh()
+    await backgroundRefresh()
   } catch (err) {
     toast.add({
       title: `Could not approve ${rider}`,
@@ -202,7 +211,7 @@ async function deleteCrew() {
     await api.deleteCrew(deleteTarget.value.id)
     toast.add({ title: `Deleted ${deleteTarget.value.name}`, icon: 'i-lucide-trash-2', color: 'success' })
     deleteTarget.value = null
-    await refresh()
+    await backgroundRefresh()
   } catch (err) {
     toast.add({
       title: 'Could not delete the crew',
@@ -242,7 +251,7 @@ async function toggleAutoShare(crew: Crew, autoShare: boolean) {
       icon: 'i-lucide-share-2',
       color: 'success',
     })
-    await refresh()
+    await backgroundRefresh()
   } catch (err) {
     toast.add({
       title: 'Could not change auto-share',
@@ -341,7 +350,7 @@ async function saveShare() {
     })
   }
   shareTarget.value = null
-  await refresh()
+  await backgroundRefresh()
 }
 </script>
 
