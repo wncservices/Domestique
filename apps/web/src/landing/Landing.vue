@@ -101,7 +101,7 @@ const features = [
             Sign in
           </UButton>
           <UButton
-            to="https://github.com/wncservices/Domestique"
+            to="https://github.com/wncservices/domestique"
             target="_blank"
             icon="i-lucide-github"
             color="neutral"
@@ -113,7 +113,7 @@ const features = [
         </div>
 
         <p class="mt-4 text-sm text-dimmed">
-          Sign-in is by invitation while this is still finding its feet.
+          Free to sign up — bring your own Garmin, Wahoo, or Komoot account.
         </p>
       </section>
 
@@ -127,7 +127,7 @@ const features = [
 
       <footer class="border-t border-default py-6 text-xs text-dimmed">
         <a
-          href="https://github.com/wncservices/Domestique"
+          href="https://github.com/wncservices/domestique"
           target="_blank"
           rel="noopener noreferrer"
           class="hover:text-default"
