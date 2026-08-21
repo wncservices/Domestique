@@ -309,6 +309,15 @@ func (d *DB) Update(ctx context.Context, slug string, req UpdateRequest) (model.
 
 	now := time.Now().UTC().Format(time.RFC3339)
 
+	// claimGuard is appended to the WHERE clause of whichever UPDATE below
+	// actually runs, and checked against RowsAffected afterward — see
+	// UpdateRequest.ClaimOwner's own doc comment for why a plain
+	// read-then-write is not enough here.
+	claimGuard := ""
+	if req.ClaimOwner {
+		claimGuard = " AND uploaded_by = ''"
+	}
+
 	if req.GPX != nil {
 		points, stats, err := analyse(req.GPX)
 		if err != nil {
@@ -316,17 +325,22 @@ func (d *DB) Update(ctx context.Context, slug string, req UpdateRequest) (model.
 		}
 		current.Stats = stats
 		current.ContentHash = gpx.ContentHash(points, current.Name, current.Description)
-		_, err = d.db.ExecContext(ctx, d.query(`
+		result, err := d.db.ExecContext(ctx, d.query(`
             UPDATE routes SET name=?, description=?, tags=?, targets=?, enabled=?, sport=?, gpx=?,
                    distance_m=?, ascent_m=?, start_lat=?, start_lng=?, point_count=?,
                    content_hash=?, uploaded_by=?, updated_at=?
-            WHERE slug=?`),
+            WHERE slug=?`+claimGuard),
 			current.Name, current.Description, joinList(current.Tags),
 			nullableList(current.Targets), current.IsEnabled(), string(current.EffectiveSport()), req.GPX,
 			stats.DistanceM, stats.AscentM, stats.StartLat, stats.StartLng, stats.PointCount,
 			current.ContentHash, current.Owner, now, slug)
 		if err != nil {
 			return model.Route{}, err
+		}
+		if req.ClaimOwner {
+			if affected, _ := result.RowsAffected(); affected == 0 {
+				return model.Route{}, ErrAlreadyOwned
+			}
 		}
 		return d.get(ctx, slug)
 	}
@@ -339,15 +353,20 @@ func (d *DB) Update(ctx context.Context, slug string, req UpdateRequest) (model.
 	}
 	current.ContentHash = gpx.ContentHash(points, current.Name, current.Description)
 
-	_, err = d.db.ExecContext(ctx, d.query(`
+	result, err := d.db.ExecContext(ctx, d.query(`
         UPDATE routes SET name=?, description=?, tags=?, targets=?, enabled=?, sport=?,
                content_hash=?, uploaded_by=?, updated_at=?
-        WHERE slug=?`),
+        WHERE slug=?`+claimGuard),
 		current.Name, current.Description, joinList(current.Tags),
 		nullableList(current.Targets), current.IsEnabled(), string(current.EffectiveSport()),
 		current.ContentHash, current.Owner, now, slug)
 	if err != nil {
 		return model.Route{}, err
+	}
+	if req.ClaimOwner {
+		if affected, _ := result.RowsAffected(); affected == 0 {
+			return model.Route{}, ErrAlreadyOwned
+		}
 	}
 	return d.get(ctx, slug)
 }
