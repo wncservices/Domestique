@@ -1049,7 +1049,15 @@ func (s *Server) handleRoutes(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	routes = visibleRoutes(routes, auth.FromContext(r.Context()), crews)
+	identity := auth.FromContext(r.Context())
+	routes = visibleRoutes(routes, identity, crews)
+	// A route targeting more than one crew resolves TargetsFor against
+	// every one of them, not just whichever crew made it visible to this
+	// caller — without this, a route's own sync status would still list
+	// account ids belonging to a *different* crew's members, the same
+	// exposure visibleAccounts already closed for /api/accounts and
+	// /api/plan, just reachable through a route's SyncState instead.
+	linked = visibleAccounts(identity, linked, crews)
 
 	writeJSON(w, http.StatusOK, libraryResponse{
 		Routes:   s.toRouteDTOs(r.Context(), routes, linked, crews),
@@ -1473,6 +1481,10 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// See handleRoutes' identical comment: a route targeting more than one
+	// crew must not surface another crew's member accounts in its own
+	// SyncState just because the caller happens to be in one of them.
+	linked = visibleAccounts(auth.FromContext(r.Context()), linked, crews)
 
 	s.logger().Info("route uploaded", "slug", route.Slug, "by", req.UploadedBy)
 	s.autoSyncIfEnabled(req.UploadedBy)
@@ -1577,8 +1589,13 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	identity := auth.FromContext(r.Context())
+	// See handleRoutes' identical comment: a route targeting more than one
+	// crew must not surface another crew's member accounts in its own
+	// SyncState just because the caller happens to be in one of them.
+	linked = visibleAccounts(identity, linked, crews)
 
-	s.autoSyncIfEnabled(auth.FromContext(r.Context()).User)
+	s.autoSyncIfEnabled(identity.User)
 	writeJSON(w, http.StatusOK, s.toRouteDTO(r.Context(), route, linked, crews))
 }
 

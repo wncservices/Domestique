@@ -635,6 +635,93 @@ func TestPlanAndPushScopedToVisibleAccounts(t *testing.T) {
 	}
 }
 
+// A route targeting two crews resolves TargetsFor against both of them, not
+// just whichever one made it visible to a given caller — a subtler version
+// of the same exposure #140/#142 already closed, reachable through a
+// route's own SyncState instead of the accounts or plan endpoints
+// themselves. A rider in only one of the two crews must not learn the
+// account id (provider + rider name) of a member who is only in the other.
+func TestRouteSyncStatusScopedToVisibleAccounts(t *testing.T) {
+	h := newAuthHarness(t, nil)
+	// seedRoleAccounts already links garmin:wilant.
+
+	crewA := h.seedApprovedCrew(t, "wilant", "buddy")
+	crewB := h.seedApprovedCrew(t, "wilant", "stranger")
+
+	if resp := h.as("buddy", "cyclists", http.MethodPost, "/api/accounts",
+		`{"provider":"wahoo"}`); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("buddy linking wahoo: status = %d", resp.StatusCode)
+	}
+	if resp := h.as("stranger", "cyclists", http.MethodPost, "/api/accounts",
+		`{"provider":"garmin"}`); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("stranger linking garmin: status = %d", resp.StatusCode)
+	}
+
+	body, contentType := multipartUpload(t, map[string]string{
+		"name":    "Shared with both crews",
+		"targets": crewA + "," + crewB,
+	}, []byte(seedGPX), "route.gpx")
+	req, err := http.NewRequest(http.MethodPost, h.base+"/api/routes", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", contentType)
+	req.Header.Set(auth.HeaderUser, "wilant")
+	req.Header.Set(auth.HeaderGroups, "cyclists")
+	uploadResp, err := h.client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer uploadResp.Body.Close()
+
+	type routeDTO struct {
+		Slug      string `json:"slug"`
+		SyncState []struct {
+			AccountID string `json:"accountId"`
+		} `json:"syncState"`
+	}
+	accountIDs := func(dto routeDTO) map[string]bool {
+		out := map[string]bool{}
+		for _, s := range dto.SyncState {
+			out[s.AccountID] = true
+		}
+		return out
+	}
+
+	var uploaded routeDTO
+	if err := json.NewDecoder(uploadResp.Body).Decode(&uploaded); err != nil {
+		t.Fatal(err)
+	}
+	// wilant, the uploader, sees every target — both crews are theirs.
+	seen := accountIDs(uploaded)
+	if !seen["garmin:wilant"] || !seen["wahoo:buddy"] || !seen["garmin:stranger"] {
+		t.Errorf("owner's own upload response = %v, want all three accounts", seen)
+	}
+
+	// buddy (crewA only) must see their own crew fellow's account, but not
+	// stranger's — a crewB member they share no crew with.
+	listResp := h.as("buddy", "cyclists", http.MethodGet, "/api/routes", "")
+	var list struct {
+		Routes []routeDTO `json:"routes"`
+	}
+	if err := json.NewDecoder(listResp.Body).Decode(&list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Routes) != 1 {
+		t.Fatalf("routes = %+v, want the one shared route", list.Routes)
+	}
+	seen = accountIDs(list.Routes[0])
+	if !seen["garmin:wilant"] {
+		t.Error("buddy cannot see the owner's own account in sync state")
+	}
+	if !seen["wahoo:buddy"] {
+		t.Error("buddy cannot see their own account in sync state")
+	}
+	if seen["garmin:stranger"] {
+		t.Error("buddy can see stranger's account — a crew they do not share")
+	}
+}
+
 // Ownership comes from the session, never the form — otherwise a rider could
 // upload as someone else and put the route beyond their own reach.
 func TestUploadOwnershipComesFromIdentity(t *testing.T) {
