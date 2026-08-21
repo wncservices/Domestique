@@ -542,3 +542,30 @@ func TestTurnsComputesItsOwnDistances(t *testing.T) {
 		t.Errorf("expected no turns from 2 points, got %v", got)
 	}
 }
+
+func TestSportFromString(t *testing.T) {
+	cases := map[string]typedef.Sport{
+		"running": typedef.SportRunning,
+		"cycling": typedef.SportCycling,
+		"":        typedef.SportCycling,
+		"hiking":  typedef.SportCycling, // unrecognised falls back to cycling
+	}
+	for in, want := range cases {
+		if got := SportFromString(in); got != want {
+			t.Errorf("SportFromString(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+func TestEncodeSetsTheCourseSport(t *testing.T) {
+	points := []gpx.Point{{Lat: 50.0, Lon: 3.0}, {Lat: 50.001, Lon: 3.001}}
+
+	raw, err := Encode(points, Options{Name: "Test", Sport: SportFromString("running")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	course := decode(t, raw)
+	if course.Course.Sport != typedef.SportRunning {
+		t.Errorf("course sport = %v, want SportRunning", course.Course.Sport)
+	}
+}

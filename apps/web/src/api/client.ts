@@ -28,6 +28,7 @@ import type {
   PushResponse,
   Route,
   RouteDuplicateGroup,
+  Sport,
   TrackResponse,
   UploadRequest,
 } from './types'
@@ -220,6 +221,7 @@ export const api = {
     if (req.tags) form.append('tags', req.tags)
     if (req.targets) form.append('targets', req.targets)
     if (req.uploadedBy) form.append('uploadedBy', req.uploadedBy)
+    if (req.sport) form.append('sport', req.sport)
     // No Content-Type header: the browser sets the multipart boundary.
     return request<Route>('/api/routes', { method: 'POST', body: form })
   },
@@ -237,6 +239,13 @@ export const api = {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ targets }),
+    }),
+
+  updateSport: (slug: string, sport: Sport) =>
+    request<Route>(`/api/routes/${encodeSlug(slug)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sport }),
     }),
 
   /** Claims an ownerless route (an import with no --owner, or an unclaimed

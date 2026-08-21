@@ -35,6 +35,9 @@ type CreateRequest struct {
 	GPX      []byte
 	// UploadedBy records which rider added the route.
 	UploadedBy string
+	// Sport defaults to model.SportCycling when empty — see
+	// model.RouteMeta.EffectiveSport.
+	Sport model.Sport
 }
 
 // UpdateRequest edits an existing route. Nil fields are left alone.
@@ -50,6 +53,8 @@ type UpdateRequest struct {
 	Owner *string
 	// GPX replaces the track when non-nil.
 	GPX []byte
+	// Sport, non-nil to change it.
+	Sport *model.Sport
 }
 
 // Library is what the rest of the app talks to. The one implementation is DB;

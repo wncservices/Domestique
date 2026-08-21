@@ -110,6 +110,7 @@ func (g *Garmin) prepare(ctx context.Context, route model.Route) (Courses, []byt
 
 	data, err := fitcourse.Encode(points, fitcourse.Options{
 		Name:     route.Name,
+		Sport:    fitcourse.SportFromString(string(route.EffectiveSport())),
 		TurnCues: g.TurnCues,
 	})
 	if err != nil {

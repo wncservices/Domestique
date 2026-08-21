@@ -249,6 +249,26 @@ func TestCreateRoutePostsTheDocumentedFormFields(t *testing.T) {
 	}
 }
 
+func TestCreateRoutePostsRunningAsItsOwnWorkoutTypeFamily(t *testing.T) {
+	var gotForm url.Values
+	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		gotForm = r.PostForm
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": 5})
+	})
+
+	req := aRouteRequest()
+	req.Sport = "running"
+	if _, err := c.CreateRoute(t.Context(), "at", req); err != nil {
+		t.Fatalf("create route: %v", err)
+	}
+	if got := gotForm.Get("route[workout_type_family_id]"); got != "1" {
+		t.Errorf("route[workout_type_family_id] = %q, want 1 (RUNNING)", got)
+	}
+}
+
 func TestUpdateRoutePUTsToTheRouteID(t *testing.T) {
 	var gotMethod, gotPath string
 	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {

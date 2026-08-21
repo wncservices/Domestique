@@ -242,11 +242,27 @@ func (c *Client) Me(ctx context.Context, accessToken string) (Profile, error) {
 	return p, nil
 }
 
-// workoutTypeFamilyBiking is Wahoo's fixed classification for every route
-// this app pushes — the Workout Type Family the Cloud API docs list as
-// "0 = BIKING". Not configurable: this is a cycling route library, and
-// nothing here has ever produced any other kind of route.
-const workoutTypeFamilyBiking = 0
+// Workout Type Family ids, per the Cloud API docs — the two this app can
+// actually produce a route for. The others the API defines (swimming, snow
+// sports, gym, ...) have no route type in this library to map from.
+const (
+	workoutTypeFamilyBiking  = 0
+	workoutTypeFamilyRunning = 1
+)
+
+// workoutTypeFamilyFor maps a route's plain-string Sport (model.Sport's
+// value, passed as a string rather than the type itself so this package —
+// a leaf, no dependency on internal/model — does not need to import it for
+// one enum) to the Cloud API's own classification. Unknown or empty maps to
+// biking, the same default model.RouteMeta.EffectiveSport already applies:
+// this library was cycling-only before Sport existed, so nothing here
+// should ever produce anything else for a route that predates the field.
+func workoutTypeFamilyFor(sport string) int {
+	if sport == "running" {
+		return workoutTypeFamilyRunning
+	}
+	return workoutTypeFamilyBiking
+}
 
 // RouteRequest is what CreateRoute/UpdateRoute send to Wahoo's Cloud API.
 type RouteRequest struct {
@@ -265,6 +281,10 @@ type RouteRequest struct {
 	// FIT is the raw course file. Wahoo will not take a GPX — see
 	// internal/targets/wahoo.go's doc comment for why.
 	FIT []byte
+	// Sport is model.Sport's plain-string value ("cycling", "running") —
+	// see workoutTypeFamilyFor, which decides route[workout_type_family_id]
+	// from it. Empty behaves exactly like "cycling".
+	Sport string
 }
 
 // routeResponse is the Cloud API's shape for a route object — this package
@@ -504,7 +524,7 @@ func (c *Client) routeRequest(ctx context.Context, method, endpoint, accessToken
 		"route[external_id]":            {route.ExternalID},
 		"route[name]":                   {route.Name},
 		"route[provider_updated_at]":    {route.UpdatedAt.UTC().Format(time.RFC3339)},
-		"route[workout_type_family_id]": {strconv.Itoa(workoutTypeFamilyBiking)},
+		"route[workout_type_family_id]": {strconv.Itoa(workoutTypeFamilyFor(route.Sport))},
 		"route[start_lat]":              {strconv.FormatFloat(route.StartLat, 'f', -1, 64)},
 		"route[start_lng]":              {strconv.FormatFloat(route.StartLng, 'f', -1, 64)},
 		"route[distance]":               {strconv.FormatFloat(route.DistanceM, 'f', -1, 64)},

@@ -27,6 +27,19 @@ func (a Account) EnvPrefix() string {
 	return sanitizeEnv(fmt.Sprintf("%s_%s", a.Provider, a.Rider))
 }
 
+// Sport distinguishes what kind of activity a route is for. It changes how
+// a route reaches a device, not just how it looks in the library: a FIT
+// course's own Sport field (see internal/fitcourse) decides whether a head
+// unit shows pace or speed and how it auto-laps, and Wahoo's Cloud API
+// takes a separate, explicit workout_type_family_id per route (see
+// internal/wahoo) that has to agree with it.
+type Sport string
+
+const (
+	SportCycling Sport = "cycling"
+	SportRunning Sport = "running"
+)
+
 // RouteMeta is a route's editable metadata — the contents of route.yaml in a
 // filesystem library, or the metadata columns in a database one.
 type RouteMeta struct {
@@ -36,10 +49,25 @@ type RouteMeta struct {
 	Targets *[]string `yaml:"targets,omitempty"`
 	Tags    []string  `yaml:"tags,omitempty"`
 	Enabled *bool     `yaml:"enabled,omitempty"`
+	// Sport defaults to SportCycling when empty — see EffectiveSport. This
+	// library was cycling-only before this field existed, so every route
+	// from before it keeps behaving exactly as it did.
+	Sport Sport `yaml:"sport,omitempty"`
 }
 
 // IsEnabled reports whether the route should be synced. Absent means yes.
 func (m RouteMeta) IsEnabled() bool { return m.Enabled == nil || *m.Enabled }
+
+// EffectiveSport is Sport, defaulting to SportCycling when unset — the one
+// place that default is decided, so every caller (FIT encoding, the Wahoo
+// push, the UI) reads it the same way rather than each repeating the same
+// `if sport == "" { ... }` check.
+func (m RouteMeta) EffectiveSport() Sport {
+	if m.Sport == "" {
+		return SportCycling
+	}
+	return m.Sport
+}
 
 // RouteStats is derived from the GPX track. Wahoo requires these at create time.
 type RouteStats struct {

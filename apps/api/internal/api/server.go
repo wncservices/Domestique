@@ -390,6 +390,10 @@ type routeDTO struct {
 	Origin      string   `json:"origin"`
 	Owner       string   `json:"owner,omitempty"`
 	UpdatedAt   string   `json:"updatedAt"`
+	// Sport is always resolved, never empty — model.RouteMeta.EffectiveSport,
+	// not the raw stored value — so the UI never has to apply the "empty
+	// means cycling" default itself.
+	Sport string `json:"sport"`
 	// Targets holds crew ids, not accounts — see internal/crew. Sharing a
 	// route to a crew is the only way a client may name in here; own
 	// devices are implicit and never listed.
@@ -1071,10 +1075,12 @@ func (s *Server) handleDownloadFIT(w http.ResponseWriter, r *http.Request) {
 	}
 
 	name := slug
+	sport := model.SportCycling
 	if routes, _, listErr := s.Source.List(r.Context()); listErr == nil {
 		for _, route := range routes {
 			if route.Slug == slug {
 				name = route.Name
+				sport = route.EffectiveSport()
 				break
 			}
 		}
@@ -1082,6 +1088,7 @@ func (s *Server) handleDownloadFIT(w http.ResponseWriter, r *http.Request) {
 
 	fitBytes, err := fitcourse.Encode(points, fitcourse.Options{
 		Name:     name,
+		Sport:    fitcourse.SportFromString(string(sport)),
 		TurnCues: r.URL.Query().Get("cues") == "1",
 	})
 	if err != nil {
@@ -1292,6 +1299,12 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		uploader = r.FormValue("uploadedBy")
 	}
 
+	sport, err := parseSport(r.FormValue("sport"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
 	req := source.CreateRequest{
 		Filename:   header.Filename,
 		Name:       r.FormValue("name"),
@@ -1299,6 +1312,7 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		Tags:       splitCSV(r.FormValue("tags")),
 		UploadedBy: uploader,
 		GPX:        raw,
+		Sport:      sport,
 	}
 	if targetsField := r.FormValue("targets"); targetsField != "" {
 		list := splitCSV(targetsField)
@@ -1356,6 +1370,7 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		Tags        *[]string `json:"tags"`
 		Targets     *[]string `json:"targets"`
 		Enabled     *bool     `json:"enabled"`
+		Sport       *string   `json:"sport"`
 		// ClaimOwner lets a rider become the owner of a route that
 		// currently has none — an import with no --owner, or a Garmin
 		// course sync-back nobody has claimed. mayEdit already treats an
@@ -1410,6 +1425,16 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	var sport *model.Sport
+	if body.Sport != nil {
+		parsed, err := parseSport(*body.Sport)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		sport = &parsed
+	}
+
 	route, err := s.Source.Update(r.Context(), slug, source.UpdateRequest{
 		Name:     body.Name,
 		Descript: body.Description,
@@ -1417,6 +1442,7 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		Targets:  body.Targets,
 		Enabled:  body.Enabled,
 		Owner:    newOwner,
+		Sport:    sport,
 	})
 	if err != nil {
 		s.failLookup(w, err)
@@ -1557,6 +1583,7 @@ func (s *Server) toRouteDTO(ctx context.Context, r model.Route, linked []model.A
 		Origin:         r.Origin,
 		Owner:          r.Owner,
 		UpdatedAt:      r.UpdatedAt,
+		Sport:          string(r.EffectiveSport()),
 		Targets:        orEmpty(rawTargets),
 		UnknownTargets: orEmpty(config.UnknownTargets(r, crews)),
 		OwnerCrews:     ownerCrewOptions(r.Owner, crews),
@@ -1820,6 +1847,25 @@ func toPlanDTOs(items []model.PlanItem) []planItemDTO {
 }
 
 func cleanSlug(raw string) string { return strings.Trim(raw, "/") }
+
+// parseSport validates a client-supplied sport string, resolving an empty
+// one to model.SportCycling — the same default model.RouteMeta.
+// EffectiveSport applies, made explicit here so a caller never has to store
+// an unresolved empty value. Anything other than "", "cycling" or "running"
+// is refused rather than silently accepted and quietly wrong on every push
+// (see internal/fitcourse.SportFromString and internal/wahoo's
+// workoutTypeFamilyFor, which both treat anything unrecognised as cycling
+// too — this is what stops a typo from reaching either of them at all).
+func parseSport(raw string) (model.Sport, error) {
+	switch model.Sport(raw) {
+	case "", model.SportCycling:
+		return model.SportCycling, nil
+	case model.SportRunning:
+		return model.SportRunning, nil
+	default:
+		return "", fmt.Errorf("unknown sport %q (want cycling or running)", raw)
+	}
+}
 
 func splitCSV(raw string) []string {
 	var out []string

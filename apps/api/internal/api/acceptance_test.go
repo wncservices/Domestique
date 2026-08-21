@@ -302,6 +302,7 @@ type routeDTO struct {
 	ContentHash    string   `json:"contentHash"`
 	Origin         string   `json:"origin"`
 	Owner          string   `json:"owner"`
+	Sport          string   `json:"sport"`
 	Targets        []string `json:"targets"`
 	UnknownTargets []string `json:"unknownTargets"`
 	SyncState      []struct {
@@ -841,6 +842,65 @@ func TestUploadRejectsBadInput(t *testing.T) {
 			strings.NewReader(`{"name":"x"}`), "application/json")
 		h.expectStatus(resp, http.StatusBadRequest)
 	})
+
+	t.Run("unrecognised sport", func(t *testing.T) {
+		resp := h.upload(map[string]string{"name": "x", "sport": "swimming"}, exampleGPX(t), "x.gpx")
+		h.expectStatus(resp, http.StatusBadRequest)
+	})
+}
+
+// A route uploaded with no sport at all defaults to cycling; an explicit
+// choice sticks, reaches the DTO, and (indirectly, since Encode itself is
+// covered in internal/fitcourse's own tests) is what the FIT/Wahoo push
+// path reads from.
+func TestUploadSport(t *testing.T) {
+	h := newHarness(t)
+
+	resp := h.upload(map[string]string{"name": "A run", "sport": "running"}, exampleGPX(t), "run.gpx")
+	h.expectStatus(resp, http.StatusCreated)
+	var run routeDTO
+	h.decode(resp, &run)
+	if run.Sport != "running" {
+		t.Errorf("sport = %q, want running", run.Sport)
+	}
+
+	resp = h.upload(map[string]string{"name": "No sport mentioned"}, exampleGPX(t), "ride.gpx")
+	h.expectStatus(resp, http.StatusCreated)
+	var ride routeDTO
+	h.decode(resp, &ride)
+	if ride.Sport != "cycling" {
+		t.Errorf("sport = %q, want cycling (the default)", ride.Sport)
+	}
+}
+
+func TestPatchChangesSport(t *testing.T) {
+	h := newHarness(t)
+	route := h.uploadExample("Convertible")
+	if route.Sport != "cycling" {
+		t.Fatalf("upload sport = %q, want cycling", route.Sport)
+	}
+
+	resp := h.do(http.MethodPatch, "/api/routes/"+route.Slug,
+		strings.NewReader(`{"sport":"running"}`), "application/json")
+	h.expectStatus(resp, http.StatusOK)
+	var patched routeDTO
+	h.decode(resp, &patched)
+	if patched.Sport != "running" {
+		t.Errorf("sport after patch = %q, want running", patched.Sport)
+	}
+
+	// An edit that never mentions sport must not reset it back to cycling.
+	resp = h.do(http.MethodPatch, "/api/routes/"+route.Slug,
+		strings.NewReader(`{"description":"still a run"}`), "application/json")
+	h.expectStatus(resp, http.StatusOK)
+	h.decode(resp, &patched)
+	if patched.Sport != "running" {
+		t.Errorf("sport after an unrelated patch = %q, want it left as running", patched.Sport)
+	}
+
+	resp = h.do(http.MethodPatch, "/api/routes/"+route.Slug,
+		strings.NewReader(`{"sport":"triathlon"}`), "application/json")
+	h.expectStatus(resp, http.StatusBadRequest)
 }
 
 func TestUploadDisambiguatesSlugs(t *testing.T) {
