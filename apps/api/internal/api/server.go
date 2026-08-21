@@ -832,8 +832,18 @@ func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request) {
 	}
 
 	identity := auth.FromContext(r.Context())
-	out := make([]accountDTO, 0, len(linked))
-	for _, a := range visibleAccounts(identity, linked, crews) {
+	// mode: none has no multi-tenancy to scope in the first place — every
+	// request is LocalIdentity, the one operator running this on their own
+	// machine (see auth.LocalIdentity's own doc comment: "nothing is
+	// gated... anything less would make the app unusable in development for
+	// no security gain"). Scoping there would not protect anyone from
+	// anyone; it would just hide their own data from them.
+	toList := linked
+	if s.authenticator().Mode() != auth.ModeNone {
+		toList = listableAccounts(identity, linked, crews)
+	}
+	out := make([]accountDTO, 0, len(toList))
+	for _, a := range toList {
 		out = append(out, accountDTO{
 			ID:                  a.ID,
 			Provider:            string(a.Provider),
@@ -2018,17 +2028,35 @@ func visibleRoutes(routes []model.Route, identity auth.Identity, crews crew.Snap
 	return out
 }
 
-// visibleAccounts narrows linked to the ones identity may see or act on —
-// their own, a crew fellow's, or everything for an admin. The one
-// definition of that boundary, shared by handleAccounts (what a rider may
-// see listed), handlePlan (what pending changes they may see) and
-// runPush/handlePush (what they may actually push to, including delete) —
-// all three used to trust every caller with PermReadRoutes or PermPush,
-// the lowest tiers there are, with every account in the deployment.
+// visibleAccounts narrows linked to the ones identity may act on — push to,
+// delete from, or plan changes against: their own, a crew fellow's, or
+// everything for an admin, the same PermEditAny bypass mayEdit and mayView
+// already give them elsewhere. The one definition of that boundary, shared
+// by handlePlan (what pending changes they may see) and runPush/handlePush
+// (what they may actually push to, including delete) — both used to trust
+// every caller with PermPush, the lowest tier there is, with every account
+// in the deployment.
+//
+// Not used by handleAccounts, which lists accounts for a rider's own
+// Settings page rather than granting authority over them — see
+// listableAccounts for that narrower boundary, which never bypasses for an
+// admin. Managing a route someone's crew shares to needs the authority
+// above; it does not need — and should not grant — a directory of who
+// links which head unit deployment-wide.
 func visibleAccounts(identity auth.Identity, linked []model.Account, crews crew.Snapshot) []model.Account {
 	if identity.Role.Can(auth.PermEditAny) {
 		return linked
 	}
+	return listableAccounts(identity, linked, crews)
+}
+
+// listableAccounts is visibleAccounts' narrower sibling, for handleAccounts
+// alone: own account, or a crew fellow's — never everything, not even for
+// an admin. Seeing who links which head unit is a different question from
+// having authority to push or delete on their behalf (visibleAccounts,
+// above); an admin already has that authority everywhere it actually
+// matters without needing a general directory of every rider's devices.
+func listableAccounts(identity auth.Identity, linked []model.Account, crews crew.Snapshot) []model.Account {
 	out := make([]model.Account, 0, len(linked))
 	for _, a := range linked {
 		if config.AccountVisibleTo(a, identity.User, crews) {

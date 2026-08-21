@@ -540,9 +540,30 @@ func TestAccountVisibility(t *testing.T) {
 		t.Error("an unrelated rider's account is visible in the list")
 	}
 
+	// The accounts list is what a rider (or admin) sees on their own
+	// Settings page — a directory of who links which head unit, not a grant
+	// of authority. An admin's PermEditAny bypass is for acting on routes
+	// and accounts (see TestPlanAndPushScopedToVisibleAccounts below), not
+	// for browsing every rider's linked devices; that would make every
+	// admin's own Settings page a deployment-wide accounts directory for no
+	// reason this page actually needs.
+	// "boss" has no account of their own here and is in nobody's crew, so a
+	// correctly scoped list is empty — same rule an ordinary rider in that
+	// position would get, PermEditAny notwithstanding.
 	adminSeen := list("boss", "domestique-admins")
-	if !adminSeen["wahoo:friend"] {
-		t.Error("admin's list is missing an unrelated rider's account")
+	if len(adminSeen) != 0 {
+		t.Errorf("admin with no account and no crew overlap should see nothing listed, got %v", adminSeen)
+	}
+
+	// Put the admin in wilant's crew and confirm the ordinary crew-fellow
+	// rule applies to them too, not a deployment-wide bypass.
+	h.seedApprovedCrew(t, "wilant", "boss")
+	adminSeen = list("boss", "domestique-admins")
+	if !adminSeen["garmin:wilant"] {
+		t.Error("admin should see a crew fellow's account, same as anyone else in that crew")
+	}
+	if adminSeen["wahoo:friend"] {
+		t.Error("admin's list should not include an unrelated rider's account — listing is not authority")
 	}
 }
 
