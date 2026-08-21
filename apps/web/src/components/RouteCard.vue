@@ -198,6 +198,7 @@ async function remove() {
       <UTooltip v-if="canEdit" text="Click to switch between cycling and running">
         <UBadge
           as="button"
+          type="button"
           :color="route.sport === 'running' ? 'warning' : 'primary'"
           variant="subtle"
           size="sm"
