@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 	"time"
 )
 
@@ -40,7 +41,14 @@ type Store interface {
 }
 
 type fileStore struct {
-	path    string
+	path string
+	// mu guards entries and the file itself. Nothing here needed it until
+	// auto-sync (server.go's autoSyncIfEnabled) started running a push in a
+	// background goroutine — the first caller able to race a Record against
+	// a concurrent All/ForAccount from an ordinary request handled on its
+	// own goroutine at the same time, found live by go test -race the first
+	// time a test actually exercised that overlap.
+	mu      sync.RWMutex
 	entries map[string]Entry // keyed by accountID + "\x00" + slug
 }
 
@@ -68,6 +76,16 @@ func Open(path string) (Store, error) {
 }
 
 func (s *fileStore) All(context.Context) ([]Entry, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.allLocked(), nil
+}
+
+// allLocked is All's own logic minus taking the lock — flush calls this
+// directly since it only ever runs while Record/Forget already hold s.mu
+// for writing, and a second RLock there would deadlock against it
+// (sync.RWMutex is not reentrant).
+func (s *fileStore) allLocked() []Entry {
 	out := make([]Entry, 0, len(s.entries))
 	for _, e := range s.entries {
 		out = append(out, e)
@@ -78,10 +96,12 @@ func (s *fileStore) All(context.Context) ([]Entry, error) {
 		}
 		return out[i].Slug < out[j].Slug
 	})
-	return out, nil
+	return out
 }
 
 func (s *fileStore) ForAccount(_ context.Context, accountID string) (map[string]Entry, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	out := map[string]Entry{}
 	for _, e := range s.entries {
 		if e.AccountID == accountID {
@@ -92,28 +112,30 @@ func (s *fileStore) ForAccount(_ context.Context, accountID string) (map[string]
 }
 
 func (s *fileStore) Record(_ context.Context, e Entry) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	e.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	s.entries[key(e.AccountID, e.Slug)] = e
 	return s.flush()
 }
 
 func (s *fileStore) Forget(_ context.Context, accountID, slug string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	delete(s.entries, key(accountID, slug))
 	return s.flush()
 }
 
 // flush writes via a temp file and rename so a crash mid-write cannot leave a
 // truncated state file behind — losing state means re-uploading every route.
+// Called only while the caller already holds s.mu for writing (Record,
+// Forget) — must not take it again itself.
 func (s *fileStore) flush() error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o750); err != nil {
 		return err
 	}
 
-	entries, err := s.All(context.Background())
-	if err != nil {
-		return err
-	}
-	raw, err := json.MarshalIndent(entries, "", "  ")
+	raw, err := json.MarshalIndent(s.allLocked(), "", "  ")
 	if err != nil {
 		return err
 	}

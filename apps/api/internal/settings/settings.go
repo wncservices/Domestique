@@ -61,6 +61,22 @@ CREATE TABLE IF NOT EXISTS settings (
 	return sqlite
 }
 
+// flagsSchema is a separate, unencrypted table from settings above — a flag
+// is a plain on/off switch (auto-sync, so far the only one), not a
+// credential, and routing it through Set/Get's sealing would needlessly
+// block a deployment with no encryption key from using it at all. Same
+// dialect-aware boolean reasoning crew.schema's own auto_share column
+// already gives.
+func flagsSchema(d dbx.Dialect) string {
+	return fmt.Sprintf(`
+CREATE TABLE IF NOT EXISTS flags (
+    name       TEXT PRIMARY KEY,
+    enabled    %s NOT NULL DEFAULT FALSE,
+    updated_by TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL
+);`, d.Boolean)
+}
+
 // UseDB puts the table in an already-open database.
 //
 // The box may be nil, in which case nothing can be set — the same rule as a
@@ -74,6 +90,9 @@ func UseDB(db *sql.DB, dsn string, box *secrets.Box) (*Store, error) {
 	store := &Store{db: db, dialect: d, box: box}
 	if _, err := db.Exec(schema(d)); err != nil {
 		return nil, fmt.Errorf("create settings table: %w", err)
+	}
+	if _, err := db.Exec(flagsSchema(d)); err != nil {
+		return nil, fmt.Errorf("create flags table: %w", err)
 	}
 	return store, nil
 }
@@ -184,4 +203,70 @@ func (s *Store) Delete(name string) error {
 	_, err := s.db.Exec(s.dialect.Rebind(`DELETE FROM settings WHERE name = ?`),
 		strings.TrimSpace(name))
 	return err
+}
+
+// Flag reads a plain on/off switch — false for one never set, so a fresh
+// deployment starts with every flag off rather than needing an explicit row
+// to mean "off". Nil-safe like Describe: a Server built without a Settings
+// store (most tests) reads every flag as off rather than panicking.
+func (s *Store) Flag(name string) (bool, error) {
+	if s == nil {
+		return false, nil
+	}
+	var enabled bool
+	err := s.db.QueryRow(s.dialect.Rebind(`SELECT enabled FROM flags WHERE name = ?`),
+		strings.TrimSpace(name)).Scan(&enabled)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return false, nil
+	case err != nil:
+		return false, err
+	}
+	return enabled, nil
+}
+
+// DescribeFlag is Describe for a flag — who last changed it and when, from
+// the separate flags table rather than the encrypted settings one.
+func (s *Store) DescribeFlag(name string) (Meta, error) {
+	if s == nil {
+		return Meta{}, ErrNotFound
+	}
+
+	var meta Meta
+	var updated string
+	err := s.db.QueryRow(s.dialect.Rebind(
+		`SELECT updated_by, updated_at FROM flags WHERE name = ?`),
+		strings.TrimSpace(name)).Scan(&meta.UpdatedBy, &updated)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return Meta{}, ErrNotFound
+	case err != nil:
+		return Meta{}, err
+	}
+
+	meta.UpdatedAt, _ = time.Parse(time.RFC3339, updated)
+	return meta, nil
+}
+
+// SetFlag records a plain on/off switch — no encryption key needed, unlike
+// Set/Get: a flag is not a credential, and there is no reason a deployment
+// with nothing to encrypt yet should be unable to use one.
+func (s *Store) SetFlag(name string, enabled bool, updatedBy string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return errors.New("a flag needs a name")
+	}
+	_, err := s.db.Exec(s.dialect.Rebind(`
+INSERT INTO flags (name, enabled, updated_by, updated_at)
+VALUES (?, ?, ?, ?)
+ON CONFLICT (name) DO UPDATE SET
+    enabled    = excluded.enabled,
+    updated_by = excluded.updated_by,
+    updated_at = excluded.updated_at`),
+		name, enabled, strings.ToLower(strings.TrimSpace(updatedBy)),
+		time.Now().UTC().Format(time.RFC3339))
+	if err != nil {
+		return fmt.Errorf("save flag %s: %w", name, err)
+	}
+	return nil
 }

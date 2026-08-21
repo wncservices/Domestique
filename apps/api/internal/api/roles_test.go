@@ -25,6 +25,7 @@ import (
 	"github.com/wncservices/domestique/apps/api/internal/model"
 	"github.com/wncservices/domestique/apps/api/internal/providerlink"
 	"github.com/wncservices/domestique/apps/api/internal/secrets"
+	"github.com/wncservices/domestique/apps/api/internal/settings"
 	"github.com/wncservices/domestique/apps/api/internal/source"
 	"github.com/wncservices/domestique/apps/api/internal/state"
 	"github.com/wncservices/domestique/apps/api/internal/targets"
@@ -77,6 +78,10 @@ func newAuthHarness(t *testing.T, komootClient api.KomootImporter) *authHarness 
 	if err != nil {
 		t.Fatal(err)
 	}
+	appSettings, err := settings.UseDB(db.Conn(), db.DSN(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	authenticator, err := auth.New(auth.Config{
 		Mode: auth.ModeProxy,
@@ -91,12 +96,13 @@ func newAuthHarness(t *testing.T, komootClient api.KomootImporter) *authHarness 
 	}
 
 	srv := &api.Server{
-		Source: db,
-		Store:  store,
-		Auth:   authenticator,
-		Komoot: komootClient,
-		Links:  links,
-		Crew:   crewStore,
+		Source:   db,
+		Store:    store,
+		Auth:     authenticator,
+		Komoot:   komootClient,
+		Links:    links,
+		Crew:     crewStore,
+		Settings: appSettings,
 		// Resume ignores the userID/token it is handed and always returns
 		// the same fake — this harness only ever needed one Komoot client
 		// to test against, whether reached via the shared fallback or (once
@@ -348,6 +354,22 @@ func TestRiderCanPushAndUpload(t *testing.T) {
 
 	if resp := h.as("wilant", "cyclists", http.MethodPost, "/api/push", ""); resp.StatusCode != http.StatusOK {
 		t.Errorf("rider cannot push: %d", resp.StatusCode)
+	}
+}
+
+// Auto-sync changes every rider's upload/edit behavior at once, not just
+// the caller's own — admin-only, the same as the Garmin OAuth1 consumer.
+func TestAutoSyncSettingRequiresAdmin(t *testing.T) {
+	h := newAuthHarness(t, nil)
+
+	if resp := h.as("wilant", "cyclists", http.MethodGet, "/api/settings/auto-sync", ""); resp.StatusCode != http.StatusOK {
+		t.Errorf("rider cannot even read the setting: %d", resp.StatusCode)
+	}
+	if resp := h.as("wilant", "cyclists", http.MethodPut, "/api/settings/auto-sync", `{"enabled":true}`); resp.StatusCode != http.StatusForbidden {
+		t.Errorf("rider changed a deployment-wide setting: status = %d, want 403", resp.StatusCode)
+	}
+	if resp := h.as("boss", "domestique-admins", http.MethodPut, "/api/settings/auto-sync", `{"enabled":true}`); resp.StatusCode != http.StatusOK {
+		t.Errorf("admin cannot change it: %d", resp.StatusCode)
 	}
 }
 

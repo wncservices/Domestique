@@ -104,6 +104,7 @@ const canPush = computed(() => can('sync:push'))
 const canManageAccounts = computed(() => can('accounts:manage'))
 const canManagePeople = computed(() => can('people:manage'))
 const canManageCrews = computed(() => can('crews:manage'))
+const canManageSettings = computed(() => can('settings:manage'))
 
 const totalDistance = computed(() => routes.value.reduce((sum, r) => sum + r.distanceM, 0) / 1000)
 const totalAscent = computed(() => routes.value.reduce((sum, r) => sum + r.ascentM, 0))
@@ -132,6 +133,7 @@ export function useLibrary() {
     canManageAccounts,
     canManagePeople,
     canManageCrews,
+    canManageSettings,
     komootEnabled,
     totalDistance,
     totalAscent,

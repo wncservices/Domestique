@@ -1,9 +1,11 @@
 package state
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -201,4 +203,37 @@ func TestOpenCreatesParentDirectory(t *testing.T) {
 	if _, err := os.Stat(path); err != nil {
 		t.Errorf("state file not written: %v", err)
 	}
+}
+
+// Nothing here needed real concurrency safety until a push could run in a
+// background goroutine (server.go's autoSyncIfEnabled) while an ordinary
+// request handled on its own goroutine reads state at the same time — found
+// live by go test -race the first time a test actually exercised that
+// overlap. This drives the same overlap directly, at a scale a single
+// accidental interleaving in an HTTP test could still miss.
+func TestConcurrentAccessIsRaceFree(t *testing.T) {
+	store, err := Open(tempState(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const goroutines = 8
+	var wg sync.WaitGroup
+	wg.Add(goroutines * 3)
+	for i := 0; i < goroutines; i++ {
+		accountID := fmt.Sprintf("account-%d", i)
+		go func() {
+			defer wg.Done()
+			_ = store.Record(t.Context(), Entry{AccountID: accountID, Slug: "route", RemoteID: "r1"})
+		}()
+		go func() {
+			defer wg.Done()
+			_, _ = store.All(t.Context())
+		}()
+		go func() {
+			defer wg.Done()
+			_, _ = store.ForAccount(t.Context(), accountID)
+		}()
+	}
+	wg.Wait()
 }
