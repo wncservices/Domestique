@@ -507,9 +507,11 @@ GPX creator. Everything a machine parses stays lowercase, and has to:
 
 So the image name in `image.yml` is **hardcoded** as
 `ghcr.io/wncservices/domestique` rather than derived from
-`${{ github.repository }}` — the repository is `wncservices/Domestique`, and
-deriving it would produce a reference the registry rejects. Do not "simplify"
-it back.
+`${{ github.repository }}`. The GitHub repo itself is lowercase
+(`wncservices/domestique`) now, so deriving it would happen to work today —
+but an image reference may not contain uppercase at all regardless, so this
+stays hardcoded rather than depending on the repo never being renamed back
+to a capitalized name. Do not "simplify" it back.
 
 ## Toolchain versions
 
