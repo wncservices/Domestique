@@ -204,6 +204,12 @@ export const api = {
     }),
   unlinkAccount: (id: string) =>
     request<void>(`/api/accounts/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  setAccountAutoPush: (id: string, enabled: boolean) =>
+    request<Account>(`/api/accounts/${encodeURIComponent(id)}/auto-push`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    }),
   routes: () => request<LibraryResponse>('/api/routes'),
   plan: () => request<PlanResponse>('/api/plan'),
   track: (slug: string) => request<TrackResponse>(`/api/tracks/${encodeSlug(slug)}`),

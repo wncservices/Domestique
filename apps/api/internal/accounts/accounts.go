@@ -36,16 +36,24 @@ type Store struct {
 	dialect dbx.Dialect
 }
 
-func schema() string {
-	return `
+// schema takes the dialect because auto_push needs a real per-engine boolean
+// type — see crew.schema's identical comment for why. DEFAULT TRUE, not
+// FALSE: this column is an opt-*out*, not an opt-in — auto-sync already
+// pushed to every linked account before this existed, so a pre-existing
+// account (and any newly linked one) keeps that behavior until its own rider
+// turns it off, rather than every account silently going quiet the moment
+// this migrates in.
+func schema(d dbx.Dialect) string {
+	return fmt.Sprintf(`
 CREATE TABLE IF NOT EXISTS accounts (
     id         TEXT PRIMARY KEY,
     provider   TEXT NOT NULL,
     rider      TEXT NOT NULL,
     label      TEXT NOT NULL DEFAULT '',
+    auto_push  %s NOT NULL DEFAULT TRUE,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
-);`
+);`, d.Boolean)
 }
 
 // UseDB puts the accounts table in an already-open database — the same one
@@ -57,10 +65,33 @@ func UseDB(db *sql.DB, dsn string) (*Store, error) {
 	}
 
 	store := &Store{db: db, dialect: d}
-	if _, err := db.Exec(schema()); err != nil {
+	if _, err := db.Exec(schema(d)); err != nil {
+		return nil, fmt.Errorf("migrate accounts table: %w", err)
+	}
+	if err := store.addAutoPushColumn(); err != nil {
 		return nil, fmt.Errorf("migrate accounts table: %w", err)
 	}
 	return store, nil
+}
+
+// addAutoPushColumn adds auto_push to an accounts table that predates the
+// column — CREATE TABLE IF NOT EXISTS above is a no-op against a table that
+// already exists, so a genuinely new column needs its own step. This runs
+// every startup; once the column is there, the ALTER fails with a
+// database-specific "it's already there" error that is the expected steady
+// state, not a real failure — anything else still surfaces. Same pattern as
+// crew.Store.addAutoShareColumn.
+func (s *Store) addAutoPushColumn() error {
+	_, err := s.db.Exec(fmt.Sprintf(
+		`ALTER TABLE accounts ADD COLUMN auto_push %s NOT NULL DEFAULT TRUE`, s.dialect.Boolean))
+	if err == nil {
+		return nil
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "duplicate column") || strings.Contains(msg, "already exists") {
+		return nil
+	}
+	return err
 }
 
 // ID is how an account is named everywhere else: "garmin:wilant".
@@ -160,8 +191,8 @@ func (s *Store) Unlink(id string) error {
 func (s *Store) Get(id string) (model.Account, error) {
 	var a model.Account
 	err := s.db.QueryRow(s.dialect.Rebind(`
-        SELECT id, provider, rider, label FROM accounts WHERE id = ?`), id).
-		Scan(&a.ID, &a.Provider, &a.Rider, &a.Label)
+        SELECT id, provider, rider, label, auto_push FROM accounts WHERE id = ?`), id).
+		Scan(&a.ID, &a.Provider, &a.Rider, &a.Label, &a.AutoPush)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.Account{}, ErrNotFound
 	}
@@ -171,7 +202,7 @@ func (s *Store) Get(id string) (model.Account, error) {
 // List returns every linked account, in a stable order.
 func (s *Store) List() ([]model.Account, error) {
 	rows, err := s.db.Query(`
-        SELECT id, provider, rider, label FROM accounts ORDER BY rider, provider`)
+        SELECT id, provider, rider, label, auto_push FROM accounts ORDER BY rider, provider`)
 	if err != nil {
 		return nil, fmt.Errorf("read accounts: %w", err)
 	}
@@ -180,12 +211,29 @@ func (s *Store) List() ([]model.Account, error) {
 	var out []model.Account
 	for rows.Next() {
 		var a model.Account
-		if err := rows.Scan(&a.ID, &a.Provider, &a.Rider, &a.Label); err != nil {
+		if err := rows.Scan(&a.ID, &a.Provider, &a.Rider, &a.Label, &a.AutoPush); err != nil {
 			return nil, fmt.Errorf("read accounts: %w", err)
 		}
 		out = append(out, a)
 	}
 	return out, rows.Err()
+}
+
+// SetAutoPush flips whether auto-sync's background push includes this
+// account. A manual "Push to devices" click ignores it entirely — this only
+// governs the unattended path (autoSyncIfEnabled, and the auto-import
+// poller's own push afterward), never a push the rider triggered themselves.
+func (s *Store) SetAutoPush(id string, enabled bool) error {
+	result, err := s.db.Exec(
+		s.dialect.Rebind(`UPDATE accounts SET auto_push = ?, updated_at = ? WHERE id = ?`),
+		enabled, time.Now().UTC().Format(time.RFC3339), id)
+	if err != nil {
+		return err
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func providerLabel(p model.Provider) string {

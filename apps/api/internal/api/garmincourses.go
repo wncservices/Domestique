@@ -47,22 +47,31 @@ type garminCourseImportResult struct {
 // unreadable session — which every caller here treats the same way Devices
 // already does: an empty result, not an error screen.
 func (s *Server) garminSessionFor(r *http.Request) (rider string, session garmin.Session, ok bool) {
-	if s.Garmin == nil || s.Links == nil {
-		return "", garmin.Session{}, false
-	}
 	rider = auth.FromContext(r.Context()).User
 	if rider == "" {
 		return "", garmin.Session{}, false
 	}
+	session, ok = s.garminSessionForRider(rider)
+	return rider, session, ok
+}
+
+// garminSessionForRider is garminSessionFor without an *http.Request behind
+// it — the auto-import poller has no request, just a rider name it read
+// from accounts.Store.
+func (s *Server) garminSessionForRider(rider string) (garmin.Session, bool) {
+	if s.Garmin == nil || s.Links == nil || rider == "" {
+		return garmin.Session{}, false
+	}
 	_, secret, err := s.Links.Secret(garminProvider, rider)
 	if err != nil {
-		return "", garmin.Session{}, false
+		return garmin.Session{}, false
 	}
+	var session garmin.Session
 	if err := json.Unmarshal([]byte(secret), &session); err != nil {
 		s.logger().Warn("stored garmin session is unreadable", "rider", rider, "err", err)
-		return "", garmin.Session{}, false
+		return garmin.Session{}, false
 	}
-	return rider, session, true
+	return session, true
 }
 
 // handleGarminCourseList lists what is already on the caller's Garmin
@@ -326,17 +335,33 @@ func (s *Server) handleGarminCourseImport(w http.ResponseWriter, r *http.Request
 		})
 		return
 	}
+
+	result, err := s.importGarminCourses(r.Context(), identity.User, rider, session, body.CourseIDs)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+
+	s.logger().Info("garmin course sync-back finished",
+		"user", identity.User, "rider", rider, "imported", len(result.Imported), "skipped", len(result.Skipped))
+	writeJSON(w, http.StatusOK, result)
+}
+
+// importGarminCourses pulls the given Garmin course ids into the library for
+// rider, attributing the created routes to uploader (the caller, for a
+// manual import; rider itself, for the unattended one autoImportGarmin
+// runs). Split out of handleGarminCourseImport so both paths run exactly
+// the same create-and-record sequence rather than a second, drifting copy
+// of it.
+func (s *Server) importGarminCourses(ctx context.Context, uploader, rider string, session garmin.Session, courseIDs []string) (garminCourseImportResult, error) {
 	consumer, _ := s.garminConsumer()
 
-	// Re-listed rather than trusting names from the request body: the
+	// Re-listed rather than trusting names the caller already had: the
 	// courses' own names are the authoritative ones, the same reason
 	// handleKomootImport re-fetches tours rather than trusting the client.
-	courses, err := s.Garmin.ListCourses(r.Context(), consumer, session)
+	courses, err := s.Garmin.ListCourses(ctx, consumer, session)
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{
-			"error": "Garmin would not list the courses on this account just now.",
-		})
-		return
+		return garminCourseImportResult{}, fmt.Errorf("garmin would not list the courses on this account just now: %w", err)
 	}
 	byID := map[string]garmin.Course{}
 	for _, c := range courses {
@@ -345,8 +370,8 @@ func (s *Server) handleGarminCourseImport(w http.ResponseWriter, r *http.Request
 
 	result := garminCourseImportResult{Imported: []string{}, Skipped: map[string]string{}}
 
-	wanted := make([]string, 0, len(body.CourseIDs))
-	for _, id := range body.CourseIDs {
+	wanted := make([]string, 0, len(courseIDs))
+	for _, id := range courseIDs {
 		if _, ok := byID[id]; !ok {
 			result.Skipped[id] = "not on this Garmin account"
 			continue
@@ -360,7 +385,7 @@ func (s *Server) handleGarminCourseImport(w http.ResponseWriter, r *http.Request
 	// somehow ended up without its "garmin" tag: see ensureGarminTags. Split
 	// out up front so the download step below only fetches GPX for courses
 	// that are actually going to be created.
-	tracked, err := s.Store.ForAccount(r.Context(), accounts.ID(model.ProviderGarmin, rider))
+	tracked, err := s.Store.ForAccount(ctx, accounts.ID(model.ProviderGarmin, rider))
 	if err != nil {
 		s.logger().Warn("could not read garmin sync state for healing", "rider", rider, "err", err)
 	}
@@ -370,10 +395,9 @@ func (s *Server) handleGarminCourseImport(w http.ResponseWriter, r *http.Request
 			trackedByRemoteID[e.RemoteID] = e
 		}
 	}
-	routes, _, err := s.Source.List(r.Context())
+	routes, _, err := s.Source.List(ctx)
 	if err != nil {
-		s.fail(w, err)
-		return
+		return garminCourseImportResult{}, err
 	}
 	routesBySlug := map[string]model.Route{}
 	for _, rt := range routes {
@@ -393,7 +417,7 @@ func (s *Server) handleGarminCourseImport(w http.ResponseWriter, r *http.Request
 	// somebody's personal account on an undocumented API, not a service to
 	// saturate.
 	const parallel = 4
-	downloads := fetchGPX(r.Context(), s.Garmin, consumer, session, toDownload, parallel)
+	downloads := fetchGPX(ctx, s.Garmin, consumer, session, toDownload, parallel)
 
 	for _, id := range wanted {
 		course := byID[id]
@@ -404,7 +428,7 @@ func (s *Server) handleGarminCourseImport(w http.ResponseWriter, r *http.Request
 				result.Skipped[id] = "already tracked, but the route it points to no longer exists"
 				continue
 			}
-			if err := s.ensureGarminTags(r.Context(), route, id); err != nil {
+			if err := s.ensureGarminTags(ctx, route, id); err != nil {
 				result.Skipped[id] = err.Error()
 				continue
 			}
@@ -418,14 +442,14 @@ func (s *Server) handleGarminCourseImport(w http.ResponseWriter, r *http.Request
 			continue
 		}
 
-		route, err := s.Source.Create(r.Context(), source.CreateRequest{
+		route, err := s.Source.Create(ctx, source.CreateRequest{
 			Filename: course.Name + ".gpx",
 			Name:     course.Name,
 			// No Descript: the "garmin" tag below already says where this
 			// came from — a redundant "Synced back from Garmin (course
 			// ...)" sentence in the description field just crowds the card.
 			Tags:       []string{"garmin", garminTag(id)},
-			UploadedBy: identity.User,
+			UploadedBy: uploader,
 			GPX:        got.gpx,
 		})
 		if err != nil {
@@ -438,7 +462,7 @@ func (s *Server) handleGarminCourseImport(w http.ResponseWriter, r *http.Request
 		// no sync state" and offers to push right back what was just pulled
 		// down. RemoteID is the course id it came from, so a later push
 		// recognises it as already there instead of creating a second copy.
-		if err := s.Store.Record(r.Context(), state.Entry{
+		if err := s.Store.Record(ctx, state.Entry{
 			AccountID:   accounts.ID(model.ProviderGarmin, rider),
 			Slug:        route.Slug,
 			RemoteID:    id,
@@ -456,9 +480,7 @@ func (s *Server) handleGarminCourseImport(w http.ResponseWriter, r *http.Request
 		result.Imported = append(result.Imported, id)
 	}
 
-	s.logger().Info("garmin course sync-back finished",
-		"user", identity.User, "rider", rider, "imported", len(result.Imported), "skipped", len(result.Skipped))
-	writeJSON(w, http.StatusOK, result)
+	return result, nil
 }
 
 // ensureGarminTags backfills the "garmin"/"garmin:<id>" tags onto a route

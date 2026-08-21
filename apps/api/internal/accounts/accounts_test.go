@@ -1,6 +1,7 @@
 package accounts
 
 import (
+	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
@@ -132,7 +133,92 @@ func TestAccountsEachEngine(t *testing.T) {
 					t.Error("an empty label was accepted")
 				}
 			})
+
+			// Default true: auto-sync already pushed to every linked
+			// account before this existed, so a newly linked one keeps
+			// that behavior until its own rider turns it off.
+			t.Run("auto-push defaults on and can be turned off", func(t *testing.T) {
+				store := open(t)
+
+				account, err := store.Link(model.ProviderGarmin, "one", "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !account.AutoPush {
+					t.Error("a freshly linked account should default to auto-push on")
+				}
+
+				if err := store.SetAutoPush(account.ID, false); err != nil {
+					t.Fatalf("SetAutoPush: %v", err)
+				}
+				got, err := store.Get(account.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got.AutoPush {
+					t.Error("AutoPush is still true after turning it off")
+				}
+
+				linked, err := store.List()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(linked) != 1 || linked[0].AutoPush {
+					t.Errorf("list = %+v, want AutoPush false", linked)
+				}
+
+				if err := store.SetAutoPush("garmin:nobody", true); !errors.Is(err, ErrNotFound) {
+					t.Errorf("SetAutoPush on a missing account: err = %v, want ErrNotFound", err)
+				}
+			})
 		})
+	}
+}
+
+// A pre-auto_push database (every deployment before this existed) must come
+// up with existing accounts still auto-pushing — the same "old rows default
+// true" guarantee the schema comment promises, exercised against a table
+// that genuinely predates the column rather than trusting the migration by
+// reading the source.
+func TestUseDBAddsTheAutoPushColumnToAnExistingDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy-accounts.db")
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`
+        CREATE TABLE accounts (
+            id TEXT PRIMARY KEY, provider TEXT NOT NULL, rider TEXT NOT NULL,
+            label TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        )`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`
+        INSERT INTO accounts (id, provider, rider, label, created_at, updated_at)
+        VALUES ('garmin:one', 'garmin', 'one', 'Old label', 'now', 'now')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := source.OpenDB(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	store, err := UseDB(db.Conn(), db.DSN())
+	if err != nil {
+		t.Fatalf("UseDB on a pre-auto_push database: %v", err)
+	}
+
+	account, err := store.Get("garmin:one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !account.AutoPush {
+		t.Error("a pre-existing account should default to auto-push on after migrating")
 	}
 }
 

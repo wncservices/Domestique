@@ -490,6 +490,62 @@ func TestRouteVisibility(t *testing.T) {
 	}
 }
 
+// A rider must see their own linked head units and a crew fellow's — the
+// only relationships that can ever make an account relevant to them, since
+// a shared crew is the only way a route reaches another rider's device in
+// the first place — but never an unrelated stranger's, regardless of
+// PermReadRoutes being the lowest permission tier there is. Found live: a
+// test account with no relationship to anyone still saw every account in
+// the deployment on its own Settings page.
+func TestAccountVisibility(t *testing.T) {
+	h := newAuthHarness(t, nil)
+	// seedRoleAccounts already links garmin:wilant.
+
+	resp := h.as("friend", "cyclists", http.MethodPost, "/api/accounts",
+		`{"provider":"wahoo"}`)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("friend linking wahoo: status = %d", resp.StatusCode)
+	}
+
+	h.seedApprovedCrew(t, "wilant", "buddy")
+	resp = h.as("buddy", "cyclists", http.MethodPost, "/api/accounts",
+		`{"provider":"garmin"}`)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("buddy linking garmin: status = %d", resp.StatusCode)
+	}
+
+	list := func(user, groups string) map[string]bool {
+		resp := h.as(user, groups, http.MethodGet, "/api/accounts", "")
+		var accounts []struct {
+			ID string `json:"id"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&accounts); err != nil {
+			t.Fatal(err)
+		}
+		ids := map[string]bool{}
+		for _, a := range accounts {
+			ids[a.ID] = true
+		}
+		return ids
+	}
+
+	seen := list("wilant", "cyclists")
+	if !seen["garmin:wilant"] {
+		t.Error("own account missing from the list")
+	}
+	if !seen["garmin:buddy"] {
+		t.Error("a crew fellow's account is missing from the list")
+	}
+	if seen["wahoo:friend"] {
+		t.Error("an unrelated rider's account is visible in the list")
+	}
+
+	adminSeen := list("boss", "domestique-admins")
+	if !adminSeen["wahoo:friend"] {
+		t.Error("admin's list is missing an unrelated rider's account")
+	}
+}
+
 // Ownership comes from the session, never the form — otherwise a rider could
 // upload as someone else and put the route beyond their own reach.
 func TestUploadOwnershipComesFromIdentity(t *testing.T) {

@@ -207,6 +207,28 @@ func VisibleTo(r model.Route, rider string, crews crew.Snapshot) bool {
 	return false
 }
 
+// AccountVisibleTo reports whether rider may see account — their own, or a
+// crew fellow's. Mirrors VisibleTo's own reasoning: sharing any crew with
+// the account's owner already means a route can reach it and its sync
+// status shows up alongside that route (RouteCard.vue's own accountFor
+// lookup), so recognising whose device that is is not new information —
+// hiding the label here would not close anything a shared route does not
+// already reveal. A rider outside every one of the owner's crews learns
+// nothing about it at all — see handleAccounts, the bug this closed: every
+// account in the deployment was listed to anyone with routes:read, the
+// lowest permission tier, regardless of any relationship to its owner.
+func AccountVisibleTo(account model.Account, rider string, crews crew.Snapshot) bool {
+	if strings.EqualFold(account.Rider, rider) {
+		return true
+	}
+	for _, c := range crews.Crews {
+		if crews.ApprovedRiders.Has(c.ID, account.Rider) && crews.ApprovedRiders.Has(c.ID, rider) {
+			return true
+		}
+	}
+	return false
+}
+
 // UnknownTargets reports targets naming a crew the route's owner does not
 // currently, approvedly, belong to — a crew since deleted, one the owner
 // left, or (from before crews existed) a raw account id — so the UI can

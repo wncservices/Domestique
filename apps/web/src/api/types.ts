@@ -13,6 +13,11 @@ export interface Account {
   implemented: boolean
   /** Whether the viewer may unlink this one — their own, or they're an admin. */
   mine: boolean
+  /** Whether auto-sync's unattended push includes this account. Editable by
+   *  the same "mine" rule as unlinking — a rider's own choice per device,
+   *  never a deployment-wide one. Only takes effect once auto-sync itself
+   *  is on; a manual "Push to devices" always ignores it. */
+  autoPush: boolean
   /** Other riders with an account carrying the same provider and label —
    *  usually the same real device account, linked twice under a rider
    *  identity this deployment had not yet recognised as the same person. A

@@ -20,6 +20,10 @@ type Account struct {
 	Provider Provider `yaml:"provider"`
 	Rider    string   `yaml:"rider"`
 	Label    string   `yaml:"label,omitempty"`
+	// AutoPush is whether auto-sync's background push includes this account.
+	// Defaults true (an opt-out, not an opt-in) — see accounts.schema's own
+	// comment for why.
+	AutoPush bool `yaml:"autoPush"`
 }
 
 // EnvPrefix is the env var prefix for this account's credentials, e.g. GARMIN_WILANT.

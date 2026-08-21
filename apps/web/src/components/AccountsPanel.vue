@@ -55,6 +55,20 @@ const linking = ref<Provider | null>(null)
 const unlinking = ref('')
 const error = ref('')
 const unlinkTarget = ref<Account | null>(null)
+const togglingAutoPush = ref('')
+
+async function toggleAutoPush(account: Account, enabled: boolean) {
+  togglingAutoPush.value = account.id
+  error.value = ''
+  try {
+    await api.setAccountAutoPush(account.id, enabled)
+    emit('changed')
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    togglingAutoPush.value = ''
+  }
+}
 
 const providers: { id: Provider; name: string; icon: string }[] = [
   { id: 'garmin', name: 'Garmin', icon: 'i-lucide-watch' },
@@ -198,6 +212,21 @@ async function unlink(account: Account) {
           <UBadge color="warning" variant="subtle" size="sm" icon="i-lucide-triangle-alert">
             possible duplicate
           </UBadge>
+        </UTooltip>
+
+        <UTooltip
+          v-if="account.mine"
+          text="Whether auto-sync's unattended push includes this device — only takes effect once auto-sync itself is on in Settings. A manual push always reaches it either way."
+        >
+          <label class="flex items-center gap-1.5 text-xs text-dimmed">
+            <USwitch
+              size="sm"
+              :model-value="account.autoPush"
+              :loading="togglingAutoPush === account.id"
+              @update:model-value="(v: boolean) => toggleAutoPush(account, v)"
+            />
+            Auto-push
+          </label>
         </UTooltip>
 
         <UButton
