@@ -69,10 +69,6 @@ const canEdit = computed(() => {
   return !props.route.owner || props.route.owner.toLowerCase() === (me.user ?? '').toLowerCase()
 })
 
-function accountFor(id: string): Account | undefined {
-  return props.accounts.find((a) => a.id === id)
-}
-
 const editingTargets = ref(false)
 const draftTargets = ref<string[]>([])
 const savingTargets = ref(false)
@@ -236,12 +232,7 @@ async function remove() {
     />
 
     <div class="mt-auto flex flex-wrap items-center gap-1.5 pt-1">
-      <SyncBadge
-        v-for="status in route.syncState"
-        :key="status.accountId"
-        :status="status"
-        :account="accountFor(status.accountId)"
-      />
+      <SyncBadge v-if="route.syncState.length" :statuses="route.syncState" :accounts="accounts" />
       <UTooltip
         v-if="!route.syncState.length"
         text="This route doesn't reach any device right now — it hasn't been shared to a crew, or the crew it's shared to has no members with a linked account yet."
