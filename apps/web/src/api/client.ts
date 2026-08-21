@@ -2,6 +2,7 @@ import type {
   Account,
   AppConfig,
   AssignableRole,
+  AutoSyncSetting,
   Crew,
   CreateCrewRequest,
   GarminConnection,
@@ -171,6 +172,14 @@ export const api = {
     }),
   clearGarminConsumer: () =>
     request<GarminConsumer>('/api/garmin/consumer', { method: 'DELETE' }),
+
+  autoSync: () => request<AutoSyncSetting>('/api/settings/auto-sync'),
+  setAutoSync: (enabled: boolean) =>
+    request<AutoSyncSetting>('/api/settings/auto-sync', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    }),
 
   komootTours: () => request<KomootTour[]>('/api/komoot/tours'),
   komootImport: (tourIds: string[]) =>

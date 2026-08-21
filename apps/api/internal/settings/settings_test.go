@@ -162,6 +162,9 @@ func TestNilStoreIsUsable(t *testing.T) {
 	if _, err := store.Describe("k"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("Describe = %v, want ErrNotFound", err)
 	}
+	if _, err := store.DescribeFlag("k"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("DescribeFlag = %v, want ErrNotFound", err)
+	}
 	if err := store.Delete("k"); err != nil {
 		t.Errorf("Delete = %v, want nil", err)
 	}
@@ -215,6 +218,9 @@ func TestPostgres(t *testing.T) {
 	if _, err := db.Conn().Exec(`DROP TABLE IF EXISTS settings`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.Conn().Exec(`DROP TABLE IF EXISTS flags`); err != nil {
+		t.Fatal(err)
+	}
 
 	store, err := UseDB(db.Conn(), db.DSN(), newBox(t))
 	if err != nil {
@@ -229,5 +235,66 @@ func TestPostgres(t *testing.T) {
 	}
 	if got, _ := store.Get("k"); got != "two" {
 		t.Errorf("got %q, want two", got)
+	}
+}
+
+// Flags are the one thing this package holds that is not a credential
+// (auto-sync, so far) — they must work with no encryption key at all,
+// unlike Set/Get, which fail outright without one.
+func TestFlagRoundTripsWithoutAnEncryptionKey(t *testing.T) {
+	store, _ := newStore(t, nil)
+
+	if enabled, err := store.Flag("auto_sync"); err != nil || enabled {
+		t.Fatalf("Flag before ever set = (%v, %v), want (false, nil)", enabled, err)
+	}
+
+	if err := store.SetFlag("auto_sync", true, "Wilant"); err != nil {
+		t.Fatal(err)
+	}
+	enabled, err := store.Flag("auto_sync")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !enabled {
+		t.Error("Flag = false after SetFlag(true)")
+	}
+
+	meta, err := store.DescribeFlag("auto_sync")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.UpdatedBy != "wilant" {
+		t.Errorf("updatedBy = %q, want it lowercased", meta.UpdatedBy)
+	}
+}
+
+func TestFlagUpsertReplaces(t *testing.T) {
+	store, _ := newStore(t, nil)
+
+	if err := store.SetFlag("auto_sync", true, "wilant"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetFlag("auto_sync", false, "wilant"); err != nil {
+		t.Fatal(err)
+	}
+	if enabled, err := store.Flag("auto_sync"); err != nil || enabled {
+		t.Fatalf("Flag after flipping back off = (%v, %v), want (false, nil)", enabled, err)
+	}
+}
+
+func TestSetFlagRejectsEmptyName(t *testing.T) {
+	store, _ := newStore(t, nil)
+	if err := store.SetFlag("  ", true, "wilant"); err == nil {
+		t.Error("a flag was stored with no name")
+	}
+}
+
+// A nil Store (a Server built without one, most non-settings-focused tests)
+// reads every flag as off rather than panicking — the same nil-safety
+// Describe/Delete already have.
+func TestNilStoreFlagIsSafe(t *testing.T) {
+	var store *Store
+	if enabled, err := store.Flag("auto_sync"); err != nil || enabled {
+		t.Errorf("Flag on a nil store = (%v, %v), want (false, nil)", enabled, err)
 	}
 }

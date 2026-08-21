@@ -48,6 +48,7 @@ export type Permission =
   | 'accounts:manage'
   | 'people:manage'
   | 'crews:manage'
+  | 'settings:manage'
 
 export interface Me {
   /** Whether *this* request is signed in — not whether the deployment has
@@ -335,6 +336,17 @@ export interface GarminConsumer {
   canManage: boolean
   /** Why they may not, when that is worth saying. */
   unavailable?: string
+}
+
+/** Whether an upload or edit pushes to devices on its own, with nobody
+ *  clicking "Push to devices" — deployment-wide, not per-rider. */
+export interface AutoSyncSetting {
+  enabled: boolean
+  /** Whether this viewer may change it here — admin, the same reasoning
+   *  GarminConsumer.canManage already gives. */
+  canManage: boolean
+  updatedBy?: string
+  updatedAt?: string
 }
 
 /** One rider's sign-in to their own Garmin Connect account. */

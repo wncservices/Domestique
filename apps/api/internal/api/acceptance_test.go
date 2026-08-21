@@ -21,12 +21,14 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/wncservices/domestique/apps/api/internal/accounts"
 	"github.com/wncservices/domestique/apps/api/internal/api"
 	"github.com/wncservices/domestique/apps/api/internal/config"
 	"github.com/wncservices/domestique/apps/api/internal/crew"
 	"github.com/wncservices/domestique/apps/api/internal/model"
+	"github.com/wncservices/domestique/apps/api/internal/settings"
 	"github.com/wncservices/domestique/apps/api/internal/source"
 	"github.com/wncservices/domestique/apps/api/internal/state"
 	"github.com/wncservices/domestique/apps/api/internal/targets"
@@ -160,11 +162,16 @@ func newHarness(t *testing.T) *harness {
 	}
 
 	ledger := &fakeLedger{}
+	appSettings, err := settings.UseDB(src.Conn(), src.DSN(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	srv := &api.Server{
 		Source:   src,
 		Store:    store,
 		Accounts: seedAccounts(t, src),
 		Crew:     seedCrews(t, src),
+		Settings: appSettings,
 		Config:   &config.Config{},
 		// A minimal SPA, so the fallback behaviour is covered too.
 		WebFS: fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("<html>app</html>")}},
@@ -331,6 +338,13 @@ type planDTO struct {
 type pushDTO struct {
 	Applied  int      `json:"applied"`
 	Failures []string `json:"failures"`
+}
+
+type autoSyncDTOOut struct {
+	Enabled   bool   `json:"enabled"`
+	CanManage bool   `json:"canManage"`
+	UpdatedBy string `json:"updatedBy"`
+	UpdatedAt string `json:"updatedAt"`
 }
 
 // ---------- read endpoints ----------
@@ -583,6 +597,108 @@ func TestGPXDownloadMissingRoute(t *testing.T) {
 }
 
 // ---------- plan and push ----------
+
+// waitForInSync polls /api/plan until every item is in sync (or a short
+// timeout expires), for auto-sync's own tests: the push it triggers runs in
+// a background goroutine, so there is no request to block on the way a
+// manual POST /api/push has. Reading fakeLedger directly instead would be a
+// real data race under -race (CI's own go test flag) — this only ever reads
+// through the HTTP server, which serializes on s.pushMu itself.
+func (h *harness) waitForInSync(want int) planDTO {
+	h.t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	var plan planDTO
+	for time.Now().Before(deadline) {
+		h.decode(h.get("/api/plan"), &plan)
+		if plan.InSync == want && len(plan.Items) == 0 {
+			return plan
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	h.t.Fatalf("plan never reached inSync=%d with nothing pending: %+v", want, plan)
+	return plan
+}
+
+// Default off: an upload must not push anywhere on its own unless an admin
+// has explicitly turned auto-sync on. Confirmed by waiting past where an
+// auto-sync push would have landed and finding the plan still pending.
+func TestUploadDoesNotAutoSyncByDefault(t *testing.T) {
+	h := newHarness(t)
+	h.uploadExample("Not auto-synced")
+
+	time.Sleep(100 * time.Millisecond)
+	var plan planDTO
+	h.decode(h.get("/api/plan"), &plan)
+	if len(plan.Items) == 0 {
+		t.Fatal("plan is empty; something pushed without auto-sync being on")
+	}
+}
+
+func TestAutoSyncEndpointRoundTrips(t *testing.T) {
+	h := newHarness(t)
+
+	var before autoSyncDTOOut
+	h.decode(h.get("/api/settings/auto-sync"), &before)
+	if before.Enabled {
+		t.Fatal("auto-sync is on by default")
+	}
+	if !before.CanManage {
+		t.Error("CanManage = false for an admin (ModeNone)")
+	}
+
+	resp := h.do(http.MethodPut, "/api/settings/auto-sync",
+		strings.NewReader(`{"enabled":true}`), "application/json")
+	h.expectStatus(resp, http.StatusOK)
+	var after autoSyncDTOOut
+	h.decode(resp, &after)
+	if !after.Enabled {
+		t.Error("Enabled = false right after turning it on")
+	}
+	if after.UpdatedBy == "" {
+		t.Error("no UpdatedBy recorded")
+	}
+
+	var confirmed autoSyncDTOOut
+	h.decode(h.get("/api/settings/auto-sync"), &confirmed)
+	if !confirmed.Enabled {
+		t.Error("a fresh GET does not see the change")
+	}
+}
+
+// The feature end to end: turn it on, upload, and the route reaches its
+// targets with nobody clicking "Push to devices".
+func TestUploadAutoSyncsWhenEnabled(t *testing.T) {
+	h := newHarness(t)
+
+	resp := h.do(http.MethodPut, "/api/settings/auto-sync",
+		strings.NewReader(`{"enabled":true}`), "application/json")
+	h.expectStatus(resp, http.StatusOK)
+
+	h.uploadExample("Synced automatically")
+
+	plan := h.waitForInSync(2)
+	if plan.InSync != 2 {
+		t.Fatalf("plan = %+v, want everything in sync with nobody pushing manually", plan)
+	}
+}
+
+// An edit re-triggers it too, not just the initial upload.
+func TestPatchAutoSyncsWhenEnabled(t *testing.T) {
+	h := newHarness(t)
+
+	resp := h.do(http.MethodPut, "/api/settings/auto-sync",
+		strings.NewReader(`{"enabled":true}`), "application/json")
+	h.expectStatus(resp, http.StatusOK)
+
+	route := h.uploadExample("Will be renamed")
+	h.waitForInSync(2) // let the upload's own auto-sync settle first
+
+	resp = h.do(http.MethodPatch, "/api/routes/"+route.Slug,
+		strings.NewReader(`{"name":"Renamed"}`), "application/json")
+	h.expectStatus(resp, http.StatusOK)
+
+	h.waitForInSync(2)
+}
 
 func TestPlanThenPushThenPlanIsEmpty(t *testing.T) {
 	h, _ := syncHarness(t)

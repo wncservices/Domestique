@@ -199,6 +199,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/garmin/consumer", s.handleSetGarminConsumer)
 	mux.HandleFunc("DELETE /api/garmin/consumer", s.handleClearGarminConsumer)
 
+	mux.HandleFunc("GET /api/settings/auto-sync", s.handleAutoSync)
+	mux.HandleFunc("PUT /api/settings/auto-sync", s.handleSetAutoSync)
+
 	mux.HandleFunc("GET /api/wahoo/connection", s.handleWahooConnection)
 	mux.HandleFunc("DELETE /api/wahoo/connection", s.handleWahooDisconnect)
 	mux.HandleFunc("GET /api/wahoo/routes", s.handleWahooRouteList)
@@ -1152,22 +1155,39 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.pushMu.Lock()
-	defer s.pushMu.Unlock()
-
-	routes, _, err := s.Source.List(r.Context())
+	resp, err := s.runPush(r.Context(), selected)
 	if err != nil {
 		s.fail(w, err)
 		return
 	}
+	writeJSON(w, http.StatusOK, resp)
+}
 
-	linked, ok := s.linkedAccounts(w)
-	if !ok {
-		return
+// runPush is handlePush's own logic, pulled out so autoSyncIfEnabled (a
+// background push after an upload/edit, with no HTTP request driving it —
+// see autosync.go) can run exactly the same build-plan-and-apply sequence
+// rather than a second, drifting copy of it. selected nil means "everything
+// out of sync", the same meaning readPushSelection already gives a request
+// with no body.
+func (s *Server) runPush(ctx context.Context, selected map[model.PlanKey]bool) (pushResponse, error) {
+	s.pushMu.Lock()
+	defer s.pushMu.Unlock()
+
+	routes, _, err := s.Source.List(ctx)
+	if err != nil {
+		return pushResponse{}, err
 	}
-	crews, ok := s.crewSnapshot(w, r)
-	if !ok {
-		return
+
+	linked, err := s.Accounts.List()
+	if err != nil {
+		return pushResponse{}, err
+	}
+	var crews crew.Snapshot
+	if s.Crew != nil {
+		crews, err = s.Crew.Snapshot(ctx)
+		if err != nil {
+			return pushResponse{}, err
+		}
 	}
 
 	build := s.TargetFactory
@@ -1179,21 +1199,19 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 	for _, account := range linked {
 		target, err := build(account)
 		if err != nil {
-			s.fail(w, err)
-			return
+			return pushResponse{}, err
 		}
 		byAccount[account.ID] = target
 	}
 
-	plan, err := syncer.BuildPlan(r.Context(), routes, linked, s.Store, crews)
+	plan, err := syncer.BuildPlan(ctx, routes, linked, s.Store, crews)
 	if err != nil {
-		s.fail(w, err)
-		return
+		return pushResponse{}, err
 	}
 	plan = plan.Select(selected)
 
 	changes := plan.Changes()
-	failures := syncer.Apply(r.Context(), plan, s.Store, byAccount, s.recordPushResult)
+	failures := syncer.Apply(ctx, plan, s.Store, byAccount, s.recordPushResult)
 
 	messages := make([]string, 0, len(failures))
 	for _, f := range failures {
@@ -1218,11 +1236,11 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 	} else {
 		s.logger().Info("push finished", "changes", len(changes), "failures", 0)
 	}
-	writeJSON(w, http.StatusOK, pushResponse{
+	return pushResponse{
 		Applied:  len(changes) - len(failures),
 		Failures: messages,
 		Items:    toPlanDTOs(changes),
-	})
+	}, nil
 }
 
 // readPushSelection reads the optional {"items": [{"accountId","slug"}, ...]}
@@ -1351,6 +1369,7 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.logger().Info("route uploaded", "slug", route.Slug, "by", req.UploadedBy)
+	s.autoSyncIfEnabled(req.UploadedBy)
 	writeJSON(w, http.StatusCreated, s.toRouteDTO(r.Context(), route, linked, crews))
 }
 
@@ -1453,6 +1472,7 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.autoSyncIfEnabled(auth.FromContext(r.Context()).User)
 	writeJSON(w, http.StatusOK, s.toRouteDTO(r.Context(), route, linked, crews))
 }
 
@@ -1518,6 +1538,7 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.logger().Info("route deleted", "slug", slug)
+	s.autoSyncIfEnabled(auth.FromContext(r.Context()).User)
 	w.WriteHeader(http.StatusNoContent)
 }
 

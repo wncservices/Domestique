@@ -2,15 +2,29 @@
 import { onMounted, ref, watch } from 'vue'
 import { useToast } from '@nuxt/ui/composables'
 import { api, ApiError } from '@/api/client'
-import type { GarminConnection, KomootConnection, MfaEnrollment, WahooConnection } from '@/api/types'
+import type {
+  AutoSyncSetting,
+  GarminConnection,
+  KomootConnection,
+  MfaEnrollment,
+  WahooConnection,
+} from '@/api/types'
 import { useLibrary } from '@/composables/useLibrary'
 import AccountsPanel from '@/components/AccountsPanel.vue'
 import GarminSetup from '@/components/GarminSetup.vue'
 import KomootConnect from '@/components/KomootConnect.vue'
 import WahooConnect from '@/components/WahooConnect.vue'
 
-const { accounts, me, config, canManageAccounts, canImportKomoot, komootEnabled, refresh } =
-  useLibrary()
+const {
+  accounts,
+  me,
+  config,
+  canManageAccounts,
+  canManageSettings,
+  canImportKomoot,
+  komootEnabled,
+  refresh,
+} = useLibrary()
 const toast = useToast()
 
 // --- profile: name + password, both proxied through Auth0's Management API
@@ -202,6 +216,51 @@ async function loadConnection() {
   }
 }
 
+// --- auto-sync: a deployment-wide switch, not per-rider — every upload or
+// edit pushes to devices on its own once it's on, with nobody clicking
+// "Push to devices" ---
+
+const autoSync = ref<AutoSyncSetting | null>(null)
+const togglingAutoSync = ref(false)
+
+async function loadAutoSync() {
+  if (!canManageSettings.value) return
+  try {
+    autoSync.value = await api.autoSync()
+  } catch (err) {
+    toast.add({
+      title: 'Could not read the auto-sync setting',
+      description: err instanceof Error ? err.message : String(err),
+      icon: 'i-lucide-triangle-alert',
+      color: 'error',
+    })
+  }
+}
+
+async function toggleAutoSync(enabled: boolean) {
+  togglingAutoSync.value = true
+  try {
+    autoSync.value = await api.setAutoSync(enabled)
+    toast.add({
+      title: enabled ? 'Auto-sync turned on' : 'Auto-sync turned off',
+      description: enabled
+        ? 'Every upload or edit will push to devices on its own from now on.'
+        : "Uploads and edits will wait for someone to click “Push to devices” again.",
+      icon: 'i-lucide-check',
+      color: 'success',
+    })
+  } catch (err) {
+    toast.add({
+      title: 'Could not change auto-sync',
+      description: err instanceof Error ? err.message : String(err),
+      icon: 'i-lucide-triangle-alert',
+      color: 'error',
+    })
+  } finally {
+    togglingAutoSync.value = false
+  }
+}
+
 async function loadGarmin() {
   if (!canManageAccounts.value) return
   try {
@@ -240,7 +299,7 @@ onMounted(async () => {
   // races the shell's first fetch — without this the card renders and then
   // reports "no encryption key" because it never got to ask.
   await refresh()
-  await Promise.all([loadConnection(), loadGarmin(), loadWahoo(), loadMfa()])
+  await Promise.all([loadConnection(), loadGarmin(), loadWahoo(), loadMfa(), loadAutoSync()])
 })
 </script>
 
@@ -463,6 +522,33 @@ onMounted(async () => {
           <dd class="font-mono text-xs break-all text-highlighted">{{ config.source }}</dd>
         </div>
       </dl>
+    </UCard>
+
+    <!-- Deployment plumbing, and only an admin gets it: the same pattern
+         the Garmin setup / "This deployment" cards above follow. -->
+    <UCard v-if="autoSync?.canManage" variant="outline">
+      <template #header>
+        <h2 class="flex items-center gap-2 font-medium text-highlighted">
+          <UIcon name="i-lucide-refresh-cw" />
+          Auto-sync
+        </h2>
+        <p class="text-sm text-muted">
+          Whether an upload or edit pushes to devices on its own, for every rider, without
+          anyone clicking "Push to devices".
+        </p>
+      </template>
+
+      <label class="flex w-fit items-center gap-2 text-sm text-toned">
+        <USwitch
+          :model-value="autoSync.enabled"
+          :loading="togglingAutoSync"
+          @update:model-value="toggleAutoSync"
+        />
+        {{ autoSync.enabled ? 'On' : 'Off' }}
+      </label>
+      <p v-if="autoSync.updatedBy" class="mt-2 text-xs text-dimmed">
+        Last changed by {{ autoSync.updatedBy }}.
+      </p>
     </UCard>
 
     <UModal
