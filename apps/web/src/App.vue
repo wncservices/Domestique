@@ -244,7 +244,7 @@ onMounted(refresh)
         orientation="horizontal"
         title="Could not reach the API"
         :description="error"
-        :actions="[{ label: 'Retry', color: 'error', variant: 'subtle', onClick: refresh }]"
+        :actions="[{ label: 'Retry', color: 'error', variant: 'subtle', onClick: () => refresh() }]"
       />
 
       <RouterView />
