@@ -1,0 +1,171 @@
+<script setup lang="ts">
+import { computed, ref } from 'vue'
+import { api, ApiError } from '@/api/client'
+import type { BasemapUpdate } from '@/api/types'
+
+/**
+ * Lets an admin trigger a tiles-basemap update from the app itself —
+ * replacing the pmtiles extract + kubectl cp runbook with a form. Triggers
+ * a Kubernetes Job and reports back whatever the last one (running or
+ * finished) looked like; polling for a running Job's outcome happens
+ * server-side, on demand, whenever this card asks for the latest state —
+ * see basemapDTOFor's own comment on the API side.
+ */
+const props = defineProps<{ basemap: BasemapUpdate }>()
+const emit = defineEmits<{ changed: [] }>()
+
+const open = ref(false)
+const busy = ref(false)
+const error = ref('')
+
+const west = ref('')
+const south = ref('')
+const east = ref('')
+const north = ref('')
+const maxZoom = ref('14')
+
+const running = computed(
+  () => props.basemap.status === 'pending' || props.basemap.status === 'running',
+)
+
+function formatBytes(n?: number): string {
+  if (!n) return ''
+  const gb = n / 1e9
+  return gb >= 1 ? `${gb.toFixed(1)} GB` : `${(n / 1e6).toFixed(0)} MB`
+}
+
+async function trigger() {
+  const w = Number(west.value)
+  const s = Number(south.value)
+  const e = Number(east.value)
+  const n = Number(north.value)
+  const z = Number(maxZoom.value)
+  if ([w, s, e, n, z].some((v) => Number.isNaN(v))) {
+    error.value = 'All five fields are required numbers.'
+    return
+  }
+
+  busy.value = true
+  error.value = ''
+  try {
+    await api.updateBasemap({ west: w, south: s, east: e, north: n }, z)
+    open.value = false
+    emit('changed')
+  } catch (err) {
+    error.value = err instanceof ApiError ? err.message : String(err)
+  } finally {
+    busy.value = false
+  }
+}
+</script>
+
+<template>
+  <div class="rounded-lg border border-dashed border-default p-4">
+    <UAlert
+      v-if="error"
+      color="error"
+      variant="subtle"
+      icon="i-lucide-triangle-alert"
+      :description="error"
+      class="mb-4"
+    />
+
+    <!-- Not this viewer's job. Say what is missing and who can fix it. -->
+    <div v-if="!props.basemap.canManage" class="flex items-start gap-3 text-sm">
+      <UIcon name="i-lucide-info" class="mt-0.5 size-4 shrink-0 text-dimmed" />
+      <p class="text-muted">
+        {{ props.basemap.unavailable || 'An administrator manages the map basemap.' }}
+      </p>
+    </div>
+
+    <template v-else>
+      <div class="flex flex-wrap items-start justify-between gap-3">
+        <div class="flex items-start gap-3">
+          <UIcon
+            :name="
+              running
+                ? 'i-lucide-loader-circle'
+                : props.basemap.status === 'failed'
+                  ? 'i-lucide-circle-x'
+                  : props.basemap.hasRun
+                    ? 'i-lucide-circle-check'
+                    : 'i-lucide-map'
+            "
+            class="mt-0.5 size-4 shrink-0"
+            :class="[
+              running && 'animate-spin',
+              props.basemap.status === 'failed' ? 'text-error' : 'text-primary',
+              !props.basemap.hasRun && 'text-dimmed',
+            ]"
+          />
+          <div>
+            <p class="text-sm font-medium text-highlighted">Map basemap</p>
+            <p class="text-sm text-muted">
+              <template v-if="running">
+                Update in progress, requested by {{ props.basemap.requestedBy }} — this can take
+                several minutes.
+              </template>
+              <template v-else-if="props.basemap.status === 'failed'">
+                Last attempt failed: {{ props.basemap.error }}
+              </template>
+              <template v-else-if="props.basemap.hasRun">
+                Covers {{ props.basemap.west }},{{ props.basemap.south }} to
+                {{ props.basemap.east }},{{ props.basemap.north }} at zoom
+                {{ props.basemap.maxZoom }}{{ ' ' }}
+                <template v-if="props.basemap.sizeBytes">
+                  ({{ formatBytes(props.basemap.sizeBytes) }})
+                </template>
+                — requested by {{ props.basemap.requestedBy }}.
+              </template>
+              <template v-else>
+                No basemap has been set yet — routes show without map tiles until one is.
+              </template>
+            </p>
+          </div>
+        </div>
+
+        <UButton
+          :icon="open ? 'i-lucide-x' : 'i-lucide-refresh-cw'"
+          color="neutral"
+          variant="subtle"
+          size="sm"
+          :disabled="running"
+          @click="open = !open"
+        >
+          {{ open ? 'Cancel' : 'Update' }}
+        </UButton>
+      </div>
+
+      <form v-if="open" class="mt-4 grid gap-3" @submit.prevent="trigger">
+        <p class="text-xs text-dimmed">
+          West, south, east, north in decimal degrees — pick a region covering wherever this
+          crew's routes actually are. A route outside it still renders, just without basemap
+          tiles behind it.
+        </p>
+        <div class="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <UFormField label="West">
+            <UInput v-model="west" placeholder="-5" class="w-full" />
+          </UFormField>
+          <UFormField label="South">
+            <UInput v-model="south" placeholder="42" class="w-full" />
+          </UFormField>
+          <UFormField label="East">
+            <UInput v-model="east" placeholder="15" class="w-full" />
+          </UFormField>
+          <UFormField label="North">
+            <UInput v-model="north" placeholder="55" class="w-full" />
+          </UFormField>
+        </div>
+        <UFormField label="Max zoom" class="max-w-32">
+          <UInput v-model="maxZoom" class="w-full" />
+        </UFormField>
+        <div class="flex items-center gap-3">
+          <UButton type="submit" icon="i-lucide-download" :loading="busy">
+            Start update
+          </UButton>
+          <p class="text-xs text-dimmed">Runs in the background — this page reports progress.</p>
+        </div>
+      </form>
+    </template>
+  </div>
+</template>

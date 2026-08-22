@@ -4,6 +4,7 @@ import { useToast } from '@nuxt/ui/composables'
 import { api, ApiError } from '@/api/client'
 import type {
   AutoSyncSetting,
+  BasemapUpdate,
   GarminConnection,
   KomootConnection,
   MfaEnrollment,
@@ -11,6 +12,7 @@ import type {
 } from '@/api/types'
 import { useLibrary } from '@/composables/useLibrary'
 import AccountsPanel from '@/components/AccountsPanel.vue'
+import BasemapSetup from '@/components/BasemapSetup.vue'
 import GarminSetup from '@/components/GarminSetup.vue'
 import KomootConnect from '@/components/KomootConnect.vue'
 
@@ -222,6 +224,25 @@ async function loadConnection() {
 const autoSync = ref<AutoSyncSetting | null>(null)
 const togglingAutoSync = ref(false)
 
+// --- basemap: the tiles component's map data, updated from a button
+// instead of the pmtiles extract + kubectl cp runbook ---
+
+const basemap = ref<BasemapUpdate | null>(null)
+
+async function loadBasemap() {
+  if (!canManageSettings.value) return
+  try {
+    basemap.value = await api.basemap()
+  } catch (err) {
+    toast.add({
+      title: 'Could not read the basemap status',
+      description: err instanceof Error ? err.message : String(err),
+      icon: 'i-lucide-triangle-alert',
+      color: 'error',
+    })
+  }
+}
+
 async function loadAutoSync() {
   if (!canManageSettings.value) return
   try {
@@ -298,7 +319,14 @@ onMounted(async () => {
   // races the shell's first fetch — without this the card renders and then
   // reports "no encryption key" because it never got to ask.
   await refresh()
-  await Promise.all([loadConnection(), loadGarmin(), loadWahoo(), loadMfa(), loadAutoSync()])
+  await Promise.all([
+    loadConnection(),
+    loadGarmin(),
+    loadWahoo(),
+    loadMfa(),
+    loadAutoSync(),
+    loadBasemap(),
+  ])
 })
 </script>
 
@@ -517,6 +545,25 @@ onMounted(async () => {
       </template>
 
       <GarminSetup :consumer="garmin.consumer" @changed="loadGarmin" />
+    </UCard>
+
+    <!-- Deployment plumbing, and only an admin gets it — same gating as
+         auto-sync above, since (unlike the Garmin/config cards) the DTO
+         here is shaped to distinguish "unavailable" from "not your job,"
+         not to omit itself for a rider. -->
+    <UCard v-if="basemap?.canManage" variant="outline">
+      <template #header>
+        <h2 class="flex items-center gap-2 font-medium text-highlighted">
+          <UIcon name="i-lucide-map" />
+          Map basemap
+        </h2>
+        <p class="text-sm text-muted">
+          Tile data behind a route's map — self-hosted, so a rider's coordinates never reach a
+          third party.
+        </p>
+      </template>
+
+      <BasemapSetup :basemap="basemap" @changed="loadBasemap" />
     </UCard>
 
     <!-- Deployment plumbing, and only an admin gets it: the API omits

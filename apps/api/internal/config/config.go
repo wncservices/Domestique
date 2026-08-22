@@ -50,6 +50,30 @@ type WahooConfig struct {
 	RedirectURL string `yaml:"redirect_url,omitempty"`
 }
 
+// BasemapConfig is how an admin-triggered tiles-basemap update Job runs —
+// mirrors domestique-chart's basemapUpdate values block field for field,
+// since that block is what actually grants this app's ServiceAccount the
+// Kubernetes API access this needs; both must agree or a Job created here
+// finds no RBAC letting it run.
+//
+// Nothing secret: an image tag and a namespace name are exactly the kind of
+// thing that belongs in a committed-adjacent file, not Vault.
+type BasemapConfig struct {
+	// TilesNamespace being empty means this feature is unavailable — a
+	// deployment either has the tiles component and its RBAC (see above)
+	// or it does not; there is no separate on/off switch to forget to set.
+	TilesNamespace        string `yaml:"tiles_namespace,omitempty"`
+	TilesPodSelector      string `yaml:"tiles_pod_selector,omitempty"`
+	CopyServiceAccount    string `yaml:"copy_service_account,omitempty"`
+	ExtractImage          string `yaml:"extract_image,omitempty"`
+	CopyImage             string `yaml:"copy_image,omitempty"`
+	CPURequest            string `yaml:"cpu_request,omitempty"`
+	MemRequest            string `yaml:"mem_request,omitempty"`
+	MemLimit              string `yaml:"mem_limit,omitempty"`
+	WorkVolumeSize        string `yaml:"work_volume_size,omitempty"`
+	ActiveDeadlineSeconds int64  `yaml:"active_deadline_seconds,omitempty"`
+}
+
 // Config is domestique.yaml.
 //
 // Deliberately small. Accounts are not here: they are linked by riders through
@@ -66,11 +90,12 @@ type WebConfig struct {
 }
 
 type Config struct {
-	Source SourceConfig `yaml:"source"`
-	Web    WebConfig    `yaml:"web"`
-	Auth   auth.Config  `yaml:"auth"`
-	Komoot KomootConfig `yaml:"komoot"`
-	Wahoo  WahooConfig  `yaml:"wahoo"`
+	Source  SourceConfig  `yaml:"source"`
+	Web     WebConfig     `yaml:"web"`
+	Auth    auth.Config   `yaml:"auth"`
+	Komoot  KomootConfig  `yaml:"komoot"`
+	Wahoo   WahooConfig   `yaml:"wahoo"`
+	Basemap BasemapConfig `yaml:"basemap"`
 }
 
 // DefaultDSN is where a database library lives unless configured otherwise.
@@ -119,6 +144,44 @@ func (c *Config) applyDefaults() {
 	if c.Source.DSN == "" {
 		c.Source.DSN = DefaultDSN
 	}
+
+	// Only when the feature is actually opted into (a namespace is set) —
+	// an empty TilesNamespace elsewhere in this package means "unavailable",
+	// and defaulting these too would quietly turn that into "available with
+	// guesses," which is not a state Validate below should let through.
+	if c.Basemap.TilesNamespace != "" {
+		if c.Basemap.TilesPodSelector == "" {
+			c.Basemap.TilesPodSelector = "app.kubernetes.io/name=tiles"
+		}
+		// No default for CopyServiceAccount, unlike everything else here:
+		// it names an identity domestique-chart's basemap-rbac.yaml
+		// generates from the Helm release name (domestique.fullname), and
+		// guessing a name that might not match would fail silently at
+		// Job-run time (pod can't start, or every kubectl call inside it
+		// gets Forbidden) instead of loudly at config load. Validate below
+		// requires it explicitly instead.
+		if c.Basemap.ExtractImage == "" {
+			c.Basemap.ExtractImage = "protomaps/go-pmtiles:v1.31.2"
+		}
+		if c.Basemap.CopyImage == "" {
+			c.Basemap.CopyImage = "alpine/k8s:1.36.2"
+		}
+		if c.Basemap.CPURequest == "" {
+			c.Basemap.CPURequest = "250m"
+		}
+		if c.Basemap.MemRequest == "" {
+			c.Basemap.MemRequest = "256Mi"
+		}
+		if c.Basemap.MemLimit == "" {
+			c.Basemap.MemLimit = "1Gi"
+		}
+		if c.Basemap.WorkVolumeSize == "" {
+			c.Basemap.WorkVolumeSize = "15Gi"
+		}
+		if c.Basemap.ActiveDeadlineSeconds == 0 {
+			c.Basemap.ActiveDeadlineSeconds = 1800
+		}
+	}
 }
 
 // Validate checks a config for self-consistency. It is exported because CLI
@@ -131,6 +194,12 @@ func (c *Config) Validate() error {
 	// Surfaces a bad auth config at startup rather than on the first request.
 	if _, err := auth.New(c.Auth); err != nil {
 		return err
+	}
+
+	if c.Basemap.TilesNamespace != "" && c.Basemap.CopyServiceAccount == "" {
+		return fmt.Errorf("basemap.tiles_namespace is set but basemap.copy_service_account is not — " +
+			"it must equal, exactly, whatever domestique-chart's basemap-rbac.yaml actually renders " +
+			"for {{ include \"domestique.fullname\" . }}-basemap-copy in this release")
 	}
 	return nil
 }
