@@ -57,17 +57,23 @@ func (s *Server) AutoImportTick(ctx context.Context) {
 		return
 	}
 
-	imported := s.autoImportGarmin(ctx) + s.autoImportWahoo(ctx) + s.autoImportKomoot(ctx)
-	if imported == 0 {
-		return
-	}
-	s.logger().Info("auto-import finished", "imported", imported)
+	// Held for the whole import-then-push pass, not just the push: two pods
+	// both importing at once is exactly as capable of double-pushing as two
+	// pods both pushing at once, since each import that finds something new
+	// pushes it immediately below. See backgroundSyncLockKey's own comment.
+	withDBLock(ctx, s.dbConn(), backgroundSyncLockKey, func() {
+		imported := s.autoImportGarmin(ctx) + s.autoImportWahoo(ctx) + s.autoImportKomoot(ctx)
+		if imported == 0 {
+			return
+		}
+		s.logger().Info("auto-import finished", "imported", imported)
 
-	// autoPushOnly: this is the unattended path, so it honors each
-	// account's own auto-push preference — see runPush's own doc comment.
-	if _, err := s.runPush(ctx, nil, true, nil); err != nil {
-		s.logger().Error("auto-import: push after import failed", "err", err)
-	}
+		// autoPushOnly: this is the unattended path, so it honors each
+		// account's own auto-push preference — see runPush's own doc comment.
+		if _, err := s.runPush(ctx, nil, true, nil); err != nil {
+			s.logger().Error("auto-import: push after import failed", "err", err)
+		}
+	})
 }
 
 // autoImportGarmin pulls in every new course on every rider's own connected

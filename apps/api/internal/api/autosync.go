@@ -112,12 +112,16 @@ func (s *Server) autoSyncIfEnabled(rider string) {
 	}
 
 	go func() {
-		resp, err := s.runPush(context.Background(), nil, true, nil)
-		if err != nil {
-			s.logger().Error("auto-sync push failed", "triggered_by", rider, "err", err)
-			return
-		}
-		s.logger().Info("auto-sync push finished",
-			"triggered_by", rider, "changes", len(resp.Items), "failures", len(resp.Failures))
+		// Shares backgroundSyncLockKey with AutoImportTick's own push — see
+		// that key's comment for why the same lock has to cover both paths.
+		withDBLock(context.Background(), s.dbConn(), backgroundSyncLockKey, func() {
+			resp, err := s.runPush(context.Background(), nil, true, nil)
+			if err != nil {
+				s.logger().Error("auto-sync push failed", "triggered_by", rider, "err", err)
+				return
+			}
+			s.logger().Info("auto-sync push finished",
+				"triggered_by", rider, "changes", len(resp.Items), "failures", len(resp.Failures))
+		})
 	}()
 }
