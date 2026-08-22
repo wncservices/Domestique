@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1862,6 +1863,26 @@ func (s *Server) isLandingHost(r *http.Request) bool {
 	return strings.EqualFold(host, s.LandingHost)
 }
 
+// isPreviewHost reports whether r arrived on the blue-green preview host —
+// auth.oidc.preview_redirect_url's own host, the one other host besides
+// LandingHost that an anonymous visitor needs to reach the SPA shell on
+// rather than be bounced away from. It has to agree with
+// redirectURLForRequest's own host match: an anonymous preview-host visit
+// that got redirected to LandingHost here would defeat the reason that
+// second redirect_uri was registered at all — there would be no anonymous
+// /sso/login on this host left to start the flow it exists to let through.
+func (s *Server) isPreviewHost(r *http.Request) bool {
+	cfg := s.authenticator().OIDC()
+	if cfg.PreviewRedirectURL == "" {
+		return false
+	}
+	preview, err := url.Parse(cfg.PreviewRedirectURL)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(r.Host, preview.Host)
+}
+
 // spaHandler serves the built frontend, falling back to index.html so client
 // side routes survive a refresh.
 func (s *Server) spaHandler() http.Handler {
@@ -1913,8 +1934,14 @@ func (s *Server) spaHandler() http.Handler {
 		// Real files are exempted the same way the landing page's own
 		// content is: this only replaces what would otherwise serve the SPA
 		// shell, not /assets/... , which the redirect target needs too.
+		//
+		// The preview host is exempted too: it is neither LandingHost nor
+		// the production app host, so without this check every anonymous
+		// visit there — which is all of them, since its session cookie is
+		// scoped to a different host — was bounced straight to LandingHost
+		// before a login could ever start. See isPreviewHost.
 		if !landing && s.LandingHost != "" && s.authenticator().Mode() == auth.ModeOIDC &&
-			(missing || clean == "index.html") {
+			(missing || clean == "index.html") && !s.isPreviewHost(r) {
 			if auth.FromContext(r.Context()).Anonymous() {
 				http.Redirect(w, r, "https://"+s.LandingHost+"/", http.StatusFound)
 				return

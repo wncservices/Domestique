@@ -214,6 +214,77 @@ func TestAnonymousOIDCVisitorsAreSentToTheLandingPage(t *testing.T) {
 	}
 }
 
+// The preview host is neither LandingHost nor the production app host, so
+// without isPreviewHost every anonymous visit there — which is all of them,
+// since its session cookie is scoped to a different host — was bounced
+// straight to LandingHost before a login could ever start. This is the
+// live bug the redirect exemption exists to fix.
+func TestAnonymousOIDCVisitorsOnThePreviewHostStillGetTheApp(t *testing.T) {
+	web := fstest.MapFS{
+		"index.html":   {Data: []byte("<html>APP</html>")},
+		"landing.html": {Data: []byte("<html>LANDING</html>")},
+	}
+	a, err := auth.New(auth.Config{
+		Mode: auth.ModeOIDC,
+		OIDC: auth.OIDCConfig{
+			Issuer: "https://idp.example.test/", ClientID: "x",
+			RedirectURL:        "https://app.example.test/sso/callback",
+			PreviewRedirectURL: "https://preview.example.test/sso/callback",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &Server{WebFS: web, LandingHost: "domestique.dev", Auth: a}
+
+	for _, tc := range []struct{ name, path string }{
+		{"the app shell itself", "/"},
+		{"a deep link", "/settings"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			req.Host = "preview.example.test"
+			rec := httptest.NewRecorder()
+			srv.spaHandler().ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK || rec.Body.String() != "<html>APP</html>" {
+				t.Errorf("status %d body %q, want the app, not a redirect to LandingHost", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+// A host that merely contains the preview host as a substring — the same
+// CodeQL bug class already fixed once in apps/e2e/tests/login.spec.ts — must
+// not match. isPreviewHost uses an exact host comparison, never .Contains.
+func TestPreviewHostMatchIsExactNotSubstring(t *testing.T) {
+	web := fstest.MapFS{
+		"index.html":   {Data: []byte("<html>APP</html>")},
+		"landing.html": {Data: []byte("<html>LANDING</html>")},
+	}
+	a, err := auth.New(auth.Config{
+		Mode: auth.ModeOIDC,
+		OIDC: auth.OIDCConfig{
+			Issuer: "https://idp.example.test/", ClientID: "x",
+			RedirectURL:        "https://app.example.test/sso/callback",
+			PreviewRedirectURL: "https://preview.example.test/sso/callback",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &Server{WebFS: web, LandingHost: "domestique.dev", Auth: a}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "notpreview.example.test"
+	rec := httptest.NewRecorder()
+	srv.spaHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302 (should fall through to the LandingHost redirect, not be treated as the preview host)", rec.Code)
+	}
+}
+
 // The redirect must not swallow the app's own assets — the landing page it
 // redirects to needs them loadable too.
 func TestAnonymousOIDCVisitorsStillGetTheirAssets(t *testing.T) {
