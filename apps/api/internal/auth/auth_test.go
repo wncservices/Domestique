@@ -219,6 +219,15 @@ func TestOIDCConfigValidation(t *testing.T) {
 		{"issuer is not a URL at all", func(c OIDCConfig) OIDCConfig { c.Issuer = "://not a url"; return c }, true},
 		{"missing client_id", func(c OIDCConfig) OIDCConfig { c.ClientID = ""; return c }, true},
 		{"missing redirect_url", func(c OIDCConfig) OIDCConfig { c.RedirectURL = ""; return c }, true},
+		{"preview_redirect_url is optional", func(c OIDCConfig) OIDCConfig { c.PreviewRedirectURL = ""; return c }, false},
+		{"a valid preview_redirect_url is accepted", func(c OIDCConfig) OIDCConfig {
+			c.PreviewRedirectURL = "https://preview.example.test/sso/callback"
+			return c
+		}, false},
+		{"preview_redirect_url with no host is rejected", func(c OIDCConfig) OIDCConfig {
+			c.PreviewRedirectURL = "not-a-url"
+			return c
+		}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := New(Config{Mode: ModeOIDC, OIDC: tc.mutate(base())})

@@ -128,6 +128,23 @@ type OIDCConfig struct {
 	// must equal what is registered with the issuer, exactly, including
 	// scheme and path.
 	RedirectURL string `yaml:"redirect_url"`
+	// PreviewRedirectURL is a second, optional registered redirect_uri —
+	// for a blue-green preview host (a Rollout's own previewService,
+	// reachable before promotion) that never receives real traffic but
+	// still needs a real login to be checkable by hand, not just by the
+	// automated postPromotionAnalysis check that runs after. Must also be
+	// registered with the issuer, exactly, same as RedirectURL. Empty
+	// means there is no second host — every login uses RedirectURL, the
+	// only behavior that existed before this field did.
+	//
+	// Which of the two applies to a given request is chosen by comparing
+	// that request's own Host against PreviewRedirectURL's host (see
+	// sso.go's redirectURLForRequest) — never derived from an arbitrary
+	// Host. The two are both our own already-registered destinations
+	// either way, so there is nothing here for a spoofed Host header to
+	// redirect a login to that was not already a legitimate landing spot
+	// for one.
+	PreviewRedirectURL string `yaml:"preview_redirect_url,omitempty"`
 	// Scopes requested at login. "openid" is required by the spec and is
 	// added automatically if the operator forgot it, rather than failing
 	// startup for an easy mistake with an unhelpful downstream error.
@@ -258,6 +275,12 @@ func validatedOIDC(cfg OIDCConfig) (OIDCConfig, error) {
 	}
 	if _, err := url.Parse(cfg.RedirectURL); err != nil {
 		return OIDCConfig{}, fmt.Errorf("auth.oidc.redirect_url: %q is not a URL: %w", cfg.RedirectURL, err)
+	}
+	if cfg.PreviewRedirectURL != "" {
+		u, err := url.Parse(cfg.PreviewRedirectURL)
+		if err != nil || u.Host == "" {
+			return OIDCConfig{}, fmt.Errorf("auth.oidc.preview_redirect_url: %q is not a URL with a host", cfg.PreviewRedirectURL)
+		}
 	}
 
 	if cfg.GroupsClaim == "" {

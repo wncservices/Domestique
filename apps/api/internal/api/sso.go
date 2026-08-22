@@ -99,7 +99,7 @@ func (s *Server) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	redirectURI := s.authenticator().OIDC().RedirectURL
+	redirectURI := s.redirectURLForRequest(r)
 	authURL := s.OIDC.AuthCodeURL(state, nonce, oidcflow.PKCEChallenge(verifier), redirectURI)
 	http.Redirect(w, r, authURL, http.StatusFound)
 }
@@ -171,7 +171,7 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	redirectURI := s.authenticator().OIDC().RedirectURL
+	redirectURI := s.redirectURLForRequest(r)
 	rawIDToken, err := s.OIDC.Exchange(r.Context(), code, st.Verifier, redirectURI)
 	if err != nil {
 		s.logger().Warn("oidc token exchange failed", "err", err)
@@ -460,6 +460,35 @@ func withNotice(path, notice string) string {
 	q.Set("notice", notice)
 	u.RawQuery = q.Encode()
 	return u.String()
+}
+
+// redirectURLForRequest picks which of the (at most two) registered
+// redirect_uris applies to r: auth.oidc.preview_redirect_url if r's own
+// Host exactly matches that URL's host, auth.oidc.redirect_url otherwise.
+// Called identically from both handleSSOLogin (to tell the issuer where to
+// send the browser back) and handleSSOCallback (to tell the issuer's token
+// endpoint which redirect_uri the exchange should be validated against) —
+// they agree by construction, since the issuer always redirects back to
+// literally the URI it was given, so the callback request's own Host
+// already matches whichever one handleSSOLogin chose.
+//
+// Never derived from an arbitrary Host — matched only against this one
+// additional, explicitly configured value. A request cannot talk the app
+// into handing the issuer a redirect_uri nobody registered: the only two
+// possible results are both server-side config, and both already
+// registered with the issuer as valid callback URLs, so there is nothing
+// here for a spoofed Host header to redirect a login to that was not
+// already one of this app's own legitimate landing spots.
+func (s *Server) redirectURLForRequest(r *http.Request) string {
+	cfg := s.authenticator().OIDC()
+	if cfg.PreviewRedirectURL == "" {
+		return cfg.RedirectURL
+	}
+	preview, err := url.Parse(cfg.PreviewRedirectURL)
+	if err != nil || !strings.EqualFold(r.Host, preview.Host) {
+		return cfg.RedirectURL
+	}
+	return cfg.PreviewRedirectURL
 }
 
 // requestIsHTTPS decides the cookie Secure attribute. Traefik terminates TLS
