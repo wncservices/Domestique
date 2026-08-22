@@ -796,6 +796,100 @@ func TestOtherRoutesStayGatedWhenMeDoesNot(t *testing.T) {
 	}
 }
 
+// The whole point of preview_redirect_url: it must apply *only* to a
+// request whose own Host exactly matches it — never to the app's normal
+// host, and never to some third, unrelated Host a client might send.
+// Anything other than an exact match on the one configured preview host
+// has to fall back to the ordinary redirect_url, the same as if
+// preview_redirect_url were never set at all.
+func TestSSOLoginPreviewRedirectOnlyAppliesOnThePreviewHost(t *testing.T) {
+	issuer := newFakeIssuer(t)
+
+	key, err := secrets.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	box, err := secrets.New(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	flow, err := oidcflow.New(context.Background(), oidcflow.Config{
+		Issuer: issuer.server.URL, ClientID: "domestique-test", ClientSecret: "test-secret",
+		Scopes: []string{"openid"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const (
+		primaryRedirect = "https://app.domestique.test/sso/callback"
+		previewRedirect = "https://preview.domestique.test/sso/callback"
+	)
+	authenticator, err := auth.New(auth.Config{
+		Mode: auth.ModeOIDC,
+		OIDC: auth.OIDCConfig{
+			Issuer: issuer.server.URL, ClientID: "domestique-test",
+			RedirectURL:        primaryRedirect,
+			PreviewRedirectURL: previewRedirect,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := &api.Server{Auth: authenticator, OIDC: flow, Box: box}
+	server := httptest.NewServer(srv.Handler())
+	t.Cleanup(server.Close)
+
+	client := &http.Client{
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+
+	redirectURIFor := func(t *testing.T, host string) string {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodGet, server.URL+"/sso/login", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// http.Request.Host, not a "Host" header set via req.Header — the
+		// latter is stripped and ignored by net/http in favor of this
+		// field, which is what the server actually sees as r.Host.
+		req.Host = host
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusFound {
+			t.Fatalf("Host %q: status = %d, want 302", host, resp.StatusCode)
+		}
+		loc, err := resp.Location()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return loc.Query().Get("redirect_uri")
+	}
+
+	cases := []struct {
+		name string
+		host string
+		want string
+	}{
+		{"the preview host gets the preview redirect", "preview.domestique.test", previewRedirect},
+		{"the app's normal host still gets the normal redirect", "app.domestique.test", primaryRedirect},
+		{"an unrelated host falls back to the normal redirect, not the preview one", "evil.example.test", primaryRedirect},
+		{"a host that merely contains the preview host as a substring is not a match", "notpreview.domestique.test", primaryRedirect},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := redirectURIFor(t, tc.host); got != tc.want {
+				t.Errorf("Host %q: redirect_uri = %q, want %q", tc.host, got, tc.want)
+			}
+		})
+	}
+}
+
 func validOIDCAuthConfig(t *testing.T) auth.Config {
 	t.Helper()
 	return auth.Config{

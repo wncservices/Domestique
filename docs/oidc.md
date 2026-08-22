@@ -83,6 +83,14 @@ auth:
     client_id: domestique
     # client_secret from DOMESTIQUE_OIDC_CLIENT_SECRET, never the config file
     redirect_url: https://app.domestique.dev/sso/callback
+    # Optional. A second registered redirect_uri for a blue-green preview
+    # host — /sso/login and /sso/callback pick whichever of the two
+    # matches the request's own Host, an exact match only, never derived
+    # from an arbitrary Host. Both values are equally trusted destinations
+    # either way (both server-side config, both pre-registered with the
+    # issuer), so there is nothing here for a spoofed Host to redirect a
+    # login to that was not already a legitimate landing spot for one.
+    preview_redirect_url: https://preview.domestique.dev/sso/callback
     scopes: [openid, profile, email, groups]
     groups_claim: groups
   roles:
