@@ -1,5 +1,15 @@
 import { test, expect, type Page } from '@playwright/test'
 
+// The real tenant host — auth.oidc.issuer in domestique-infra's own
+// values.yaml. An exact match, not url.hostname.includes('auth0.com'):
+// .includes() is a substring test, so it would also match a hostname an
+// attacker controls, like evil-auth0.com.example.net or
+// notdomestique.eu.auth0.com.attacker.org — CodeQL correctly flags that
+// pattern (js/incomplete-url-substring-sanitization). This only ever needs
+// to recognize one specific, known host, so there's no reason to reach for
+// anything looser than equality.
+const AUTH0_HOSTNAME = 'domestique.eu.auth0.com'
+
 // Drives Auth0's real Universal Login — this is the whole point of running
 // as postPromotionAnalysis rather than pre-promotion: the OIDC redirect
 // always lands back on whichever Service is currently *active*
@@ -32,7 +42,7 @@ async function submitCredentials(page: Page, email: string, password: string) {
 async function signIn(page: Page, email: string, password: string) {
   await submitCredentials(page, email, password)
   // Lands back on the app once the OIDC callback completes.
-  await page.waitForURL((url) => !url.hostname.includes('auth0.com'))
+  await page.waitForURL((url) => url.hostname !== AUTH0_HOSTNAME)
 }
 
 test('test-rider can sign in and see the library', async ({ page }) => {
@@ -83,7 +93,7 @@ test('a wrong password is rejected, not silently accepted', async ({ page }) => 
   await submitCredentials(page, email, `not-the-real-password-${Date.now()}`)
 
   const redirectedToApp = await page
-    .waitForURL((url) => !url.hostname.includes('auth0.com'), { timeout: 5_000 })
+    .waitForURL((url) => url.hostname !== AUTH0_HOSTNAME, { timeout: 5_000 })
     .then(() => true)
     .catch(() => false)
 
