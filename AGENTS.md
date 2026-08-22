@@ -656,9 +656,19 @@ will not accept GPX at all. See `docs/plan.md`.
   - `App.vue` must stay wrapped in `<UApp>` — toasts, tooltips and modals need it.
   - `vue-router` is a dependency only because Nuxt UI's link components import it
     unconditionally. The app is still one screen; do not build routing on it without a reason.
-- The frontend has no map library on purpose: route previews are inline SVG drawn from the
-  coordinates the API returns, so nothing calls out to a tile server with somebody's home
-  address in the request.
+- The frontend has `maplibre-gl`, but only for `RouteMap.vue`'s real interactive map, and only
+  ever loaded via dynamic `import()` — never a top-level import, so it stays out of the `main`
+  bundle for anyone who never opens a map, and out of `landing`'s bundle entirely. `TrackPreview.vue`
+  still exists and still draws its own inline SVG on purpose for the card-grid thumbnail, a much
+  cheaper render than mounting a full map per card. The original no-third-party-tile-server rule
+  still holds — it's *self-hosted* tiles that changed, not the rule: `RouteMap.vue` only ever
+  points at `pmtiles:///tiles/basemap.pmtiles` (same-origin, backed by the `tiles` component in
+  `domestique-infra`), never a third-party tile host. Style/sprite/glyphs load from Protomaps'
+  public CDN — those aren't location-sensitive (identical for every request, no route coordinates
+  in them), so self-hosting them would add nothing.
+- Route geometry reaches the frontend exclusively via `GET /api/tracks/{slug}`
+  (`handleTrack`/`api.track`) — never add a second endpoint for it. `TrackPreview.vue`,
+  `RouteDetailModal.vue`, and `LibraryPage.vue`'s map view all call this same one.
 - DTOs in `apps/api/internal/api/server.go` and `apps/web/src/api/types.ts` mirror each other by
   hand. Change them together.
 - Comments explain *why*. The code already says what.

@@ -4,6 +4,8 @@ import { useLibrary } from '@/composables/useLibrary'
 import LibraryDuplicatesPanel from '@/components/LibraryDuplicatesPanel.vue'
 import PlanPanel from '@/components/PlanPanel.vue'
 import RouteCard from '@/components/RouteCard.vue'
+import RouteDetailModal from '@/components/RouteDetailModal.vue'
+import RouteMap from '@/components/RouteMap.vue'
 import type { Sport } from '@/api/types'
 
 const {
@@ -69,6 +71,57 @@ const pagedRoutes = computed(() => {
   return visibleRoutes.value.slice(start, start + pageSize)
 })
 
+// Map mode wants every filtered route plotted at once, not one page of 24 —
+// pagination doesn't apply to it.
+const viewMode = ref<'grid' | 'map'>('grid')
+
+// Keyed by slug rather than refetched per filter change: a search keystroke
+// or sport toggle only changes which routes are *visible*, not their
+// geometry, so this only grows, never refetches something it already has.
+const trackCache = ref(new Map<string, [number, number][]>())
+const loadingTracks = ref(false)
+
+async function loadTracksForMap() {
+  const missing = routes.value.filter((r) => !trackCache.value.has(r.slug))
+  if (!missing.length) return
+  loadingTracks.value = true
+  try {
+    const { api } = await import('@/api/client')
+    await Promise.all(
+      missing.map(async (r) => {
+        try {
+          const track = await api.track(r.slug)
+          trackCache.value.set(r.slug, track.points)
+        } catch {
+          trackCache.value.set(r.slug, [])
+        }
+      }),
+    )
+  } finally {
+    loadingTracks.value = false
+  }
+}
+
+watch(viewMode, (mode) => {
+  if (mode === 'map') loadTracksForMap()
+})
+
+const mapRoutes = computed(() =>
+  visibleRoutes.value.map((r) => ({ slug: r.slug, points: trackCache.value.get(r.slug) ?? [] })),
+)
+
+const selectedSlug = ref<string | null>(null)
+const selectedRoute = computed(() => routes.value.find((r) => r.slug === selectedSlug.value) ?? null)
+
+// A route can vanish out from under an open detail popup — someone else
+// deletes it, or a refresh just drops it — without the click that opened
+// it ever firing again to notice. Left alone, the modal stayed open
+// showing an empty shell (every v-if="route" in RouteDetailModal hidden,
+// an undefined title) instead of just closing.
+watch(selectedRoute, (route) => {
+  if (selectedSlug.value && !route) selectedSlug.value = null
+})
+
 // This page is always already showing the routes/plan being refreshed —
 // every call below fires after an edit made right here, not on arriving at
 // the page — so none of them should blank the grid back to its loading
@@ -125,6 +178,22 @@ async function push(items: { accountId: string; slug: string }[]) {
           {{ routes.length }} route{{ routes.length === 1 ? '' : 's' }}
         </h2>
         <div class="flex flex-wrap items-center gap-2">
+          <UButtonGroup>
+            <UButton
+              icon="i-lucide-layout-grid"
+              :color="viewMode === 'grid' ? 'primary' : 'neutral'"
+              :variant="viewMode === 'grid' ? 'subtle' : 'outline'"
+              aria-label="Grid view"
+              @click="viewMode = 'grid'"
+            />
+            <UButton
+              icon="i-lucide-map"
+              :color="viewMode === 'map' ? 'primary' : 'neutral'"
+              :variant="viewMode === 'map' ? 'subtle' : 'outline'"
+              aria-label="Map view"
+              @click="viewMode = 'map'"
+            />
+          </UButtonGroup>
           <USelect
             v-model="sportFilter"
             :items="sportFilterOptions"
@@ -167,6 +236,22 @@ async function push(items: { accountId: string; slug: string }[]) {
         "
       />
 
+      <template v-else-if="viewMode === 'map'">
+        <div class="relative h-[600px] overflow-hidden rounded-lg border border-default">
+          <RouteMap
+            :routes="mapRoutes"
+            :selected-slug="selectedSlug"
+            @select="selectedSlug = $event"
+          />
+          <div
+            v-if="loadingTracks"
+            class="absolute inset-x-0 top-0 flex justify-center bg-elevated/80 py-1 text-xs text-muted"
+          >
+            Loading route tracks…
+          </div>
+        </div>
+      </template>
+
       <template v-else>
         <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <RouteCard
@@ -178,6 +263,7 @@ async function push(items: { accountId: string; slug: string }[]) {
             :me="me"
             @deleted="backgroundRefresh"
             @updated="backgroundRefresh"
+            @open="selectedSlug = route.slug"
           />
         </div>
 
@@ -190,5 +276,12 @@ async function push(items: { accountId: string; slug: string }[]) {
         />
       </template>
     </section>
+
+    <RouteDetailModal
+      :open="selectedSlug !== null"
+      :route="selectedRoute"
+      :accounts="accounts"
+      @update:open="(v: boolean) => { if (!v) selectedSlug = null }"
+    />
   </div>
 </template>
