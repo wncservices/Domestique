@@ -23,6 +23,7 @@ import (
 
 	"github.com/wncservices/domestique/apps/api/internal/accounts"
 	"github.com/wncservices/domestique/apps/api/internal/auth"
+	"github.com/wncservices/domestique/apps/api/internal/basemap"
 	"github.com/wncservices/domestique/apps/api/internal/config"
 	"github.com/wncservices/domestique/apps/api/internal/crew"
 	"github.com/wncservices/domestique/apps/api/internal/fitcourse"
@@ -79,6 +80,14 @@ type Server struct {
 	// today the Garmin OAuth1 consumer. Nil falls back to the environment for
 	// everything.
 	Settings *settings.Store
+
+	// Basemap tracks the history of triggered tiles-basemap updates.
+	// BasemapJobs actually runs them, against the Kubernetes API. Both nil
+	// on a deployment without the tiles component's RBAC wired up
+	// (basemapUpdate.enabled in domestique-chart) — the same "quietly
+	// unavailable" shape Komoot/Garmin/Wahoo already use.
+	Basemap     *basemap.Store
+	BasemapJobs *basemap.Client
 
 	// KomootEnabled is what the operator asked for, which is not the same as
 	// what they got: the config can turn Komoot on while the credentials are
@@ -215,6 +224,9 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /api/settings/auto-sync", s.handleAutoSync)
 	mux.HandleFunc("PUT /api/settings/auto-sync", s.handleSetAutoSync)
+
+	mux.HandleFunc("GET /api/settings/basemap", s.handleBasemap)
+	mux.HandleFunc("POST /api/settings/basemap/update", s.handleBasemapUpdate)
 
 	mux.HandleFunc("GET /api/wahoo/connection", s.handleWahooConnection)
 	mux.HandleFunc("DELETE /api/wahoo/connection", s.handleWahooDisconnect)

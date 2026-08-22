@@ -354,6 +354,31 @@ export interface AutoSyncSetting {
   updatedAt?: string
 }
 
+/** The tiles component's basemap.pmtiles — an admin-triggered Kubernetes Job
+ *  that replaces the pmtiles extract + kubectl cp runbook with a button. */
+export interface BasemapUpdate {
+  /** Whether this deployment can trigger an update at all — false on a
+   *  laptop, or any deployment without the tiles component's RBAC wired up. */
+  available: boolean
+  /** Whether this viewer may trigger one here — admin. */
+  canManage: boolean
+  unavailable?: string
+
+  hasRun: boolean
+  status?: 'pending' | 'running' | 'succeeded' | 'failed'
+  west?: number
+  south?: number
+  east?: number
+  north?: number
+  maxZoom?: number
+  buildDate?: string
+  error?: string
+  sizeBytes?: number
+  requestedBy?: string
+  createdAt?: string
+  completedAt?: string
+}
+
 /** One rider's sign-in to their own Garmin Connect account. */
 export interface GarminConnection {
   connected: boolean

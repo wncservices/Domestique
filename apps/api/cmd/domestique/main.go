@@ -28,6 +28,7 @@ import (
 	"github.com/wncservices/domestique/apps/api/internal/api"
 	"github.com/wncservices/domestique/apps/api/internal/auth"
 	"github.com/wncservices/domestique/apps/api/internal/auth0mgmt"
+	"github.com/wncservices/domestique/apps/api/internal/basemap"
 	"github.com/wncservices/domestique/apps/api/internal/config"
 	"github.com/wncservices/domestique/apps/api/internal/crew"
 	"github.com/wncservices/domestique/apps/api/internal/fitcourse"
@@ -731,6 +732,45 @@ func runServe(src *source.DB, cfg *config.Config, store state.Store, addr, webDi
 		return err
 	}
 	srv.Settings = appSettings
+
+	// Basemap update history, wired unconditionally like Settings above —
+	// harmless to keep even when the Job side (below) never runs, and
+	// keeps Store/Client's two "am I available" questions independent: the
+	// UI can distinguish "never triggered" from "can't trigger."
+	basemapStore, err := basemap.UseDB(src.Conn(), src.DSN())
+	if err != nil {
+		return err
+	}
+	srv.Basemap = basemapStore
+
+	// The Job-triggering side is opt-in twice over: cfg.Basemap.TilesNamespace
+	// unset means this deployment never asked for it, and InCluster
+	// returning (nil, nil) means it asked but isn't actually running in a
+	// cluster (a laptop) — either way srv.BasemapJobs stays nil and the UI
+	// reports the feature unavailable, the same shape every other
+	// deployment-wide integration in this file already degrades through.
+	if cfg.Basemap.TilesNamespace != "" {
+		jobs, err := basemap.InCluster(basemap.JobConfig{
+			TilesNamespace:        cfg.Basemap.TilesNamespace,
+			TilesPodSelector:      cfg.Basemap.TilesPodSelector,
+			CopyServiceAccount:    cfg.Basemap.CopyServiceAccount,
+			ExtractImage:          cfg.Basemap.ExtractImage,
+			CopyImage:             cfg.Basemap.CopyImage,
+			CPURequest:            cfg.Basemap.CPURequest,
+			MemRequest:            cfg.Basemap.MemRequest,
+			MemLimit:              cfg.Basemap.MemLimit,
+			WorkVolumeSize:        cfg.Basemap.WorkVolumeSize,
+			ActiveDeadlineSeconds: cfg.Basemap.ActiveDeadlineSeconds,
+		})
+		if err != nil {
+			return err
+		}
+		if jobs == nil {
+			log.Warn("basemap.tiles_namespace is set but this process is not running in a cluster",
+				"hint", "the basemap update feature will report unavailable")
+		}
+		srv.BasemapJobs = jobs
+	}
 
 	// OIDC sessions live in the database the same way, and are wired
 	// unconditionally like Links/Settings above — a mode-none or mode-proxy

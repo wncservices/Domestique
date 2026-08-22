@@ -3,6 +3,7 @@ import type {
   AppConfig,
   AssignableRole,
   AutoSyncSetting,
+  BasemapUpdate,
   Crew,
   CreateCrewRequest,
   GarminConnection,
@@ -180,6 +181,14 @@ export const api = {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ enabled }),
+    }),
+
+  basemap: () => request<BasemapUpdate>('/api/settings/basemap'),
+  updateBasemap: (bbox: { west: number; south: number; east: number; north: number }, maxZoom: number) =>
+    request<BasemapUpdate>('/api/settings/basemap/update', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...bbox, maxZoom }),
     }),
 
   komootTours: () => request<KomootTour[]>('/api/komoot/tours'),
