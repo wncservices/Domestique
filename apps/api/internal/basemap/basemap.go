@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/wncservices/domestique/apps/api/internal/dbx"
@@ -124,7 +125,21 @@ CREATE TABLE IF NOT EXISTS basemap_updates (
     requested_by  TEXT NOT NULL DEFAULT '',
     created_at    TEXT NOT NULL,
     completed_at  TEXT
-);`
+);
+-- At most one row may be pending or running at a time — an expression
+-- index on the constant 1, filtered to those two statuses, so every
+-- matching row collides on the same indexed value regardless of which of
+-- the two statuses it actually holds. The API's own check-then-create in
+-- handleBasemapUpdate handles the ordinary case (an admin double-clicking,
+-- or forgetting a previous trigger is still running) with a clean 409, but
+-- only this constraint is atomic across concurrent requests — two Jobs
+-- racing to place a file on the same tiles pod is not something a
+-- check-then-create alone can rule out. Verified on both engines: SQLite
+-- (partial + expression indexes since 3.8.0) and PostgreSQL both reject a
+-- second INSERT while a matching row exists, and both accept one once
+-- every existing row has moved to succeeded/failed.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_basemap_updates_one_in_progress
+    ON basemap_updates ((1)) WHERE status IN ('pending', 'running');`
 }
 
 // newID is 16 random bytes, hex-encoded — unique, not a secret: this record
@@ -161,6 +176,15 @@ func UseDB(db *sql.DB, dsn string) (*Store, error) {
 // two updates triggered close together apart at all.
 const timestampFormat = "2006-01-02T15:04:05.000000000Z07:00"
 
+// ErrAlreadyInProgress means an update is already pending or running —
+// idx_basemap_updates_one_in_progress (see schema above) rejected the
+// INSERT. The API's own check-then-create in handleBasemapUpdate catches
+// the ordinary case before ever calling Create, so this is the backstop
+// for two requests that raced past that check at nearly the same instant;
+// it is enforced by the database itself, unlike the pre-check, so it holds
+// even then.
+var ErrAlreadyInProgress = errors.New("a basemap update is already in progress")
+
 // Create records a new update as pending and returns its id.
 func (s *Store) Create(bbox BBox, maxZoom int, buildDate, requestedBy string) (string, error) {
 	id, err := newID()
@@ -172,9 +196,22 @@ func (s *Store) Create(bbox BBox, maxZoom int, buildDate, requestedBy string) (s
 INSERT INTO basemap_updates (id, west, south, east, north, max_zoom, build_date, status, requested_by, created_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		id, bbox.West, bbox.South, bbox.East, bbox.North, maxZoom, buildDate, StatusPending, requestedBy, now); err != nil {
+		if isUniqueViolation(err) {
+			return "", ErrAlreadyInProgress
+		}
 		return "", fmt.Errorf("record basemap update: %w", err)
 	}
 	return id, nil
+}
+
+// isUniqueViolation reports whether err is a unique-constraint violation —
+// dialect-agnostic by checking both engines' own error text, since pgx and
+// modernc.org/sqlite each report it in a different shape and this table's
+// id (randomly generated, 16 bytes) is never expected to collide, so the
+// only constraint an INSERT here could ever actually hit is the partial
+// index above.
+func isUniqueViolation(err error) bool {
+	return strings.Contains(strings.ToLower(err.Error()), "unique constraint")
 }
 
 // SetJobName records which Job a pending record actually became, and moves

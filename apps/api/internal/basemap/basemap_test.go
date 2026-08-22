@@ -1,6 +1,7 @@
 package basemap
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -126,7 +127,14 @@ func TestLatestReturnsTheMostRecentOfSeveral(t *testing.T) {
 	store := newStore(t)
 	bbox := validBBox()
 
-	if _, err := store.Create(bbox, 10, "20260101", "a"); err != nil {
+	first, err := store.Create(bbox, 10, "20260101", "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// idx_basemap_updates_one_in_progress permits only one pending/running
+	// row at a time (see TestCreateWhileOneIsInProgressIsRejected below) —
+	// the first has to actually finish before a second can exist at all.
+	if err := store.MarkSucceeded(first, 100); err != nil {
 		t.Fatal(err)
 	}
 	second, err := store.Create(bbox, 12, "20260102", "b")
@@ -187,6 +195,52 @@ func TestMarkSucceededRecordsSizeAndCompletion(t *testing.T) {
 	}
 	if rec.CompletedAt == nil {
 		t.Error("CompletedAt is nil, want it set")
+	}
+}
+
+// Code review finding: two Jobs racing to place a file on the same tiles
+// pod, with no coordination, can corrupt the live basemap. This is the
+// database-level guarantee that closes it even across two requests the
+// application-level pre-check in handleBasemapUpdate could not fully rule
+// out on its own — idx_basemap_updates_one_in_progress enforces it
+// directly, so a second Create fails immediately rather than racing.
+func TestCreateWhileOneIsInProgressIsRejected(t *testing.T) {
+	store := newStore(t)
+	bbox := validBBox()
+
+	if _, err := store.Create(bbox, 14, "20260822", "a"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.Create(bbox, 14, "20260822", "b"); !errors.Is(err, ErrAlreadyInProgress) {
+		t.Errorf("second Create() err = %v, want ErrAlreadyInProgress", err)
+	}
+}
+
+func TestCreateAfterOneFinishesIsAllowed(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mark func(*Store, string) error
+	}{
+		{"succeeded", func(s *Store, id string) error { return s.MarkSucceeded(id, 100) }},
+		{"failed", func(s *Store, id string) error { return s.MarkFailed(id, "boom") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newStore(t)
+			bbox := validBBox()
+
+			first, err := store.Create(bbox, 14, "20260822", "a")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := tc.mark(store, first); err != nil {
+				t.Fatal(err)
+			}
+
+			if _, err := store.Create(bbox, 14, "20260822", "b"); err != nil {
+				t.Errorf("Create() after the first update finished = %v, want no error", err)
+			}
+		})
 	}
 }
 

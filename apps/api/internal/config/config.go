@@ -153,9 +153,13 @@ func (c *Config) applyDefaults() {
 		if c.Basemap.TilesPodSelector == "" {
 			c.Basemap.TilesPodSelector = "app.kubernetes.io/name=tiles"
 		}
-		if c.Basemap.CopyServiceAccount == "" {
-			c.Basemap.CopyServiceAccount = "domestique-basemap-copy"
-		}
+		// No default for CopyServiceAccount, unlike everything else here:
+		// it names an identity domestique-chart's basemap-rbac.yaml
+		// generates from the Helm release name (domestique.fullname), and
+		// guessing a name that might not match would fail silently at
+		// Job-run time (pod can't start, or every kubectl call inside it
+		// gets Forbidden) instead of loudly at config load. Validate below
+		// requires it explicitly instead.
 		if c.Basemap.ExtractImage == "" {
 			c.Basemap.ExtractImage = "protomaps/go-pmtiles:v1.31.2"
 		}
@@ -190,6 +194,12 @@ func (c *Config) Validate() error {
 	// Surfaces a bad auth config at startup rather than on the first request.
 	if _, err := auth.New(c.Auth); err != nil {
 		return err
+	}
+
+	if c.Basemap.TilesNamespace != "" && c.Basemap.CopyServiceAccount == "" {
+		return fmt.Errorf("basemap.tiles_namespace is set but basemap.copy_service_account is not — " +
+			"it must equal, exactly, whatever domestique-chart's basemap-rbac.yaml actually renders " +
+			"for {{ include \"domestique.fullname\" . }}-basemap-copy in this release")
 	}
 	return nil
 }

@@ -3,6 +3,7 @@ package basemap
 import (
 	"context"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 
@@ -75,6 +76,16 @@ const outputPath = workMountPath + "/basemap.pmtiles"
 // UID here sidesteps that regardless of what either image declares.
 const runAsNonRootUser = 1000
 
+// jobTTLSeconds is how long a finished Job (and its Pod) sticks around
+// before the Kubernetes TTL controller deletes it — 24 hours, generous
+// enough that an admin checking back the next day still finds the copy
+// container's own log (Outcome reads it to report the final size or a
+// failure message), while still eventually cleaning up after itself. This
+// app's own RBAC (domestique-chart's basemap-rbac.yaml) deliberately does
+// not grant delete on jobs — the TTL controller runs with its own
+// privileges, not this app's, so nothing here needs to.
+const jobTTLSeconds = 24 * 60 * 60
+
 // Trigger creates the update Job and returns its generated name.
 func (c *Client) Trigger(ctx context.Context, bbox BBox, maxZoom int, buildDate string) (string, error) {
 	falseVal := false
@@ -91,8 +102,9 @@ func (c *Client) Trigger(ctx context.Context, bbox BBox, maxZoom int, buildDate 
 			},
 		},
 		Spec: batchv1.JobSpec{
-			BackoffLimit:          ptr(int32(0)),
-			ActiveDeadlineSeconds: ptr(c.cfg.ActiveDeadlineSeconds),
+			BackoffLimit:            ptr(int32(0)),
+			ActiveDeadlineSeconds:   ptr(c.cfg.ActiveDeadlineSeconds),
+			TTLSecondsAfterFinished: ptr(int32(jobTTLSeconds)),
 			Template: corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
 					RestartPolicy:      corev1.RestartPolicyNever,
@@ -118,7 +130,16 @@ func (c *Client) Trigger(ctx context.Context, bbox BBox, maxZoom int, buildDate 
 								"extract",
 								"https://build.protomaps.com/" + buildDate + ".pmtiles",
 								outputPath,
-								fmt.Sprintf("--bbox=%g,%g,%g,%g", bbox.West, bbox.South, bbox.East, bbox.North),
+								// %.6f, not %g: %g switches to exponential
+								// notation for values near zero (0.00001 ->
+								// "1e-05"), a valid bbox coordinate this
+								// project's own Validate allows through. Fixed
+								// notation is always an ordinary decimal,
+								// which is both what a human reading this
+								// Job's spec expects and one less format
+								// go-pmtiles' own flag parser has to get
+								// right.
+								fmt.Sprintf("--bbox=%.6f,%.6f,%.6f,%.6f", bbox.West, bbox.South, bbox.East, bbox.North),
 								fmt.Sprintf("--maxzoom=%d", maxZoom),
 							},
 							SecurityContext: &corev1.SecurityContext{
@@ -282,9 +303,14 @@ func (c *Client) copyContainerLog(ctx context.Context, jobName string) string {
 		return ""
 	}
 	defer func() { _ = stream.Close() }()
-	buf := make([]byte, 4096)
-	n, _ := stream.Read(buf)
-	return string(buf[:n])
+	// io.ReadAll, not a single Read call: io.Reader is free to return less
+	// than the full buffer even when more data is immediately available, so
+	// one Read here could silently truncate the log before the
+	// SIZE_BYTES= line the copy script always prints last — parseSizeBytes
+	// would then find nothing and a genuinely successful update would get
+	// recorded with sizeBytes: 0, with no error anywhere to explain why.
+	data, _ := io.ReadAll(io.LimitReader(stream, 4096))
+	return string(data)
 }
 
 // parseSizeBytes finds the copy script's own `SIZE_BYTES=<n>` line.

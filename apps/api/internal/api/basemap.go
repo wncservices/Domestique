@@ -1,7 +1,9 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"time"
 
@@ -35,10 +37,43 @@ type basemapUpdateDTO struct {
 	CompletedAt string  `json:"completedAt,omitempty"`
 }
 
-// basemapDTOFor reports the latest update's state for this caller,
-// refreshing it against the live Job first if it was last seen running —
-// polled on demand rather than by a background goroutine, so there is
-// nothing to keep running between requests nobody is looking at.
+// refreshLatestBasemap reads the latest record and, if it was last seen
+// pending or running, checks the live Job and stamps its outcome before
+// returning — polled on demand rather than by a background goroutine, so
+// there is nothing to keep running between requests nobody is looking at.
+// Shared by the status endpoint (to report current state) and the trigger
+// endpoint (to decide whether one is already in progress): both need the
+// same "is this actually still running" answer, not two copies of it that
+// could disagree.
+func (s *Server) refreshLatestBasemap(ctx context.Context) (basemap.Record, error) {
+	rec, err := s.Basemap.Latest()
+	if err != nil {
+		return basemap.Record{}, err
+	}
+
+	if rec.Status != basemapStatusPending && rec.Status != basemapStatusRunning {
+		return rec, nil
+	}
+
+	outcome, err := s.BasemapJobs.Outcome(ctx, rec.JobName)
+	if err != nil || !outcome.Done {
+		return rec, nil
+	}
+	if outcome.Succeeded {
+		_ = s.Basemap.MarkSucceeded(rec.ID, outcome.SizeBytes)
+	} else {
+		_ = s.Basemap.MarkFailed(rec.ID, outcome.Message)
+	}
+	// Re-read rather than mutate rec in place: Mark* stamps completedAt
+	// server-side, and callers should see exactly what is now stored, not
+	// a guess at it.
+	if refreshed, err := s.Basemap.Latest(); err == nil {
+		rec = refreshed
+	}
+	return rec, nil
+}
+
+// basemapDTOFor reports the latest update's state for this caller.
 func (s *Server) basemapDTOFor(r *http.Request) basemapUpdateDTO {
 	dto := basemapUpdateDTO{Available: s.Basemap != nil && s.BasemapJobs != nil}
 
@@ -54,27 +89,11 @@ func (s *Server) basemapDTOFor(r *http.Request) basemapUpdateDTO {
 		return dto
 	}
 
-	rec, err := s.Basemap.Latest()
+	rec, err := s.refreshLatestBasemap(r.Context())
 	if err != nil {
 		// basemap.ErrNoRecord means nobody has ever triggered one —
 		// Available/CanManage true, HasRun false is the whole story.
 		return dto
-	}
-
-	if rec.Status == basemapStatusPending || rec.Status == basemapStatusRunning {
-		if outcome, err := s.BasemapJobs.Outcome(r.Context(), rec.JobName); err == nil && outcome.Done {
-			if outcome.Succeeded {
-				_ = s.Basemap.MarkSucceeded(rec.ID, outcome.SizeBytes)
-			} else {
-				_ = s.Basemap.MarkFailed(rec.ID, outcome.Message)
-			}
-			// Re-read rather than mutate rec in place: Mark* stamps
-			// completedAt server-side, and the DTO below should report
-			// exactly what is now stored, not a guess at it.
-			if refreshed, err := s.Basemap.Latest(); err == nil {
-				rec = refreshed
-			}
-		}
 	}
 
 	dto.HasRun = true
@@ -139,10 +158,36 @@ func (s *Server) handleBasemapUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Refuse a second trigger while one is already in flight: two
+	// concurrently-running Jobs (a double-click, two admins, a retried
+	// request) would both kubectl cp + mv into the exact same path on the
+	// exact same tiles pod with no coordination between them, and
+	// whichever mv lands second silently wins over a file that might not
+	// even be the other Job's complete download. refreshLatestBasemap
+	// checks the live Job first, so a record that's actually finished
+	// (just not yet observed as such) does not block a new trigger.
+	if existing, err := s.refreshLatestBasemap(r.Context()); err == nil {
+		if existing.Status == basemapStatusPending || existing.Status == basemapStatusRunning {
+			writeJSON(w, http.StatusConflict, map[string]string{
+				"error": "an update is already in progress — wait for it to finish before starting another",
+			})
+			return
+		}
+	}
+
 	admin := auth.FromContext(r.Context()).User
 	buildDate := time.Now().UTC().Format("20060102")
 
 	id, err := s.Basemap.Create(bbox, body.MaxZoom, buildDate, admin)
+	if errors.Is(err, basemap.ErrAlreadyInProgress) {
+		// The pre-check above missed a request that landed at nearly the
+		// same instant — this is the database's own constraint catching
+		// what the pre-check alone could not guarantee.
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": "an update is already in progress — wait for it to finish before starting another",
+		})
+		return
+	}
 	if err != nil {
 		s.logger().Error("recording basemap update failed", "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not record the update"})
